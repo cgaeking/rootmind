@@ -18,29 +18,6 @@ The repository has two parts:
 > comes with no support commitment. Issues and pull requests are welcome and
 > get a best-effort response.
 
-## Start here (for code reviewers)
-
-| Topic | Where | What to look for |
-|---|---|---|
-| Agent loop | [`rlm_engine/engine.py`](backend/src/rootmind/rlm_engine/engine.py), `KnowledgeBaseEngine.query` | Bounded tool loop for the Anthropic and the OpenAI-compatible APIs, stop conditions, the iteration cap with one final tool-less call, timeouts, the condense step for follow-up questions, source extraction |
-| Tool layer | [`tools.py`](backend/src/rootmind/tools.py) | One registry for the agent loop and both MCP transports; validation and clamping of model-supplied arguments; errors returned to the model as tool results; document text wrapped and escaped so it cannot open or close the wrapper |
-| Retrieval | [`database/repository.py`](backend/src/rootmind/database/repository.py), `search_fulltext` | FTS5 query strategies, ranking that does not depend on the page size, hit positions mapped to page, slide or sheet |
-| MCP servers | [`mcp_stdio.py`](backend/src/rootmind/mcp_stdio.py), [`mcp_http.py`](backend/src/rootmind/mcp_http.py) | Bearer token handling (generated, compared in constant time, never logged, fail closed), Origin check |
-| REST API | [`api/app.py`](backend/src/rootmind/api/app.py), [`api/routes.py`](backend/src/rootmind/api/routes.py) | Loopback-only peers, Host and CORS allowlists, typed `/query` response, masked API keys, partial config updates with a serialized hot reload |
-| Tests | [`backend/tests/`](backend/tests/): start with [`fakes.py`](backend/tests/fakes.py), [`conftest.py`](backend/tests/conftest.py) and [`test_engine_loop.py`](backend/tests/test_engine_loop.py) | Scripted fake LLM clients; real SDK clients refuse to start inside the test suite |
-| Evals | [`backend/evals/`](backend/evals/README.md), [`scripts/run_evals.py`](backend/scripts/run_evals.py) | A fictional 10-file corpus and 16 cases, including a synonym trap, an unanswerable question and a prompt-injection line; live mode runs a real model, and an offline retrieval regression (scripted policy) gates CI |
-| Desktop | [`desktop/src/api/`](desktop/src/api/), [`capabilities/default.json`](desktop/src-tauri/capabilities/default.json) | Typed REST client, minimal Tauri permissions, CSP |
-| Design and threat model | [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY.md](SECURITY.md) | Guardrails, data model, trade-offs, what the design does and does not protect against |
-
-The backend checks run offline and need no API key:
-
-```bash
-cd backend
-uv sync
-uv run pytest -q                      # fake LLM clients, generated test corpus
-uv run python scripts/run_evals.py    # retrieval regression: scripted policy, no model
-```
-
 ## How it works
 
 ```mermaid
@@ -283,7 +260,19 @@ desktop/
 .github/workflows/         CI for backend and desktop
 ```
 
+Design decisions, guardrails and trade-offs are described in
+[ARCHITECTURE.md](ARCHITECTURE.md), the threat model in [SECURITY.md](SECURITY.md).
+
 ## Tests and evals
+
+Both run offline and need no API key:
+
+```bash
+cd backend
+uv sync
+uv run pytest -q                      # fake LLM clients, generated test corpus
+uv run python scripts/run_evals.py    # retrieval regression: scripted policy, no model
+```
 
 **Tests.** The backend suite runs offline in about half a minute. An autouse
 fixture replaces the Anthropic and OpenAI client constructors with functions
