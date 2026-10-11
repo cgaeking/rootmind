@@ -1,0 +1,98 @@
+name: backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "scripts/**"
+      # The version check compares these with backend/pyproject.toml.
+      - "desktop/package.json"
+      - "desktop/src-tauri/Cargo.toml"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "scripts/**"
+      - "desktop/package.json"
+      - "desktop/src-tauri/Cargo.toml"
+      - ".github/workflows/backend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: backend
+
+# No job has an API key. The base URLs point at a closed local port, so even a
+# test that bypassed the fake LLM clients could not reach a provider.
+env:
+  ANTHROPIC_BASE_URL: "http://127.0.0.1:9"
+  OPENAI_BASE_URL: "http://127.0.0.1:9"
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          working-directory: backend
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - name: Versions match across backend and desktop
+        run: uv run python ../scripts/check_versions.py
+
+  test:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.12" }
+          - { os: windows-latest, python: "3.12" }
+          - { os: ubuntu-latest, python: "3.14" }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          working-directory: backend
+          python-version: ${{ matrix.python }}
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      # Offline: tests use fake LLM clients; constructing a real one fails.
+      - run: uv run pytest -q --cov --cov-report=term-missing
+
+  evals-dry:
+    name: Retrieval regression (dry evals, offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          working-directory: backend
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      # Scripted policy with a hand-picked query per case instead of a model:
+      # a retrieval regression test for the index and the tool layer. Fails
+      # when hit@5 drops below the gate. It does not judge answers.
+      - run: uv run python scripts/run_evals.py --mode dry --out "$RUNNER_TEMP/evals"

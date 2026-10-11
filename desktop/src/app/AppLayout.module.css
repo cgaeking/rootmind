@@ -1,0 +1,74 @@
+.layout {
+  display: flex;
+  height: 100vh;
+  /* Use the dynamic viewport unit on mobile so the input bar isn't hidden
+     behind the browser chrome. Falls back to 100vh where dvh is unsupported. */
+  height: 100dvh;
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100vh;
+  height: 100dvh;
+}
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg);
+  min-height: 0;
+}
+
+/* Mobile-only top bar with the hamburger. Hidden on desktop. */
+.topbar {
+  display: none;
+}
+
+.menuBtn {
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+}
+.menuBtn:hover {
+  background: var(--bg-elevated);
+}
+
+.topbarTitle {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+/* Dimmed backdrop behind the open drawer. Hidden on desktop. */
+.backdrop {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    height: 52px;
+    padding: 0 12px;
+    padding-top: env(safe-area-inset-top);
+    box-sizing: content-box;
+    border-bottom: 1px solid var(--border);
+    background: var(--sidebar-bg);
+  }
+
+  .backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0.4);
+  }
+}

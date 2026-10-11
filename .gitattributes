@@ -1,0 +1,23 @@
+# Normalize text files to LF in the repository and in checkouts.
+* text=auto eol=lf
+
+# cmd.exe can misparse labels and goto in LF-only batch files; keep Windows
+# scripts and NSIS hooks in CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.nsh text eol=crlf
+
+# Binary formats
+*.png binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.exe binary
+
+# Generated eval corpus: stored exactly as the generator writes it
+# (tests compare it byte for byte).
+backend/evals/corpus/** -text

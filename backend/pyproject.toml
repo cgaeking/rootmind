@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rootmind-backend"
+version = "1.1.0"
+description = "Local document search with an agentic LLM tool loop (SQLite FTS5), exposed via REST and MCP"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "Christian Gäking" }]
+keywords = ["llm", "agents", "tool-use", "mcp", "sqlite-fts5", "document-search"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "anthropic>=1.13.0",
+    "apscheduler>=3.11.3,<4",
+    "fastapi>=0.143.0",
+    "mcp>=2.3.0",
+    "openai>=3.28.0",
+    "openpyxl>=3.1.5",
+    "pydantic>=2.14.0",
+    "pydantic-settings>=2.15.0",
+    "pypdf>=6.20.0",
+    "python-docx>=1.2.0",
+    "python-dotenv>=1.2.4",
+    "python-pptx>=1.0.2",
+    "pyyaml>=6.0.3",
+    "sqlalchemy>=2.1.4",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+rootmind = "rootmind.main:main"
+rootmind-mcp = "rootmind.mcp_stdio:main"
+rootmind-mcp-http = "rootmind.mcp_http:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rootmind"]
+
+[dependency-groups]
+build = [
+    "pyinstaller>=6.22.3",
+]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["evals/corpus"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "S", "ASYNC", "RUF100"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+"scripts/**" = ["S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rootmind"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers"
+# Deprecations raised by our own code fail the suite (third-party ones only warn).
+filterwarnings = ["error::DeprecationWarning:rootmind.*"]
+
+[tool.coverage.run]
+source = ["rootmind"]
+branch = true

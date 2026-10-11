@@ -1,0 +1,39 @@
+# Monthly dependency updates, one grouped pull request per ecosystem.
+# GitHub's own security updates (for published advisories) come on top.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "uv"
+    directory: "/backend"
+    schedule:
+      interval: "monthly"
+    groups:
+      backend:
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/desktop"
+    schedule:
+      interval: "monthly"
+    groups:
+      desktop:
+        patterns: ["*"]
+        # Tauri's npm packages must stay on the same minor version as the
+        # Rust crates; update both together by hand.
+        exclude-patterns: ["@tauri-apps/*"]
+
+  - package-ecosystem: "cargo"
+    directory: "/desktop/src-tauri"
+    schedule:
+      interval: "monthly"
+    groups:
+      tauri-shell:
+        patterns: ["*"]
+        exclude-patterns: ["tauri*"]

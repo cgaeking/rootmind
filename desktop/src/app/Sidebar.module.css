@@ -1,0 +1,144 @@
+.sidebar {
+  width: 250px;
+  min-width: 250px;
+  height: 100vh;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.newChat {
+  margin: 12px 12px 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+.newChat:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Conversation history fills the space; the nav stays pinned at the bottom. */
+.convList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+}
+
+.emptyList {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.convItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  color: var(--text);
+}
+.convItem:hover {
+  background: var(--bg-elevated);
+}
+.convActive {
+  background: var(--bg-elevated);
+}
+.convActive .convTitle {
+  color: var(--accent);
+}
+
+.convTitle {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.convDelete {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: 0;
+  flex-shrink: 0;
+}
+.convItem:hover .convDelete {
+  opacity: 0.7;
+}
+.convDelete:hover {
+  opacity: 1;
+  color: var(--danger);
+}
+
+/* Main nav, bottom-aligned, items stacked vertically with monochrome icons. */
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.link {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 10px;
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 14px;
+  user-select: none;
+}
+.link:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.active,
+.active:hover {
+  background: var(--bg-elevated);
+  color: var(--accent);
+}
+
+.linkIcon {
+  flex-shrink: 0;
+}
+
+/* On phones the sidebar becomes a slide-in drawer over the content. */
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 50;
+    height: 100%;
+    padding-top: env(safe-area-inset-top);
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: 2px 0 16px rgba(0, 0, 0, 0.25);
+  }
+
+  /* Two classes → wins over the base .sidebar transform regardless of order. */
+  .sidebar.open {
+    transform: translateX(0);
+  }
+}

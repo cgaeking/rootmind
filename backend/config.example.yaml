@@ -1,0 +1,64 @@
+# RootMind backend configuration.
+# Copy this file to config.yaml (next to it, or into the folder named by RLM_HOME)
+# and adjust it. config.yaml is gitignored: it can hold API keys.
+
+# LLM provider used by POST /query (search and indexing need no LLM).
+llm:
+  provider: anthropic          # anthropic | openai | xai
+  model: claude-sonnet-5-5
+  # API keys: prefer the environment (ANTHROPIC_API_KEY, OPENAI_API_KEY,
+  # XAI_API_KEY). Keys saved through the desktop app are stored here in
+  # plain text under api_keys.<provider>.
+  # api_keys:
+  #   anthropic: ""
+  # Timeout for each LLM call, in seconds.
+  timeout_seconds: 120
+  # OpenAI or xAI (Grok) instead: set provider and a model id from
+  # POST /llm/models (or the desktop settings), e.g.
+  # provider: xai
+  # model: <grok model id>
+
+# SQLite database with the full-text index. Relative paths resolve against
+# RLM_HOME, or the working directory when RLM_HOME is unset.
+database:
+  path: ./data/index.db
+
+# Folders to index. Add one entry per folder; names must be unique.
+connectors:
+  - name: demo
+    type: local
+    # Absolute or relative path, e.g. C:/Users/<you>/Documents or ~/Documents
+    path: ./evals/corpus
+
+# Indexer settings
+indexer:
+  # Re-index interval in hours (takes precedence over sync_schedule when > 0).
+  sync_interval_hours: 24
+  # Alternative: cron schedule (minute hour day month weekday), used when
+  # sync_interval_hours is 0.
+  sync_schedule: "0 3 * * *"
+  # Files larger than this are skipped (MB).
+  max_file_size_mb: 50
+  # File patterns for every folder (a connector can override them with its
+  # own include/exclude lists). The include list is also the default.
+  include:
+    - "*.pdf"
+    - "*.docx"
+    - "*.xlsx"
+    - "*.pptx"
+    - "*.md"
+    - "*.txt"
+    - "*.csv"
+  exclude:
+    - ".*"            # hidden files and folders
+    - "~$*"           # Office lock files
+    - "node_modules"
+    - "__pycache__"
+    - "*.tmp"
+
+# REST API. Keep it on 127.0.0.1: the REST API has no authentication and must
+# never be exposed on a network. For remote agents, use the MCP HTTP server,
+# which requires a bearer token.
+api:
+  host: 127.0.0.1
+  port: 8000

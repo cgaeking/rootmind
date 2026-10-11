@@ -1,0 +1,391 @@
+"""Configuration loading and persistence for the RootMind backend."""
+
+import contextlib
+import os
+import secrets
+import time
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LlmProvider = Literal["anthropic", "openai", "xai"]
+
+DEFAULT_MODEL = "claude-sonnet-5-5"
+
+# Default file patterns for every indexed folder. Every included extension has
+# a parser (a test checks this and that config.example.yaml uses the same list).
+DEFAULT_INCLUDE = ("*.pdf", "*.docx", "*.xlsx", "*.pptx", "*.md", "*.txt", "*.csv")
+DEFAULT_EXCLUDE = (".*", "~$*", "node_modules", "__pycache__")
+
+# API keys are returned to clients only in masked form (see ``mask_secret``).
+# The mask starts with a character no real provider key starts with, so a
+# masked value sent back by a client can be recognized and never overwrites
+# the stored key.
+MASK_PREFIX = "…"  # horizontal ellipsis
+MASK_VISIBLE_CHARS = 4
+
+
+def mask_secret(value: str | None) -> str:
+    """Return a display-safe form of a secret: ellipsis + last 4 chars, or ``""`` when unset.
+
+    Secrets of 8 characters or fewer reveal nothing (just the ellipsis), so the
+    visible suffix never gives away a meaningful share of a short key.
+    """
+    if not value:
+        return ""
+    if len(value) <= 2 * MASK_VISIBLE_CHARS:
+        return MASK_PREFIX
+    return MASK_PREFIX + value[-MASK_VISIBLE_CHARS:]
+
+
+def is_masked(value: str | None) -> bool:
+    """True if ``value`` has exactly the shape of a mask produced by :func:`mask_secret`."""
+    return (
+        isinstance(value, str)
+        and value.startswith(MASK_PREFIX)
+        and len(value) <= len(MASK_PREFIX) + MASK_VISIBLE_CHARS
+    )
+
+
+def check_api_key(value: str | None) -> None:
+    """Reject a key that starts with the mask prefix but is longer than a mask.
+
+    That happens when a new key is pasted into a field that still shows the
+    mask: the result is neither the stored key nor the new one.
+
+    Raises:
+        ValueError: the value is such a mix.
+    """
+    if isinstance(value, str) and value.startswith(MASK_PREFIX) and not is_masked(value):
+        raise ValueError(
+            f"API key starts with the mask character '{MASK_PREFIX}' but is not a mask; "
+            "clear the field and paste the whole key"
+        )
+
+
+def app_home() -> Path:
+    """Base directory for ``config.yaml`` and the ``data/`` folder.
+
+    When ``RLM_HOME`` is set (e.g. by the desktop app or the Windows service,
+    which point it at an app-data folder), config and database live there so an
+    installed app can write outside its read-only program folder. When unset,
+    paths stay relative to the current working directory.
+    """
+    home = os.environ.get("RLM_HOME")
+    if home:
+        p = Path(home).expanduser()
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    return Path.cwd()
+
+
+class LLMConfig(BaseModel):
+    """LLM provider configuration."""
+
+    provider: LlmProvider = "anthropic"
+    model: str = DEFAULT_MODEL
+    # api_keys is the canonical per-provider store; api_key mirrors the active
+    # provider's key (the engine reads api_key).
+    api_key: str | None = None
+    api_keys: dict[str, str] = Field(default_factory=dict)
+    # Generous but bounded timeout for outgoing LLM calls, so a stalled
+    # provider response can't hang a request forever.
+    timeout_seconds: float = 120.0
+
+
+class DatabaseConfig(BaseModel):
+    """Database configuration (SQLite only)."""
+
+    path: str = "./data/index.db"
+
+
+class ConnectorConfig(BaseModel):
+    """Individual connector configuration."""
+
+    name: str
+    type: str
+    path: str | None = None
+    # None -> inherit the global indexer.include / indexer.exclude patterns.
+    include: list[str] | None = None
+    exclude: list[str] | None = None
+
+
+class IndexerConfig(BaseModel):
+    """Indexer configuration."""
+
+    sync_schedule: str | None = "0 3 * * *"
+    # Automatic re-index interval in hours (default: once a day). Takes precedence
+    # over sync_schedule when > 0.
+    sync_interval_hours: int = 24
+    max_file_size_mb: int = 50
+    # Global file patterns applied to every indexed folder.
+    include: list[str] = Field(default_factory=lambda: list(DEFAULT_INCLUDE))
+    exclude: list[str] = Field(default_factory=lambda: list(DEFAULT_EXCLUDE))
+
+
+class APIConfig(BaseModel):
+    """REST API server configuration.
+
+    The REST API has no authentication, so it binds to the loopback interface
+    by default. Do not expose it on a network interface.
+    """
+
+    host: str = "127.0.0.1"
+    port: int = 8000
+
+
+class AppConfig(BaseModel):
+    """Main application configuration."""
+
+    llm: LLMConfig = Field(default_factory=LLMConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    connectors: list[ConnectorConfig] = Field(default_factory=list)
+    indexer: IndexerConfig = Field(default_factory=IndexerConfig)
+    api: APIConfig = Field(default_factory=APIConfig)
+
+
+class Settings(BaseSettings):
+    """Environment-based settings (also read from a ``.env`` file in the working directory)."""
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
+    xai_api_key: str | None = None
+    config_path: str = "config.yaml"
+
+
+def _resolve_config_path(config_path: str | Path | None, settings: Settings) -> Path:
+    """Resolve a relative config path under the app home (RLM_HOME or cwd).
+
+    Loading and saving always hit the same file, even when a default name like
+    "config.yaml" is passed in explicitly.
+    """
+    path = Path(config_path or settings.config_path)
+    if not path.is_absolute():
+        path = app_home() / path
+    return path
+
+
+def load_config(config_path: str | Path | None = None) -> AppConfig:
+    """Load configuration from a YAML file.
+
+    Args:
+        config_path: Path to config file. If None, uses the default or the
+            ``CONFIG_PATH`` environment variable.
+
+    Returns:
+        Loaded AppConfig instance.
+    """
+    settings = Settings()
+    path = _resolve_config_path(config_path, settings)
+
+    data = {}
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    config = AppConfig.model_validate(data)
+
+    # Resolve a relative SQLite path under the app home so the database lives
+    # next to the config (matters when RLM_HOME points outside the program dir).
+    if config.database.path and not Path(config.database.path).is_absolute():
+        config.database.path = str(app_home() / config.database.path)
+
+    # Normalize per-provider keys. Seed from a single api_key in the file and
+    # from environment variables, then expose the active provider's key as api_key.
+    if config.llm.api_key and not config.llm.api_keys.get(config.llm.provider):
+        config.llm.api_keys[config.llm.provider] = config.llm.api_key
+    if settings.anthropic_api_key and not config.llm.api_keys.get("anthropic"):
+        config.llm.api_keys["anthropic"] = settings.anthropic_api_key
+    if settings.openai_api_key and not config.llm.api_keys.get("openai"):
+        config.llm.api_keys["openai"] = settings.openai_api_key
+    if settings.xai_api_key and not config.llm.api_keys.get("xai"):
+        config.llm.api_keys["xai"] = settings.xai_api_key
+    config.llm.api_key = config.llm.api_keys.get(config.llm.provider)
+
+    return config
+
+
+def _merge_api_keys(incoming: dict[str, str | None], stored: dict[str, str]) -> dict[str, str]:
+    """Merge client-sent API keys with the keys stored in the config file.
+
+    - a masked value (as returned by ``GET /config``) keeps the stored key; if
+      no key is stored for that provider (e.g. it came from an environment
+      variable), nothing is persisted for it
+    - an empty value removes the key
+    - a value that starts with the mask but is longer is rejected
+      (see :func:`check_api_key`)
+    - any other value replaces the key
+    """
+    merged: dict[str, str] = {}
+    for provider, value in incoming.items():
+        if not value:
+            continue
+        check_api_key(value)
+        if is_masked(value):
+            if stored.get(provider):
+                merged[provider] = stored[provider]
+            continue
+        merged[provider] = value
+    return merged
+
+
+def save_config(data: dict, config_path: str | Path | None = None) -> AppConfig:
+    """Persist editable config fields to the YAML file.
+
+    Only known, user-editable sections are merged in (``llm``, ``connectors``
+    and parts of ``indexer``); all other sections in the file are kept as-is.
+    The merged result is validated against ``AppConfig`` before anything is
+    written, and a ``.bak`` backup of the previous file is created.
+
+    Masked API keys (see :func:`mask_secret`) never overwrite stored keys.
+
+    Args:
+        data: Editable config subset, e.g.
+            ``{"llm": {...}, "connectors": [...], "indexer": {"sync_schedule": ...}}``.
+        config_path: Target file. Defaults to the same path as ``load_config``.
+
+    Returns:
+        The validated :class:`AppConfig`.
+    """
+    settings = Settings()
+    path = _resolve_config_path(config_path, settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Start from the existing file so untouched sections survive.
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    else:
+        raw = AppConfig().model_dump(mode="json")
+
+    if "llm" in data and data["llm"] is not None:
+        llm_in = data["llm"]
+        raw_llm = raw.get("llm") or {}
+        raw["llm"] = raw_llm
+        stored_provider = raw_llm.get("provider", "anthropic")
+        stored_keys = dict(raw_llm.get("api_keys") or {})
+        if raw_llm.get("api_key") and not stored_keys.get(stored_provider):
+            stored_keys[stored_provider] = raw_llm["api_key"]
+
+        for key in ("provider", "model"):
+            if key in llm_in:
+                raw_llm[key] = llm_in[key]
+        check_api_key(llm_in.get("api_key"))
+        if llm_in.get("api_keys") is not None:
+            raw_llm["api_keys"] = _merge_api_keys(llm_in["api_keys"], stored_keys)
+        elif llm_in.get("api_key") and not is_masked(llm_in["api_key"]):
+            prov0 = llm_in.get("provider") or raw_llm.get("provider", "anthropic")
+            raw_llm.setdefault("api_keys", {})[prov0] = llm_in["api_key"]
+        # Keep the single api_key in sync with the active provider (engine compat).
+        prov = llm_in.get("provider") or raw_llm.get("provider", "anthropic")
+        raw_llm["api_key"] = (raw_llm.get("api_keys") or {}).get(prov)
+
+    if "connectors" in data and data["connectors"] is not None:
+        new_conns = []
+        for c in data["connectors"]:
+            entry = {"name": c["name"], "type": c.get("type", "local"), "path": c.get("path")}
+            if c.get("include") is not None:
+                entry["include"] = c["include"]
+            if c.get("exclude") is not None:
+                entry["exclude"] = c["exclude"]
+            new_conns.append(entry)
+        raw["connectors"] = new_conns
+
+    if "indexer" in data and data["indexer"] is not None:
+        raw.setdefault("indexer", {})
+        if "sync_schedule" in data["indexer"]:
+            raw["indexer"]["sync_schedule"] = data["indexer"]["sync_schedule"]
+        if data["indexer"].get("sync_interval_hours") is not None:
+            raw["indexer"]["sync_interval_hours"] = data["indexer"]["sync_interval_hours"]
+        if data["indexer"].get("include") is not None:
+            raw["indexer"]["include"] = data["indexer"]["include"]
+        if data["indexer"].get("exclude") is not None:
+            raw["indexer"]["exclude"] = data["indexer"]["exclude"]
+
+    # Validate the full merged config before touching disk.
+    config = AppConfig.model_validate(raw)
+    text = yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False)
+
+    if path.exists():
+        backup = path.with_suffix(path.suffix + ".bak")
+        _write_private_atomic(backup, path.read_text(encoding="utf-8"))
+    _write_private_atomic(path, text)
+
+    return config
+
+
+def _write_private_atomic(path: Path, text: str) -> None:
+    """Replace ``path`` with ``text`` atomically; owner-only (0600) on POSIX.
+
+    The text goes to a temporary file in the same folder, is flushed to disk
+    and then moved over the target, so a crash or a full disk never leaves a
+    truncated config. The file holds API keys, hence the mode. On Windows the
+    mode is ignored and the file inherits the folder's permissions.
+    """
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        # On Windows, a reader that holds the target open makes the replace
+        # fail for a moment; retry a few times before giving up.
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+
+
+# Global config instance (lazy loaded) and the file it was loaded from, so a
+# later save or reload targets the same file (e.g. after ``--config other.yaml``).
+_config: AppConfig | None = None
+_config_path: str | Path | None = None
+
+
+def get_config() -> AppConfig:
+    """Get the global config instance."""
+    global _config
+    if _config is None:
+        _config = load_config(_config_path)
+    return _config
+
+
+def active_config_path() -> str | Path | None:
+    """The config file passed to :func:`init_config`, or None for the default."""
+    return _config_path
+
+
+def init_config(config: AppConfig | str | Path | None = None) -> AppConfig:
+    """Initialize the global config from an ``AppConfig`` object or a file path.
+
+    With a path (or None), the file is loaded and remembered for later saves
+    and reloads. With an ``AppConfig`` object, that object is used as-is.
+    """
+    global _config, _config_path
+    if isinstance(config, AppConfig):
+        _config = config
+    else:
+        if config is not None:
+            _config_path = config
+        _config = load_config(_config_path)
+    return _config
+
+
+def reset_config() -> None:
+    """Forget the cached config and config path, so the next ``get_config()`` reloads the default."""
+    global _config, _config_path
+    _config = None
+    _config_path = None

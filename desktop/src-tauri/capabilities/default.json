@@ -1,0 +1,32 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Main window: set the window theme, pick a folder, open http(s)/mailto links in the browser, reveal a file in Explorer, and open source documents, limited to the file types the backend indexes (backend/src/rootmind/indexer/parser.py). The devtools toggle only exists in debug builds. The app's own chat-history commands need no entry here.",
+  "windows": ["main"],
+  "permissions": [
+    "core:window:allow-set-theme",
+    "core:webview:allow-internal-toggle-devtools",
+    "dialog:allow-open",
+    "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        { "path": "**/*.[tT][xX][tT]" },
+        { "path": "**/*.[mM][dD]" },
+        { "path": "**/*.[mM][aA][rR][kK][dD][oO][wW][nN]" },
+        { "path": "**/*.[rR][sS][tT]" },
+        { "path": "**/*.[cC][sS][vV]" },
+        { "path": "**/*.[jJ][sS][oO][nN]" },
+        { "path": "**/*.[xX][mM][lL]" },
+        { "path": "**/*.[hH][tT][mM][lL]" },
+        { "path": "**/*.[hH][tT][mM]" },
+        { "path": "**/*.[pP][dD][fF]" },
+        { "path": "**/*.[dD][oO][cC][xX]" },
+        { "path": "**/*.[dD][oO][cC]" },
+        { "path": "**/*.[xX][lL][sS][xX]" },
+        { "path": "**/*.[xX][lL][sS]" },
+        { "path": "**/*.[pP][pP][tT][xX]" }
+      ]
+    }
+  ]
+}

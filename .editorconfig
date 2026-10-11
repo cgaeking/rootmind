@@ -1,0 +1,33 @@
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{py,rs,toml}]
+indent_size = 4
+
+# Windows scripts and NSIS hooks keep CRLF line endings
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+indent_size = 4
+
+[*.nsh]
+end_of_line = crlf
+
+[*.md]
+trim_trailing_whitespace = false
+
+# Generated eval corpus: tests compare it byte for byte with the generator output
+[backend/evals/corpus/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+indent_style = unset
+indent_size = unset

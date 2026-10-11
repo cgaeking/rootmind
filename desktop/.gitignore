@@ -1,0 +1,25 @@
+# Dependencies and build output
+node_modules/
+dist/
+dist-ssr/
+*.local
+# written by `pnpm typecheck` (tsconfig.node.json is a composite project)
+*.tsbuildinfo
+
+# Rust / Tauri build output
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor and agent files
+.vscode/
+.idea/
+.DS_Store
+*.suo
+*.sw?
+.claude/

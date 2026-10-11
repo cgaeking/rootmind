@@ -1,0 +1,570 @@
+"""REST API routes."""
+
+import logging
+from typing import Annotated, Any, Literal
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field, StringConstraints
+
+from .. import __version__
+from ..config import (
+    DEFAULT_MODEL,
+    LlmProvider,
+    active_config_path,
+    check_api_key,
+    get_config,
+    is_masked,
+    mask_secret,
+    save_config,
+)
+from ..rlm_engine.engine import (
+    LLMConfigError,
+    LLMProviderError,
+    LLMTimeoutError,
+    provider_error,
+)
+
+logger = logging.getLogger(__name__)
+
+# How many trailing conversation turns /query's optional `history` uses for
+# the condense step. Older turns are dropped server-side regardless of what
+# the client sends, keeping the condense call's token cost bounded.
+MAX_HISTORY_TURNS = 4
+
+# Request size limits. The engine also truncates each history turn before the
+# condense step; these bounds only reject requests that are clearly too large.
+MAX_QUESTION_CHARS = 10_000
+MAX_HISTORY_TEXT_CHARS = 100_000
+MAX_HISTORY_ITEMS = 50
+
+# Timeout for listing the provider's models (the desktop gives up after 15 s).
+MODELS_TIMEOUT_SECONDS = 15.0
+
+Question = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_QUESTION_CHARS)
+]
+
+
+class HistoryTurn(BaseModel):
+    """One prior turn of a chat conversation, for multi-turn /query context."""
+
+    role: Literal["user", "assistant"]
+    text: str = Field(..., max_length=MAX_HISTORY_TEXT_CHARS, description="The message text")
+
+
+class QueryRequest(BaseModel):
+    """Request body for knowledge base queries."""
+
+    question: Question = Field(..., description="The question to ask")
+    history: list[HistoryTurn] | None = Field(
+        None,
+        max_length=MAX_HISTORY_ITEMS,
+        description=(
+            "Optional prior conversation turns, for follow-up questions like "
+            "'and 2016?'. Omit for stateless questions. Only the last few turns "
+            "are used server-side."
+        ),
+    )
+
+
+class TitleRequest(BaseModel):
+    """Request body for generating a short conversation title."""
+
+    question: Question = Field(..., description="The first user message")
+    answer: str | None = Field(
+        None, max_length=MAX_HISTORY_TEXT_CHARS, description="The first answer (optional)"
+    )
+
+
+class Source(BaseModel):
+    """A document an answer is based on."""
+
+    id: str = Field(..., description="Document id (for GET /documents/{id})")
+    file_name: str
+    file_path: str = Field(..., description="Path relative to the indexed folder")
+    page: str | None = Field(
+        None, description="Location, e.g. 'Page 2', 'Slide 3' or 'Sheet: Costs', when known"
+    )
+
+
+class ToolCall(BaseModel):
+    """One tool call the model made, in order."""
+
+    tool: str
+    input: dict[str, Any] | str = Field(
+        ..., description="Arguments as sent; a string when they were not valid JSON"
+    )
+
+
+class QueryResponse(BaseModel):
+    """Response for knowledge base queries."""
+
+    answer: str
+    sources: list[Source]
+    tokens_used: int = 0
+    tool_calls: list[ToolCall] = []
+    stop_reasons: list[str] = Field(
+        default_factory=list,
+        description="Why each LLM call stopped, in order (e.g. tool_use, end_turn, max_tokens)",
+    )
+
+
+class SearchRequest(BaseModel):
+    """Request body for document search."""
+
+    query: str = Field(..., description="Search query")
+    file_type: str | None = Field(None, description="Filter by file type")
+    limit: int = Field(20, ge=1, le=1000, description="Maximum results")
+    with_snippets: bool = Field(
+        False, description="Include content snippets (slower; scans document text)"
+    )
+
+
+class SyncRequest(BaseModel):
+    """Request body for sync operations."""
+
+    full: bool = Field(False, description="Perform full sync instead of incremental")
+    connector_name: str | None = Field(None, description="Sync specific connector only")
+
+
+class StatusResponse(BaseModel):
+    """System status response."""
+
+    is_running: bool
+    total_documents: int
+    indexed_documents: int
+    error_documents: int
+    connectors: dict[str, Any]
+
+
+class LlmConfigBody(BaseModel):
+    """Editable LLM settings.
+
+    ``GET /config`` returns API keys masked (see ``config.mask_secret``).
+    Sending a masked value back keeps the stored key; an empty value removes it.
+    """
+
+    provider: LlmProvider = Field("anthropic", description="anthropic | openai | xai")
+    model: str = DEFAULT_MODEL
+    api_key: str | None = None
+    api_keys: dict[str, str] = Field(default_factory=dict)
+
+
+class ConnectorBody(BaseModel):
+    """Editable connector (indexed folder) settings."""
+
+    name: str
+    type: str = "local"
+    path: str | None = None
+    include: list[str] | None = None
+    exclude: list[str] | None = None
+
+
+class IndexerBody(BaseModel):
+    """Editable indexer settings (include/exclude are global file patterns)."""
+
+    sync_schedule: str | None = None
+    sync_interval_hours: int = 24
+    include: list[str] = Field(default_factory=list)
+    exclude: list[str] = Field(default_factory=list)
+
+
+class ConfigBody(BaseModel):
+    """Editable subset of the application config (for GET/POST /config)."""
+
+    llm: LlmConfigBody
+    connectors: list[ConnectorBody] = Field(default_factory=list)
+    indexer: IndexerBody = Field(default_factory=IndexerBody)
+
+
+class LlmModelsRequest(BaseModel):
+    """Optional overrides for listing models (otherwise config values are used)."""
+
+    provider: LlmProvider | None = None
+    api_key: str | None = None
+
+
+def _list_chat_models(provider: str, api_key: str | None) -> list[str]:
+    """Return available chat model IDs for a provider (best-effort, filtered).
+
+    The client is closed after the call, and the timeout matches the desktop's,
+    so a hung provider does not hold a worker thread for the SDK default of
+    10 minutes.
+    """
+    options = {"api_key": api_key, "timeout": MODELS_TIMEOUT_SECONDS, "max_retries": 1}
+    if provider == "anthropic":
+        import anthropic
+
+        with anthropic.Anthropic(**options) as client:
+            return [m.id for m in client.models.list(limit=100).data if m.id.startswith("claude")]
+
+    if provider == "openai":
+        import openai
+
+        skip = ("instruct", "audio", "realtime", "transcribe", "tts", "search", "embedding")
+        with openai.OpenAI(**options) as client:
+            models = [
+                m.id
+                for m in client.models.list().data
+                if m.id.startswith(("gpt-", "o1", "o3", "o4", "chatgpt"))
+                and not any(s in m.id for s in skip)
+            ]
+        return sorted(set(models))
+
+    if provider == "xai":
+        import openai
+
+        from ..rlm_engine.engine import XAI_BASE_URL
+
+        with openai.OpenAI(**options, base_url=XAI_BASE_URL) as client:
+            models = [m.id for m in client.models.list().data if m.id.startswith("grok")]
+        return sorted(set(models))
+
+    raise ValueError(f"Unknown provider: {provider}")
+
+
+def _llm_http_error(e: Exception, action: str) -> HTTPException:
+    """Map an LLM failure to a status code and a short message without provider internals."""
+    if isinstance(e, LLMTimeoutError):
+        return HTTPException(status_code=504, detail="LLM request timed out")
+    if isinstance(e, LLMConfigError):
+        return HTTPException(status_code=400, detail=str(e))
+    if isinstance(e, LLMProviderError):
+        return HTTPException(status_code=502, detail=str(e))
+    logger.exception("%s failed", action)
+    return HTTPException(status_code=500, detail=f"{action} failed; see the backend log")
+
+
+def create_router(app_state: Any) -> APIRouter:
+    """Create API router with all endpoints.
+
+    Args:
+        app_state: Application state container.
+
+    Returns:
+        Configured APIRouter.
+    """
+    router = APIRouter()
+
+    @router.get("/", tags=["Health"])
+    async def root():
+        """Root endpoint: service name and version."""
+        return {
+            "name": "RootMind API",
+            "version": __version__,
+            "status": "running",
+            "features": ["FTS5 full-text search", "agentic tool-use query"],
+        }
+
+    @router.get("/health", tags=["Health"])
+    async def health():
+        """Health check endpoint."""
+        return {"status": "healthy"}
+
+    @router.get("/status", response_model=StatusResponse, tags=["Status"])
+    def get_status():
+        """Get system status including sync status and document counts."""
+        return app_state.sync_manager.get_status()
+
+    # Document endpoints
+
+    @router.get("/documents", tags=["Documents"])
+    def list_documents(
+        connector_name: str | None = Query(None, description="Filter by connector"),
+        file_type: str | None = Query(None, description="Filter by file type"),
+        search_filename: str | None = Query(None, description="Search in file names"),
+        limit: int = Query(100, ge=1, le=1000, description="Maximum results"),
+        offset: int = Query(0, ge=0, description="Offset for pagination"),
+    ):
+        """List indexed documents with optional filters."""
+        docs = app_state.db.list_documents(
+            connector_name=connector_name,
+            file_type=file_type,
+            search_filename=search_filename,
+            limit=limit,
+            offset=offset,
+        )
+
+        return {
+            "documents": docs,
+            "count": len(docs),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @router.get("/documents/{doc_id}", tags=["Documents"])
+    def get_document(doc_id: str):
+        """Get document details by ID."""
+        doc = app_state.db.get_document(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        return doc.to_dict()
+
+    @router.get("/documents/{doc_id}/content", tags=["Documents"])
+    def get_document_content(
+        doc_id: str,
+        start: int | None = Query(None, ge=0, description="Start character position"),
+        end: int | None = Query(None, ge=0, description="End character position (exclusive)"),
+    ):
+        """Get text content of a document (optionally a range)."""
+        result = app_state.db.get_document_content(doc_id, start, end)
+        if not result:
+            raise HTTPException(status_code=404, detail="Document not found")
+        return result
+
+    @router.get("/documents/{doc_id}/path", tags=["Documents"])
+    def get_document_path(doc_id: str):
+        """Resolve a document's absolute path on disk, so the local app can open it.
+
+        The path is resolved through the owning connector, which enforces that it
+        stays within the connector's configured root directory.
+        """
+        doc = app_state.db.get_document_meta(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        connector = app_state.connectors.get(doc["connector_name"])
+        if connector is None or not hasattr(connector, "resolve_path"):
+            raise HTTPException(status_code=400, detail="Connector not available for this document")
+        try:
+            abs_path = connector.resolve_path(doc["file_path"])
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not resolve path: {e}") from e
+        return {"doc_id": doc_id, "abs_path": str(abs_path)}
+
+    @router.get("/statistics", tags=["Documents"])
+    def get_statistics():
+        """Get database statistics."""
+        return app_state.db.get_statistics()
+
+    # Search endpoints (FTS5)
+
+    @router.post("/search", tags=["Search"])
+    def search_documents(request: SearchRequest):
+        """Full-text search across all documents using FTS5."""
+        results = app_state.db.search_fulltext(
+            query=request.query,
+            limit=request.limit,
+            file_type=request.file_type,
+            with_snippets=request.with_snippets,
+        )
+
+        return {
+            "query": request.query,
+            "results": results,
+            "count": len(results),
+        }
+
+    @router.get("/search", tags=["Search"])
+    def search_documents_get(
+        q: str = Query(..., description="Search query"),
+        file_type: str | None = Query(None, description="Filter by file type"),
+        limit: int = Query(20, ge=1, le=100, description="Maximum results"),
+        snippets: bool = Query(
+            False, description="Include snippets, hit positions and pages (slower)"
+        ),
+    ):
+        """Full-text search (GET variant)."""
+        results = app_state.db.search_fulltext(
+            query=q,
+            limit=limit,
+            file_type=file_type,
+            with_snippets=snippets,
+        )
+
+        return {
+            "query": q,
+            "results": results,
+            "count": len(results),
+        }
+
+    # Index/Sync endpoints
+
+    @router.post("/index/refresh", tags=["Index"])
+    def refresh_index(request: SyncRequest | None = None):
+        """Start an index sync in the background; 409 while one is running.
+
+        Use full=true for complete re-indexing.
+        """
+        if request is None:
+            request = SyncRequest()
+        manager = app_state.sync_manager
+        if request.connector_name and request.connector_name not in manager.connectors:
+            raise HTTPException(status_code=404, detail="Connector not found")
+
+        # The sync does blocking file and database work in its own thread, so
+        # /health and /status stay responsive meanwhile. Claiming the running
+        # flag is atomic: of two simultaneous requests, one gets 409.
+        if not manager.start_background(full=request.full, connector_name=request.connector_name):
+            raise HTTPException(status_code=409, detail="Sync already in progress")
+
+        kind = "full_sync_started" if request.full else "incremental_sync_started"
+        return {"status": kind, "connector": request.connector_name or "all"}
+
+    @router.get("/index/status", tags=["Index"])
+    def get_index_status():
+        """Get current index/sync status."""
+        return app_state.sync_manager.get_status()
+
+    @router.get("/index/progress", tags=["Index"])
+    async def get_index_progress():
+        """Get current indexing progress (when running)."""
+        return app_state.sync_manager.progress
+
+    @router.get("/index/recent", tags=["Index"])
+    def get_recent_indexed(
+        limit: int = Query(20, ge=1, le=100, description="Max documents to return"),
+    ):
+        """List the most recently indexed documents (newest first)."""
+        return {"documents": app_state.db.recent_documents(limit)}
+
+    # Connector endpoints
+
+    @router.get("/connectors", tags=["Connectors"])
+    def list_connectors():
+        """List all configured connectors."""
+        return {"connectors": [c.status() for c in app_state.connectors.values()]}
+
+    @router.get("/connectors/{connector_name}", tags=["Connectors"])
+    def get_connector(connector_name: str):
+        """Get connector details."""
+        connector = app_state.connectors.get(connector_name)
+        if not connector:
+            raise HTTPException(status_code=404, detail="Connector not found")
+        return connector.status()
+
+    # Query endpoint (agentic tool loop)
+
+    @router.post("/query", response_model=QueryResponse, tags=["Query"])
+    async def query_knowledge_base(request: QueryRequest):
+        """Answer a question about the indexed documents.
+
+        The agent loop:
+        1. searches the documents (FTS5 full-text, fuzzy as fallback)
+        2. reads relevant document sections
+        3. answers with sources (file name plus page/slide/sheet when known)
+        """
+        # Cap to the last few turns and drop empty ones server-side, so a
+        # client can pass its whole transcript without feeding an
+        # ever-growing (and mostly irrelevant) history into the condense step.
+        history = None
+        if request.history:
+            trimmed = [t for t in request.history if t.text and t.text.strip()]
+            history = [
+                {"role": t.role, "text": t.text} for t in trimmed[-MAX_HISTORY_TURNS:]
+            ] or None
+
+        try:
+            result = await app_state.rlm_engine.query(request.question, history=history)
+        except Exception as e:
+            raise _llm_http_error(e, "Query") from e
+
+        return QueryResponse(
+            answer=result["answer"],
+            sources=result["sources"],
+            tokens_used=result["tokens_used"],
+            tool_calls=result.get("tool_calls", []),
+            stop_reasons=result.get("stop_reasons", []),
+        )
+
+    @router.post("/chat/title", tags=["Chat"])
+    def generate_chat_title(request: TitleRequest):
+        """Generate a short conversation title from the first exchange (uses the LLM)."""
+        try:
+            title = app_state.rlm_engine.generate_title(request.question, request.answer)
+        except Exception as e:
+            raise _llm_http_error(e, "Title generation") from e
+        return {"title": title}
+
+    # Config endpoints (editable subset, applied live)
+
+    @router.get("/config", response_model=ConfigBody, tags=["Config"])
+    async def get_config_endpoint():
+        """Return the editable subset of the current configuration.
+
+        API keys are masked: only the last 4 characters are shown.
+        """
+        cfg = get_config()
+        return ConfigBody(
+            llm=LlmConfigBody(
+                provider=cfg.llm.provider,
+                model=cfg.llm.model,
+                api_key=mask_secret(cfg.llm.api_key) or None,
+                api_keys={k: mask_secret(v) for k, v in cfg.llm.api_keys.items() if v},
+            ),
+            connectors=[
+                ConnectorBody(
+                    name=c.name,
+                    type=c.type,
+                    path=c.path,
+                    include=c.include,
+                    exclude=c.exclude,
+                )
+                for c in cfg.connectors
+            ],
+            indexer=IndexerBody(
+                sync_schedule=cfg.indexer.sync_schedule,
+                sync_interval_hours=cfg.indexer.sync_interval_hours,
+                include=cfg.indexer.include,
+                exclude=cfg.indexer.exclude,
+            ),
+        )
+
+    @router.post("/config", tags=["Config"])
+    def update_config_endpoint(body: ConfigBody):
+        """Persist the editable config to config.yaml and apply it live.
+
+        Validates and writes the file (with a .bak backup), then reloads the
+        config-dependent state in-process so changes take effect immediately
+        (no restart). If the live reload fails, the change is still saved and a
+        restart would apply it. Masked API keys keep the stored key.
+
+        Fields the client omits keep their stored values. (Filling them with
+        the model defaults would turn a partial update into "remove every
+        folder and every stored API key".)
+
+        Saves are serialized, so two clients saving at the same time cannot
+        interleave their read-modify-write of the file or the reload.
+        """
+        from .app import config_update_lock, reload_app_state
+
+        with config_update_lock:
+            try:
+                save_config(body.model_dump(exclude_unset=True), active_config_path())
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid config: {e}") from e
+
+            try:
+                reload_app_state()
+            except Exception as e:
+                logger.exception("Live config reload failed")
+                return {"ok": True, "reloaded": False, "restart_required": True, "detail": str(e)}
+
+        return {"ok": True, "reloaded": True, "restart_required": False}
+
+    @router.post("/llm/models", tags=["Config"])
+    def list_llm_models(body: LlmModelsRequest | None = None):
+        """List available chat models for a provider.
+
+        Uses the provider and API key from the request if given, otherwise
+        falls back to the saved config. A missing or masked key resolves to the
+        stored key of that provider. Lets the UI populate a model dropdown.
+        Provider errors return 502, timeouts 504.
+        """
+        cfg = get_config()
+        provider = (body.provider if body and body.provider else None) or cfg.llm.provider
+        api_key = body.api_key if body and body.api_key else None
+        try:
+            check_api_key(api_key)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if not api_key or is_masked(api_key):
+            api_key = cfg.llm.api_keys.get(provider)
+        if not api_key:
+            raise HTTPException(status_code=400, detail=f"No API key for provider {provider}")
+        try:
+            models = _list_chat_models(provider, api_key)
+        except Exception as e:
+            raise _llm_http_error(provider_error(e, provider), "Listing models") from e
+        return {"provider": provider, "models": models}
+
+    return router

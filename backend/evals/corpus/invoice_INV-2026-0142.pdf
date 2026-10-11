@@ -1,0 +1,82 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 563 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 740 Td
+(Fernhill Outdoor Co.) Tj T*
+(12 Cedar Lane, Port Alder \(fictional address\)) Tj T*
+(billing@fernhill.example.com | +1-555-0142) Tj T*
+() Tj T*
+(INVOICE INV-2026-0142) Tj T*
+(Invoice date: 2026-03-31) Tj T*
+(Bill to: Bluebird Trail Club, customer number C-0087) Tj T*
+(Order: SO-1012) Tj T*
+() Tj T*
+(Item | Qty | Unit price | Amount) Tj T*
+(Trailhead 2P tent \(FH-TENT-2P\) | 3 | 249.00 | 747.00) Tj T*
+(Ridge headlamp \(FH-LAMP-R\) | 10 | 34.50 | 345.00) Tj T*
+() Tj T*
+(Continued on page 2.) Tj T*
+(Fictional sample data) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 381 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+72 740 Td
+(INVOICE INV-2026-0142 \(page 2 of 2\)) Tj T*
+() Tj T*
+(Subtotal: 1,092.00) Tj T*
+(Sales tax 8%: 87.36) Tj T*
+(Total due: 1,179.36) Tj T*
+() Tj T*
+(Payment terms: Net 30) Tj T*
+(Due date: 2026-04-30) Tj T*
+(Bank account: XX00 0000 0000 0000 0000 00 \(placeholder\)) Tj T*
+(Questions? billing@fernhill.example.com) Tj T*
+(Fictional sample data) Tj T*
+ET
+endstream
+endobj
+8 0 obj
+<< /Title (Invoice INV-2026-0142) /Author (Fernhill Outdoor Co. \(fictional\)) /Producer (RootMind demo corpus writer) >>
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000350 00000 n 
+0000000964 00000 n 
+0000001090 00000 n 
+0000001522 00000 n 
+trailer
+<< /Size 9 /Root 1 0 R /Info 8 0 R >>
+startxref
+1659
+%%EOF

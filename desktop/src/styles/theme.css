@@ -1,0 +1,190 @@
+:root {
+  --bg: #ffffff;
+  --bg-elevated: #f4f4f5;
+  --sidebar-bg: #f4f4f5;
+  --border: #e4e4e7;
+  --text: #18181b;
+  --text-muted: #71717a;
+  --accent: #49a3b9;
+  --accent-fg: #ffffff;
+  --danger: #dc2626;
+  --ok: #16a34a;
+  --radius: 8px;
+  --sidebar-w: 220px;
+  --scrollbar-thumb: #c4c4c8;
+  --scrollbar-thumb-hover: #a1a1aa;
+
+  font-family: -apple-system, system-ui, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Dark palette, shared by the OS-preference path and the explicit override. */
+@media (prefers-color-scheme: dark) {
+  /* Follow the OS only when the user hasn't forced a theme. */
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    --bg: #1a1a1e;
+    --bg-elevated: #26262c;
+    --sidebar-bg: #161619;
+    --border: #2e2e34;
+    --text: #ececee;
+    --text-muted: #a1a1aa;
+    --accent: #49a3b9;
+    --accent-fg: #ffffff;
+    --danger: #f87171;
+    --ok: #4ade80;
+    --scrollbar-thumb: #3f3f46;
+    --scrollbar-thumb-hover: #52525b;
+  }
+}
+
+/* Explicit "Dunkel" choice, regardless of OS setting. */
+:root[data-theme="dark"] {
+  --bg: #1a1a1e;
+  --bg-elevated: #26262c;
+  --sidebar-bg: #161619;
+  --border: #2e2e34;
+  --text: #ececee;
+  --text-muted: #a1a1aa;
+  --accent: #49a3b9;
+  --accent-fg: #ffffff;
+  --danger: #f87171;
+  --ok: #4ade80;
+  --scrollbar-thumb: #3f3f46;
+  --scrollbar-thumb-hover: #52525b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Themed scrollbars — thumb colour follows the active palette (light/dark). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+  /* Transparent border + padding-box clip gives the thumb inset padding. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Shared screen helpers */
+.screen {
+  padding: 28px 32px;
+  max-width: 920px;
+}
+
+.screen h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+.screen .subtitle {
+  color: var(--text-muted);
+  margin: 0 0 24px;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.screen-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+}
+
+.stat {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 12px 14px;
+}
+
+.stat-value {
+  font-size: 22px;
+  font-weight: 650;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.progress {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+/* Mobile / narrow-window tweaks */
+@media (max-width: 768px) {
+  .screen {
+    padding: 18px 16px;
+  }
+
+  /* iOS zooms the page in when a focused field has a font-size below 16px. */
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}

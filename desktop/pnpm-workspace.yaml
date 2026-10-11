@@ -1,0 +1,11 @@
+# pnpm 11 blocks dependency build scripts unless they are allowed here.
+allowBuilds:
+  esbuild: true
+
+# Build-time dependencies of @vitejs/plugin-react (through Babel) that
+# `pnpm update` does not lift past published advisories on its own
+# (GHSA advisories for browserslist < 4.28.7 and baseline-browser-mapping < 2.11.0).
+# Remove an entry once the dependency chain requires a fixed version.
+overrides:
+  baseline-browser-mapping@>=2.0.0 <2.11.0: ^2.11.0
+  browserslist@<=4.28.6: ^4.28.7

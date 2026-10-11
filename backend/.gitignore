@@ -1,0 +1,44 @@
+# Secrets and local configuration (may contain API keys)
+.env
+.env.*
+!.env.example
+config.yaml
+*.bak
+api_token.txt
+
+# Runtime data: index database, logs
+data/
+*.db
+*.db-wal
+*.db-shm
+logs/
+*.log
+
+# Eval runs store full LLM answers
+evals/results/
+
+# Windows service tooling fetched at build time (NSSM)
+deploy/windows/tools/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors and assistants
+.vscode/
+.idea/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

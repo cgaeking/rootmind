@@ -1,0 +1,56 @@
+# Repository-wide safety net. backend/ and desktop/ have their own .gitignore
+# files with the same intent; anything that can hold secrets, personal data or
+# build output must never be committed.
+
+# Secrets and local configuration (can contain API keys or tokens)
+.env
+.env.*
+!.env.example
+config.yaml
+*.bak
+api_token.txt
+ngrok.yml
+
+# Runtime data: the index holds the full text of indexed files
+data/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+logs/
+*.log
+
+# Eval runs store full model answers
+backend/evals/results/
+
+# Build output and tools fetched at build time
+build/
+dist/
+*.exe
+backend/deploy/windows/tools/
+node_modules/
+*.tsbuildinfo
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/binaries/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors, assistants, OS
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
