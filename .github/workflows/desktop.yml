@@ -50,6 +50,19 @@ jobs:
           package-manager-cache: false
 
       - run: pnpm install --frozen-lockfile
+      # tauri build and tauri dev refuse to run when a Rust crate and its npm
+      # package differ in major.minor, but only the tag-only installer job runs
+      # tauri build. tauri info runs the same check yet still exits 0, so fail
+      # on its message here to catch a mismatch in every PR.
+      - name: Tauri crate/npm version alignment
+        shell: bash
+        run: |
+          out=$(pnpm tauri info 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          if grep -q "Found version mismatched Tauri packages" <<<"$out"; then
+            echo "::error::Rust crates and @tauri-apps npm packages differ in major.minor (see tauri info above)."
+            exit 1
+          fi
       - run: pnpm lint
       - run: pnpm typecheck
       # tsc + vite build. Must run before cargo: tauri::generate_context!()

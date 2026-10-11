@@ -1,4 +1,5 @@
-# Monthly dependency updates, one grouped pull request per ecosystem.
+# Monthly dependency updates, at most one grouped pull request per ecosystem.
+# Majors are in the group too; check the group's CI run before merging.
 # GitHub's own security updates (for published advisories) come on top.
 version: 2
 updates:
@@ -18,22 +19,34 @@ updates:
       backend:
         patterns: ["*"]
 
+  # Tauri's npm packages must stay on the same major.minor as the Rust crates
+  # (tauri <-> @tauri-apps/api, tauri-plugin-X <-> @tauri-apps/plugin-X), or
+  # `tauri build` fails. PR CI does not run `tauri build`: merge the npm and
+  # cargo PRs of a run together and check `pnpm tauri info` first.
   - package-ecosystem: "npm"
     directory: "/desktop"
     schedule:
       interval: "monthly"
+    # pnpm rejects packages younger than its minimumReleaseAge (1 day), also
+    # in CI's `pnpm install --frozen-lockfile`.
+    cooldown:
+      default-days: 3
     groups:
       desktop:
         patterns: ["*"]
-        # Tauri's npm packages must stay on the same minor version as the
-        # Rust crates; update both together by hand.
-        exclude-patterns: ["@tauri-apps/*"]
+    ignore:
+      # TypeScript 7 has no JS API; typescript-eslint (peer < 6.1) refuses to
+      # load with it. Remove once typescript-eslint supports TS 7.
+      - dependency-name: "typescript"
+        versions: [">=7"]
 
   - package-ecosystem: "cargo"
     directory: "/desktop/src-tauri"
     schedule:
       interval: "monthly"
+    # Same delay as npm, so both PRs of a run see the same Tauri releases.
+    cooldown:
+      default-days: 3
     groups:
       tauri-shell:
         patterns: ["*"]
-        exclude-patterns: ["tauri*"]
