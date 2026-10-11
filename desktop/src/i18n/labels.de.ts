@@ -67,9 +67,9 @@ export const labels = {
     loadConfigError: (msg: string) => `Konfiguration konnte nicht geladen werden: ${msg}`,
     providerLabel: "Anbieter",
     modelLabel: "Modell",
-    apiKeyLabel: "API-Key",
+    apiKeyLabel: "API-Key", // pragma: allowlist secret (UI label)
     apiKeyHintSaved: (key: string) => `Hinterlegt: ${key}  ·  pro Anbieter gespeichert`,
-    apiKeyHintUnsaved: "Pro Anbieter gespeichert. Für die Modell-Liste nötig.",
+    apiKeyHintUnsaved: "Pro Anbieter gespeichert. Für die Modell-Liste nötig.", // pragma: allowlist secret (UI label)
     loadModels: "Modelle laden",
     loadingModels: "Lädt …",
     modelHintNoKey: "Erst API-Key eingeben, dann Modelle laden.",
