@@ -55,7 +55,9 @@ pub fn load_conversation(app: tauri::AppHandle, id: String) -> Result<Option<Str
     if !path.exists() {
         return Ok(None);
     }
-    fs::read_to_string(path).map(Some).map_err(|e| e.to_string())
+    fs::read_to_string(path)
+        .map(Some)
+        .map_err(|e| e.to_string())
 }
 
 /// Return metadata for every saved conversation, newest first. Each entry is a
