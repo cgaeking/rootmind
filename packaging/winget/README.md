@@ -25,7 +25,9 @@ that entry, so the manifest and the installer must name the same publisher.
 
 winget installs a `nullsoft` installer with `/S` and chooses a folder with `/D=<path>`. No extra
 switches are needed. `ProductCode: RootMind` is the name of the uninstall key the installer
-creates, and `%LocalAppData%\RootMind` is its default folder.
+creates, and `%LocalAppData%\RootMind` is its default folder. With `UpgradeBehavior: install`,
+`winget upgrade` runs the new installer over the installed version, which updates it in place
+and keeps the app data; the installed version is not uninstalled first.
 
 ## Render and validate
 

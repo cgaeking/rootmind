@@ -86,7 +86,7 @@ flowchart TB
 
 | Mode | Started by | Home (`RLM_HOME`) | Address | REST token | MCP |
 |---|---|---|---|---|---|
-| **Built-in** (the app's default) | The desktop app, as a child process | `%LOCALAPPDATA%\io.github.cgaeking.rootmind\backend` | `127.0.0.1` on a free port | New on every app launch, passed only in the child's environment (`RLM_API_TOKEN`) | stdio: `rootmind-backend.exe mcp` with the same `RLM_HOME` |
+| **Built-in** (the app's default) | The desktop app, as a child process | `%LOCALAPPDATA%\io.github.cgaeking.rootmind\backend` | `127.0.0.1` on a free port | New for every start of the backend (crash restarts included), passed only in the child's environment (`RLM_API_TOKEN`) | stdio: `rootmind-backend.exe mcp` with the same `RLM_HOME` |
 | **Background service** | The Service Control Manager, at boot | `%ProgramData%\RootMind` | `127.0.0.1:8000`, or a port from 18300–18399 when 8000 is taken | `data\rest_token.txt` | Optional service `RootMind-MCP-HTTP` on 3000 or 18400–18499, token in `data\api_token.txt` |
 | **Custom** (Settings → Advanced) | You | Whatever that backend uses | The address you enter (loopback only, because of the app's CSP) | Optional, entered by you | Not managed by the app |
 | **Command line** | You (`rootmind api`, `uv run ...`, `rootmind-backend.exe api`) | `RLM_HOME`, or the working directory | `--host`/`--port`, then `RLM_HOST`/`RLM_PORT`, then `api.*` in `config.yaml`, then `127.0.0.1:8000` | Off unless `RLM_API_TOKEN` or `--require-token` | `rootmind mcp` / `rootmind-mcp`, `rootmind mcp-http` / `rootmind-mcp-http` |
@@ -111,15 +111,11 @@ backend from the stored mode, the build type and the service state:
 1. A stored custom backend (`rlm.backendMode` = `custom`) wins.
 2. A debug build uses the bundled backend if it has one, otherwise the backend
    dialog asks for an address and nothing is contacted until you connect. It
-   never probes port 8000 and never picks the service on its own.
+   never picks the service on its own.
 3. A release build uses the background service when it is installed, belongs
    to this app and its token is readable. If it belongs to another account,
    the app uses the built-in backend and Settings says so.
-4. On the first start of a version with this logic, an address typed into an
-   older version is kept as a custom backend. Otherwise the app probes
-   `http://127.0.0.1:8000/` once (2 s); if a RootMind server without a token
-   answers, it asks once whether to use it or the built-in backend.
-5. Otherwise the built-in backend.
+4. Otherwise, the built-in backend.
 
 `localStorage` holds `rlm.backendMode` (`auto` or `custom`), and `rlm.baseUrl`
 and `rlm.token` only for a custom backend. "Use default backend" under
@@ -419,24 +415,42 @@ tree hash, its size and `--version`. The overlay
 check`, `pnpm tauri dev` and the desktop CI work without a backend build.
 
 The NSIS installer installs per user (`installMode: currentUser`, default
-folder `%LOCALAPPDATA%\RootMind`). `desktop/src-tauri/installer/hooks.nsh`:
+folder `%LOCALAPPDATA%\RootMind`). It is built from
+`desktop/src-tauri/installer/installer.nsi` (`bundle.windows.nsis.template`):
+Tauri's NSIS template for the locked Tauri CLI with two changes, each marked
+"RootMind:" in the file:
+
+- No reinstall page. Running the installer over an installed version (older,
+  newer or the same) replaces it in place without questions, as Tauri's
+  updater does: the installed version's uninstaller never runs, so app data,
+  shortcuts and the background service stay.
+- No folder page when the app is installed (`SkipIfPassiveOrInstalled`): an
+  update goes to the installed folder, so it cannot leave the installed
+  version behind in another one.
+
+`scripts/nsis_template.py --write` regenerates the file from the template of
+the tauri-bundler that the locked `@tauri-apps/cli` uses, and refuses when an
+anchor of a change is missing or not unique. It needs network access;
+release.yml runs `--check`, and the offline test
+`scripts/tests/test_nsis_template.py` fails when the locked CLI is not the one
+the file was made for, so CI fails until a Tauri CLI update refreshes it.
+After the build, release.yml checks the rendered script for a reinstall page.
+
+`desktop/src-tauri/installer/hooks.nsh`:
 
 - before installing or uninstalling, closes the app and then
   `$INSTDIR\backend\rootmind-backend.exe` through Tauri's Restart Manager
   check, which matches by path and so never touches the service's copy under
   Program Files;
 - then removes the whole `$INSTDIR\backend\` folder (when it holds the
-  backend executable), so an upgrade leaves no files the new version does not
-  ship, such as an older version's package metadata;
-- before an interactive uninstall that is not part of an update, reads the
-  ImagePath of
-  `RootMind-Backend`, requires it to lie under
-  `$PROGRAMFILES64\RootMind Service\`, asks "Also remove the RootMind
-  background service? (administrator approval required)" and runs that
-  program elevated with `service uninstall`. An update is recognized by
-  `/UPDATE` (the updater) or by the uninstaller running in place, as the
-  installer of another version runs it (`_?=$INSTDIR`); Settings → Apps runs
-  a temporary copy instead. A silent uninstall leaves the service.
+  backend executable), so an update leaves no files the new version does not
+  ship, such as the previous version's package metadata;
+- before an interactive uninstall, reads the ImagePath of `RootMind-Backend`,
+  requires it to lie under `$PROGRAMFILES64\RootMind Service\`, asks "Also
+  remove the RootMind background service? (administrator approval required)"
+  and runs that program elevated with `service uninstall`. Silent and passive
+  uninstalls (`/S`, `/P`) and an uninstall with `/UPDATE` (as Tauri's updater
+  runs it) leave the service.
 
 `bundle.publisher` is "Christian Gäking"; it names the "Installed apps" entry
 that winget matches. The release workflow measures the installer and states
@@ -847,8 +861,12 @@ How the API is protected, and what remains open, is described in
   run outside CI.
 - `desktop/scripts/installer-smoke.ps1` installs the release installer
   silently, checks the "Installed apps" entry and the backend's tree hash,
-  starts the installed backend, reinstalls over it, and uninstalls.
-- `scripts/tests/` covers the release scripts.
+  starts the installed backend and reinstalls over it while it runs. Then it
+  updates the installed version in place, silently and passively (`/S`,
+  `/P`), from a simulated older version and to the same version: each run
+  keeps the install folder, the uninstall entry and the app data, and leaves
+  no stale backend files. Last, it uninstalls.
+- `scripts/tests/` covers the release scripts and the NSIS template.
 
 **Desktop.** ESLint and the TypeScript compiler; vitest with happy-dom for
 the backend choice, the store, the client's token handling, the stale-data
@@ -886,8 +904,8 @@ to the app through stdin, which also covers an app crash.
 new token for every start, and the service a token in a file only its account
 can read, so other accounts and web pages cannot use them. A token cannot
 stop programs of the same user, which can read it. The plain command line
-stays without a token unless asked, so existing scripts and the curl examples
-keep working; a token by default there may come with a future major version.
+runs without a token unless asked, so scripts and the curl examples work
+without one; a token by default there may come with a future major version.
 The middleware is pure ASGI so it also covers WebSockets, and `/` and
 `/health` stay open so the app can identify a backend and its `auth` mode.
 
@@ -951,7 +969,7 @@ service would need:
   (`packaging/winget/README.md`).
 - The approval prompts, the installer's dialogs and switching modes in the
   app are tested by hand; CI covers the service through its command line and
-  the installer in silent mode.
+  the installer in silent and passive mode.
 - The background service is offered to administrator accounts only and cannot
   index network drives or shares. Domain accounts whose domain cannot be
   reached may not get an access context, and the service then refuses to

@@ -11,8 +11,8 @@ Prerequisites:
 
 - Backend: [uv](https://docs.astral.sh/uv/) (installs Python 3.12 if needed).
 - Desktop: Node 24, pnpm 11 (the version is pinned in `package.json`), Rust
-  stable, and on Windows the MSVC build tools and WebView2. The desktop app is
-  only built and tested on Windows.
+  1.96 or newer, and on Windows the MSVC build tools and WebView2. The desktop
+  app is only built and tested on Windows.
 
 Backend:
 
@@ -22,7 +22,7 @@ uv sync
 uv run ruff check .
 uv run ruff format .
 uv run pytest -q
-uv run pytest ../scripts/tests -q         # release scripts: versions, notes, backend copy, winget
+uv run pytest ../scripts/tests -q         # release scripts: versions, notes, backend copy, winget, NSIS template
 uv run python scripts/run_evals.py        # retrieval regression (dry evals), offline
 python ../scripts/check_versions.py       # backend and desktop versions match
 ```
@@ -103,7 +103,10 @@ tested in CI on GitHub's Windows runners, which run elevated:
   elevated and `CI=true` is set (or `-Force` is given, for throwaway
   machines), and unless no RootMind service or data folder exists.
 - `desktop/scripts/installer-smoke.ps1` refuses unless `CI=true` or `-Force`,
-  and whenever RootMind is installed for the current account.
+  and whenever RootMind is installed for the current account or one of its
+  folders exists (`%LOCALAPPDATA%\RootMind`, or the app data folder
+  `%LOCALAPPDATA%\<identifier>` named by `-Identifier`, which release.yml
+  takes from `tauri.conf.json`).
 
 On your own machine, `rootmind service status` and an unelevated
 `rootmind service install` (which stops before it changes anything) are safe
@@ -171,6 +174,16 @@ with `uv run python scripts/make_demo_corpus.py`, and update
 `evals/dataset.json`. `tests/test_corpus_current.py` fails when the committed
 files and the generator disagree.
 
+**Update the Tauri CLI.** The installer is built from
+`desktop/src-tauri/installer/installer.nsi`, Tauri's NSIS template for the
+locked `@tauri-apps/cli` with RootMind's changes (no reinstall page, no folder
+page for an update). After an update of `@tauri-apps/cli`, Dependabot's
+included, run `python scripts/nsis_template.py --write` (needs network
+access) and commit the result to the same pull request;
+`scripts/tests/test_nsis_template.py` fails until then. The script refuses
+when the upstream template changed where RootMind's changes apply; adapt its
+anchors in that case.
+
 ## Inspecting the index
 
 The index is a plain SQLite file (`data/index.db` under `RLM_HOME` or the
@@ -231,15 +244,14 @@ verify them.
 5. **Manual checks** in Windows Sandbox or a throwaway virtual machine, with
    the installer from the dry run:
    - first start from the installer, including the SmartScreen warning;
-   - with a RootMind server on `http://127.0.0.1:8000`, the one-time question
-     on the first start;
    - turning the background service on with and without MCP over HTTP,
      including cancelling the approval prompt;
    - turning it off with and without deleting its data;
    - the **Update service** banner after installing a newer build;
-   - installing a newer build over an older one interactively, with the
-     default "uninstall before installing": no question about removing the
-     background service, and the service keeps running;
+   - running the installer by double-click over an older build, and over the
+     same build: Welcome, Installing, Finish, with no "Already Installed" page
+     and no folder page; chats, settings and shortcuts stay, and the
+     background service keeps running;
    - turning the service on from an administrator account with User Account
      Control turned off;
    - uninstalling the app while the service is installed, interactively and

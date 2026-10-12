@@ -227,17 +227,17 @@ RootMind\              owner BA, protected: SY full, BA full, U read, M read (th
 ```
 
 A missing folder is created with these permissions in one step. An existing
-one, for example from an older setup, is reused only when every item in it is
-owned by SYSTEM or Administrators, grants write access to no other account
-(except M on its two folders), and contains no reparse points or hard-linked
-files. An update stops both services before it checks the folder, and the
-permissions are written through a handle of each item, never through a link
-that replaced it. Files that `service install` creates are owned by
-Administrators, also for an administrator with User Account Control turned
-off. Otherwise `service install` exits with 6: "%ProgramData%\RootMind
-exists but is not protected. Remove or rename it from an elevated prompt, then
-try again." A folder created by hand inherits "Users: create" from ProgramData
-and is refused.
+one, for example one kept by `service uninstall` without `--purge`, is reused
+only when every item in it is owned by SYSTEM or Administrators, grants write
+access to no other account (except M on its two folders), and contains no
+reparse points or hard-linked files. An update stops both services before it
+checks the folder, and the permissions are written through a handle of each
+item, never through a link that replaced it. Files that `service install`
+creates are owned by Administrators, also for an administrator with User
+Account Control turned off. Otherwise `service install` exits with 6:
+"%ProgramData%\RootMind exists but is not protected. Remove or rename it from
+an elevated prompt, then try again." A folder created by hand inherits "Users:
+create" from ProgramData and is refused.
 
 **Elevated commands from the app.** The webview can call only a fixed set of
 commands; the Rust side builds every program path and argument. Turning the

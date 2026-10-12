@@ -104,5 +104,5 @@ checked with `packaging/smoke-test.ps1`; see [CONTRIBUTING.md](../CONTRIBUTING.m
   configuration reference and environment variables
 - [SECURITY.md](../SECURITY.md): threat model
 - [evals/README.md](evals/README.md): eval corpus, cases and modes
-- [deploy/windows/README.md](deploy/windows/README.md): `run-backend.bat`, and moving from an
-  older NSSM-based service setup
+- [deploy/windows/README.md](deploy/windows/README.md): `run-backend.bat`, the REST API from
+  source in a console window

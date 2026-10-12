@@ -6,7 +6,7 @@ Tauri 2 app (React + TypeScript UI, Rust shell) for chatting with and searching 
 - **Background service**: Settings → Background service installs the backend as a Windows service (one administrator approval), connects to it with the token from `%ProgramData%\RootMind\data\rest_token.txt` after checking that the service owns its port, and can also turn on MCP over HTTP.
 - **Custom backend**: Settings → Advanced connects to a backend at another address, with an optional token.
 
-The Rust side also stores chat history as JSON files in the app data folder. [ARCHITECTURE.md](../ARCHITECTURE.md#deployment-modes) describes how the app chooses a backend and the commands between the UI and Rust.
+The Rust side also stores chat history as JSON files in the app data folder. [Deployment modes](../ARCHITECTURE.md#deployment-modes) describes how the app chooses a backend, and [Interfaces between the parts](../ARCHITECTURE.md#interfaces-between-the-parts) the commands between the UI and Rust.
 
 ## Prerequisites
 
@@ -41,9 +41,9 @@ pnpm tauri dev --config src-tauri/tauri.release.conf.json
 On every start, `decideBackend()` in `src/state/bootstrap.ts` decides:
 
 1. A stored custom backend wins.
-2. A debug build uses the bundled backend if it has one, otherwise it asks for an address and contacts nothing until you connect. It never probes port 8000 and never picks the background service.
-3. A release build uses the background service when it is installed by this app and its token is readable; otherwise the built-in backend.
-4. On the first start of version 1.2, an address typed into an earlier version is kept. Otherwise `http://127.0.0.1:8000/` is probed once (2 s), and if a RootMind server without a token answers, the app asks once: use that server, or the built-in backend.
+2. A debug build uses the bundled backend if it has one, otherwise it asks for an address and contacts nothing until you connect. It never picks the background service.
+3. A release build uses the background service when it is installed by this app and its token is readable.
+4. Otherwise, the built-in backend.
 
 `localStorage` keeps `rlm.backendMode` (`auto` or `custom`), plus `rlm.baseUrl` and `rlm.token` only for a custom backend. Switching back to the built-in backend or the service removes those two keys.
 
@@ -71,19 +71,20 @@ The UI is English by default. Build the German variant with `VITE_APP_LANG=de` (
 
 ## Installer
 
-The release installer bundles the backend through the overlay `src-tauri/tauri.release.conf.json`, which maps `src-tauri/binaries/rootmind-backend/` (filled by `scripts/prepare_backend.py`, gitignored) to `$INSTDIR\backend\`:
+The release installer bundles the backend through the overlay `src-tauri/tauri.release.conf.json`, which maps `src-tauri/binaries/rootmind-backend/` (filled by `scripts/prepare_backend.py` in the repository root, gitignored) to `$INSTDIR\backend\`:
 
 ```bash
 pnpm tauri build --config src-tauri/tauri.release.conf.json
 ```
 
-Without the overlay, `pnpm tauri build` produces an app without a backend. The installer is a per-user NSIS installer (`%LOCALAPPDATA%\RootMind` by default, no administrator rights). The hooks in `src-tauri/installer/hooks.nsh`:
+Without the overlay, `pnpm tauri build` produces an app without a backend. The installer is a per-user NSIS installer (`%LOCALAPPDATA%\RootMind` by default, no administrator rights), built from `src-tauri/installer/installer.nsi`: Tauri's NSIS template for the locked Tauri CLI without the reinstall page, and without the folder page when the app is installed. Running it over an installed version (older, newer or the same) replaces that version in place without questions; app data and shortcuts stay. After an update of `@tauri-apps/cli`, refresh the template with `python scripts/nsis_template.py --write` from the repository root ([ARCHITECTURE.md](../ARCHITECTURE.md#packaging) has the details). The hooks in `src-tauri/installer/hooks.nsh`:
 
 - close the app and then its backend before installing or uninstalling;
+- remove the installed `$INSTDIR\backend\` folder before the new one is copied, so an update leaves no stale backend files;
 - on an interactive uninstall, offer to remove the background service (elevated `service uninstall` of the program under `%ProgramFiles%\RootMind Service\`);
-- leave the service in place on a silent uninstall (`/S`).
+- leave the service in place on a silent or passive uninstall (`/S`, `/P`).
 
-The full build order is in the [README](../README.md#build-the-installer-yourself). Releases are built by `.github/workflows/release.yml`, which also runs `scripts/installer-smoke.ps1`. Installers are not code-signed, so Windows SmartScreen shows a warning.
+The full build order is in the [README](../README.md#build-the-installer-yourself). Releases are built by `.github/workflows/release.yml`, which also runs the installer smoke test `desktop/scripts/installer-smoke.ps1`. Installers are not code-signed, so Windows SmartScreen shows a warning.
 
 ## Security notes
 

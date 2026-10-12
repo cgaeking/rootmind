@@ -20,10 +20,16 @@ The repository has two parts:
 
 ## Install
 
-Windows 10 or 11 (x64): download
-**[RootMind-Setup-x64.exe](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-Setup-x64.exe)**
-and run it. It installs RootMind for your account, with no administrator rights
-and no Python needed. The app starts and stops its own backend.
+Each [release](https://github.com/cgaeking/rootmind/releases/latest) has two
+downloads for Windows (x64):
+
+- **[RootMind-Setup-x64.exe](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-Setup-x64.exe)**,
+  for most users, on Windows 10 or 11: the desktop app with its backend. Run
+  it; it installs RootMind for your account, with no administrator rights and
+  no Python needed, and the app starts and stops its own backend.
+- **[rootmind-backend-windows-x64.zip](https://github.com/cgaeking/rootmind/releases/latest/download/rootmind-backend-windows-x64.zip)**,
+  for the command line and servers: the backend alone, without the app (see
+  [Install for developers and servers](#install-for-developers-and-servers)).
 
 The installer is not code-signed yet. Windows SmartScreen may show "Windows
 protected your PC": choose **More info**, then **Run anyway**. If Smart App
@@ -35,6 +41,8 @@ this.
 Then add a folder under **Folders**. Indexing starts within about a minute,
 and search works without an API key once the folder is indexed. To ask
 questions, add an API key for Anthropic, OpenAI or xAI under **Settings**.
+Optionally, Settings → **Background service** keeps the index up to date
+while the app is closed (see [Background service](#background-service)).
 
 ### Verify downloads
 
@@ -53,12 +61,14 @@ gh attestation verify RootMind-Setup-x64.exe --repo cgaeking/rootmind
 
 ### Update and uninstall
 
-To update, run the installer of the new version. It asks you to close the app
-if it is running, and keeps your settings, index and chats. If the background
-service is on, it keeps running, and Settings then offers **Update service**
-(one administrator approval). MCP clients that use the built-in backend over
-stdio (see [Connect MCP clients](#connect-mcp-clients)) are stopped too, since
-their program is replaced; restart them after the update.
+To update, run the installer of the new version. It replaces the installed
+version in place, in the same folder and without questions, and keeps your
+settings, index and chats; if the app is running, it asks to close it first.
+If the background service is on, it keeps running, and Settings then offers
+**Update service** (one administrator approval). MCP clients that use the
+built-in backend over stdio (see [Connect MCP clients](#connect-mcp-clients))
+are stopped too, since their program is replaced; restart them after the
+update.
 
 Uninstall RootMind from Windows Settings → Apps. The option **Delete the
 application data** also removes your chats and the built-in backend's
@@ -356,7 +366,7 @@ runs, it re-indexes about 30 seconds after start and then every 24 hours
 `connectors` in `config.yaml`. Use absolute paths: relative connector paths
 resolve against the working directory.
 
-`rootmind api` started this way requires no token, as before. To require one,
+`rootmind api` started this way requires no token. To require one,
 set `RLM_API_TOKEN` or pass `--require-token`, which creates
 `data/rest_token.txt`, and send `Authorization: Bearer <token>` with each
 request. The docs pages are off while a token is required.
@@ -496,13 +506,15 @@ backend/
   evals/                   fictional corpus and eval cases
   scripts/                 eval runner and corpus generator
   packaging/               PyInstaller spec, smoke test, tree hash
-  deploy/windows/          run-backend.bat and notes on older service setups
+  deploy/windows/          run-backend.bat: the REST API from source in a console window
 desktop/
   src/                     React + TypeScript UI
-  src-tauri/               Rust shell: built-in backend, service commands, chat history, installer hooks
+  src-tauri/               Rust shell: built-in backend, service commands, chat history;
+                           installer/ with the NSIS template and hooks
   scripts/                 installer smoke test
 packaging/winget/          winget manifest templates
-scripts/                   version check, release notes, backend preparation, winget rendering
+scripts/                   version check, release notes, backend preparation, winget rendering,
+                           NSIS template refresh
 .github/workflows/         CI and release
 ```
 
@@ -560,7 +572,7 @@ secrets. Only the release job can write to the repository:
 | [`backend.yml`](.github/workflows/backend.yml) | ruff check and format check; the version check across backend and desktop; the tests of the release scripts on Ubuntu and Windows; pytest with coverage on Ubuntu (Python 3.12 and 3.14) and Windows (Python 3.12); the dry retrieval regression |
 | [`backend-exe.yml`](.github/workflows/backend-exe.yml) | The PyInstaller onedir build on Windows, a smoke test of the executable (REST, MCP over HTTP and stdio, indexing of every file type) and its tree hash; then an end-to-end test of the Windows service on the elevated runner: install, permissions, tokens, read confinement, update and uninstall. On pull requests the service test runs only when service-related code changed |
 | [`desktop.yml`](.github/workflows/desktop.yml) | ESLint, TypeScript typecheck, vitest, Vite build, `cargo fmt`, `cargo clippy`, `cargo check`, `cargo test` on Windows |
-| [`release.yml`](.github/workflows/release.yml) | For a version tag `v*`: the backend through `backend-exe.yml`, the installer with that backend and an install/update/uninstall smoke test, the winget manifests validated against their schemas, then a GitHub Release with `SHA256SUMS.txt` and attestations. Manual runs and pull requests that change the packaging are dry runs that publish nothing |
+| [`release.yml`](.github/workflows/release.yml) | For a version tag `v*`: the backend through `backend-exe.yml`; the installer with that backend, a check that it updates an installed version in place without a reinstall page, and an install/update/uninstall smoke test; the winget manifests validated against their schemas; then a GitHub Release with the installer, the backend zip, `SHA256SUMS.txt` and attestations. Manual runs and pull requests that change the packaging are dry runs that publish nothing |
 | [`secrets.yml`](.github/workflows/secrets.yml) | detect-secrets over all tracked files, against the audited baseline `.secrets.baseline` |
 
 Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) proposes
