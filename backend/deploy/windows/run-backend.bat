@@ -1,7 +1,8 @@
 @echo off
 REM Runs the RootMind backend REST API in the FOREGROUND on
-REM http://127.0.0.1:8000 so the desktop app can connect. For a permanent
-REM auto-start setup, use install-backend-service.bat instead.
+REM http://127.0.0.1:8000, from a source checkout, without a token. To run it
+REM in the background as a Windows service, use the release build:
+REM rootmind-backend.exe service install (see the README).
 echo Starting RootMind backend (http://127.0.0.1:8000) ...
 cd /d "%~dp0..\.."
 set "PYEXE=python"

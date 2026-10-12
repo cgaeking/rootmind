@@ -1,77 +1,105 @@
 # Windows deployment
 
-Scripts to run the RootMind backend on Windows, either in a console window or as the
-background service `RootMind-Backend` that starts on boot. The desktop app connects to it
-on `http://127.0.0.1:8000`.
-
-> **The service is experimental.** It runs as LocalSystem, and the REST API has no
-> authentication, so any local process can make it read files with SYSTEM rights. Use it
-> only on a single-user machine. Otherwise run the backend as your own user
-> (`run-backend.bat`). See [Security](#security).
-
 | File | Purpose |
 |------|---------|
-| `run-backend.bat` | Runs the REST API in a console window on `http://127.0.0.1:8000`. |
-| `install-backend-service.bat` | One-click setup (asks for admin rights): fetches NSSM if needed, installs and starts the service. |
-| `_service-backend.ps1` | Manages the service: `-Install`, `-Uninstall`, `-Start`, `-Stop`, `-Status`. |
-| `fetch-nssm.ps1` | Downloads [NSSM](https://nssm.cc/) 2.24 into `tools\` and verifies its SHA-256. |
+| `run-backend.bat` | Runs the REST API from a source checkout in a console window on `http://127.0.0.1:8000`. |
 
-## Run modes
+To run RootMind in the background on Windows, use the background service of the release
+build: Settings → Background service in the desktop app, or
+`rootmind-backend.exe service install` from an elevated prompt (see the
+[README](../../../README.md#install-for-developers-and-servers)). The service runs from
+`%ProgramFiles%\RootMind Service\`, keeps its data in `%ProgramData%\RootMind`, requires a
+token on its REST API and reads only what the installing account can read. See
+[SECURITY.md](../../../SECURITY.md#background-service).
 
-1. **Packaged**: the desktop installer ships `rootmind-backend.exe` (PyInstaller build, see
-   `../../packaging/`), these scripts and a verified `tools\nssm.exe`, and installs the
-   service during setup. No Python is needed.
-2. **Source checkout** (development only): without `rootmind-backend.exe` (in `backend\`
-   or `backend\dist\`), the service runs `python -m rootmind.main api` with the checkout's
-   `.venv` or a Python installed for all users (`%ProgramFiles%\Python3xx`, `C:\Python3xx`;
-   not the Microsoft Store build, not a per-user install). The checkout and that Python
-   must be writable by administrators only, because the service runs their code as SYSTEM;
-   `-Install` refuses otherwise. Then in `backend\`:
+## run-backend.bat
 
-   ```bat
-   uv sync
-   ```
-
-## Quickstart
-
-From the `backend\` folder:
+From the `backend\` folder, after `uv sync`:
 
 ```bat
-:: foreground, for a quick test
 deploy\windows\run-backend.bat
-
-:: permanent service: right-click, "Run as administrator"
-deploy\windows\install-backend-service.bat
-
-:: manage
-powershell -File deploy\windows\_service-backend.ps1 -Status
-powershell -File deploy\windows\_service-backend.ps1 -Stop
-powershell -File deploy\windows\_service-backend.ps1 -Uninstall
 ```
 
-## Security
+It runs `python -m rootmind.main api --host 127.0.0.1 --port 8000` with the checkout's
+`.venv` (or `python` from `PATH`), as your own user and without a token. Extra arguments are
+passed on, for example `--require-token`. Close the window to stop it.
 
-- The service runs as **LocalSystem** and binds the REST API to `127.0.0.1:8000`; the
-  API refuses connections from other machines.
-- Its data lives in `%ProgramData%\RootMind` (`config.yaml` with API keys in plain text,
-  `data\index.db` with the extracted text of every indexed file, `logs\`). `-Install`
-  takes ownership of that folder, removes every other permission and grants access to
-  SYSTEM and Administrators only. It refuses a folder that someone else created before the
-  install, or one with junctions or symbolic links in it. RootMind never indexes this
-  folder.
-- `-Install` refuses to register the service when the executable, NSSM or (in source
-  mode) the checkout or Python can be modified by non-administrators.
-- The REST API has no authentication. Any process on the machine can call it, including
-  `POST /config`, which decides which folders the service (with SYSTEM rights) indexes.
-  This setup therefore assumes a **single-user machine**. Do not install the service on a
-  machine shared with other local users. See [SECURITY.md](../../../SECURITY.md).
+## Migrating from a manual NSSM setup
 
-## NSSM provenance
+Earlier versions installed the backend as a Windows service with NSSM
+(`install-backend-service.bat`, `_service-backend.ps1` and `fetch-nssm.ps1`, now removed), and
+some setups registered NSSM services by hand, for example a REST API service and an MCP over
+HTTP service. To move such a setup to the built-in service host, from an elevated prompt:
 
-- Source: `https://nssm.cc/release/nssm-2.24.zip`, file `win64/nssm.exe` (public domain).
-- SHA-256: `f689ee9af94b00e9e3f0bb072b34caaf207f32dcb4f5782fc9ca351df9a06c97`.
-- `fetch-nssm.ps1` deletes the file and exits with an error when the hash does not match.
-  Verify an existing copy without downloading: `fetch-nssm.ps1 -FromFile <path>\nssm.exe`.
-- Some antivirus products flag NSSM as a generic "service installer" tool. The pinned hash
-  identifies the official 2.24 release.
-- The binary is never committed; `tools/` is gitignored.
+1. Stop and remove the old services, for each service name:
+
+   ```bat
+   nssm remove <name> confirm
+   ```
+
+   or, without NSSM at hand:
+
+   ```bat
+   sc.exe stop <name>
+   sc.exe delete <name>
+   ```
+
+2. Install the new services with the old ports, folders and MCP token, from the unzipped
+   release build (`rootmind-backend-windows-x64.zip`):
+
+   ```bat
+   "<unzipped>\rootmind-backend\rootmind-backend.exe" service install --port <old API port> ^
+       --mcp-http --mcp-port <old MCP port> ^
+       --import-config "<old RLM_HOME>\config.yaml" ^
+       --mcp-token-from "<old RLM_HOME>\data\api_token.txt"
+   ```
+
+   If the old data folder is `%ProgramData%\RootMind` itself, copy its `config.yaml` and
+   `data\api_token.txt` to another folder first and pass the copies; if `service install`
+   then refuses that folder (exit code 6), rename it and run the command again.
+
+   With the same ports and token, tunnels and MCP clients need no change. The index is
+   rebuilt in the new data folder. The REST API now requires a token; the desktop app reads
+   it, other REST clients need `Authorization: Bearer <token>` with the token from
+   `%ProgramData%\RootMind\data\rest_token.txt`.
+3. In the desktop app, open Settings → Advanced and choose **Use default backend**, so the
+   app uses the new service instead of a fixed address.
+4. Once the new service has indexed your folders, delete the old program folder and the
+   NSSM binary. Delete the old data folder too, unless it is `%ProgramData%\RootMind`: the
+   new service now uses that folder (if you renamed it in step 2, delete the renamed copy).
+
+The service reads only folders that the installing account can open without administrator
+rights, and no network drives or shares. Folders it cannot read are marked in the app and
+listed by `GET /connectors` with `"available": false` and the reason.
+
+## If you installed the former per-machine app
+
+Earlier source versions could build a per-machine "full installer" that put the app in
+`%ProgramFiles%\RootMind` and set up the NSSM service. Its uninstaller stops and deletes
+any service named `RootMind-Backend`, which is also the new service's name. Uninstall that
+app from Settings → Apps **first**, then install the current app (it installs for your
+account only) and turn the background service on. The old app cannot talk to the new,
+token-protected service anyway.
+
+## Removing a service created by the old scripts
+
+The old scripts registered a service named `RootMind-Backend` that runs NSSM. While it
+exists, `service install` stops with exit code 3, leaves it untouched and prints the commands
+to remove it. From an elevated prompt:
+
+```bat
+sc.exe stop RootMind-Backend
+sc.exe delete RootMind-Backend
+```
+
+Then delete the old program folder with `nssm.exe`. Copy `%ProgramData%\RootMind\config.yaml`
+to another folder and pass the copy to `service install --import-config`, so the settings
+move to the new layout (the index then lives in `data\db\` and is rebuilt).
+
+The old scripts also created `%ProgramData%\RootMind`, owned by Administrators and
+accessible to SYSTEM and Administrators only. `service install` reuses an existing folder
+only when it is still protected: every item owned by SYSTEM or Administrators, no write
+access for other accounts, no junctions, symbolic links or hard-linked files. A folder that
+fails the check, for example one created by hand (which inherits "Users: create" from
+ProgramData), is refused with exit code 6. Remove or rename it from an elevated prompt and
+run `service install` again; the new folder starts with a fresh index.

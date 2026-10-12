@@ -19,6 +19,13 @@ MODULES = [
     "rootmind.rlm_engine.engine",
     "rootmind.mcp_stdio",
     "rootmind.mcp_http",
+    "rootmind.auth",
+    "rootmind.access",
+    "rootmind.winaccess",
+    "rootmind.service.cli",
+    "rootmind.service.install",
+    "rootmind.service.host",
+    "rootmind.service.listeners",
 ]
 
 

@@ -17,9 +17,6 @@ logs/
 # Eval runs store full LLM answers
 evals/results/
 
-# Windows service tooling fetched at build time (NSSM)
-deploy/windows/tools/
-
 # Python
 __pycache__/
 *.py[cod]
