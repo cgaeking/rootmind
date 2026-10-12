@@ -376,7 +376,12 @@ try {
     if ($policy -and ($policy.PSObject.Properties.Name -contains "EnableLUA") -and $policy.EnableLUA -eq 0) { $uacOn = $false }
     Write-Host "UAC is $(if ($uacOn) { 'on' } else { 'off' })"
 
-    Assert-Status (Invoke-Http POST "$ApiUrl/config" -Token $RestToken -Body @{ connectors = @(@{ name = "e2e"; type = "local"; path = $Confine }) }) 200 "POST /config adds the test folder"
+    # POST /config takes the editable config with its llm section, as the app
+    # sends it: read the current one, then replace the folder list.
+    $current = Invoke-Http GET "$ApiUrl/config" -Token $RestToken
+    Assert-Status $current 200 "GET /config"
+    $llm = $current.Json.llm
+    Assert-Status (Invoke-Http POST "$ApiUrl/config" -Token $RestToken -Body @{ llm = $llm; connectors = @(@{ name = "e2e"; type = "local"; path = $Confine }) }) 200 "POST /config adds the test folder"
     $refresh = Invoke-Http POST "$ApiUrl/index/refresh" -Token $RestToken -Body @{ full = $true }
     if ($refresh.Status -notin @(200, 409)) { Fail "POST /index/refresh answered $($refresh.Status)" }
     $deadline = [DateTime]::UtcNow.AddSeconds(120)
@@ -397,7 +402,7 @@ try {
         Write-Host "note: UAC is off, so the account itself reads administrator-only files; file B is not checked"
     }
     foreach ($bad in @("C:\Windows", "C:\", "\\localhost\c$\x")) {
-        Assert-Status (Invoke-Http POST "$ApiUrl/config" -Token $RestToken -Body @{ connectors = @(@{ name = "bad"; type = "local"; path = $bad }) }) 400 "POST /config with $bad"
+        Assert-Status (Invoke-Http POST "$ApiUrl/config" -Token $RestToken -Body @{ llm = $llm; connectors = @(@{ name = "bad"; type = "local"; path = $bad }) }) 400 "POST /config with $bad"
     }
 
     # --- 6. MCP reads the new folder without a restart -----------------------------------------
