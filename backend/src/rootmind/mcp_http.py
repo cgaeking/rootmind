@@ -19,8 +19,13 @@ the background indexer in this process; use it only when no other process
 (such as the REST API) indexes the same database, because each indexing
 process removes the documents of folders missing from *its* copy of the config.
 
-The folders whose documents the tools may return are read from the config
-at startup. Restart the server after adding or removing folders.
+The tools return only documents of the folders listed in the config. The
+server re-reads that list when ``config.yaml`` changes (checked on every tool
+call), so the tools follow an added or removed folder without a restart. A
+change of ``database.path`` still needs one, and so does a folder change with
+``--index``: the in-process indexer keeps the folders it started with, so a
+new folder is not indexed and a removed one is still indexed until the
+restart.
 
 Security model:
 
@@ -41,12 +46,12 @@ Usage::
 
 import argparse
 import asyncio
-import hashlib
 import json
 import logging
 import os
 import secrets
 import sys
+import threading
 import uuid
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
@@ -59,8 +64,9 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from . import __version__, tools
-from .config import AppConfig, app_home, get_config, init_config
+from . import __version__, auth, tools
+from .auth import TokenError, token_fingerprint
+from .config import AppConfig, app_home, config_file_path, get_config, init_config, load_config
 from .database.repository import DocumentRepository
 
 logger = logging.getLogger("rootmind.mcp_http")
@@ -69,6 +75,7 @@ SERVER_NAME = "rootmind"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 3000
 TOKEN_FILE_NAME = "api_token.txt"  # noqa: S105 (a file name, not a secret)
+TOKEN_ENV = "MCP_API_TOKEN"  # noqa: S105 (an environment variable name)
 
 # Handshake-era protocol versions this transport implements, newest first.
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -79,10 +86,6 @@ _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 # instead of nested under `params.arguments`. These keys are client metadata,
 # not tool arguments, and are dropped when flattening.
 _NON_ARGUMENT_PARAMS = {"name", "tool", "toolCallId", "sessionId", "action", "chatInput"}
-
-
-class TokenError(RuntimeError):
-    """The bearer token is missing, empty or unreadable; the server must not start."""
 
 
 class JsonRpcError(Exception):
@@ -100,21 +103,9 @@ def token_file_path() -> Path:
     return app_home() / "data" / TOKEN_FILE_NAME
 
 
-def token_fingerprint(token: str) -> str:
-    """Short, non-reversible identifier for logs (first 8 hex chars of SHA-256)."""
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]
-
-
 def _write_private_file(path: Path, content: str) -> None:
-    """Create ``path`` with owner-only permissions (0600 on POSIX).
-
-    On Windows the mode bits are ignored and the file inherits the ACL of its
-    folder; the service scripts restrict that folder to SYSTEM and Administrators.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(content)
+    """Create ``path`` with owner-only permissions (see :func:`rootmind.auth.write_private_file`)."""
+    auth.write_private_file(path, content)
 
 
 def resolve_token(token_file: Path | None = None) -> tuple[str, str]:
@@ -130,32 +121,7 @@ def resolve_token(token_file: Path | None = None) -> tuple[str, str]:
     Raises:
         TokenError: the env var or the file is present but empty (fail closed).
     """
-    env_token = os.environ.get("MCP_API_TOKEN")
-    if env_token is not None:
-        token = env_token.strip()
-        if not token:
-            raise TokenError(
-                "MCP_API_TOKEN is set but empty; refusing to start without authentication"
-            )
-        return token, "environment variable MCP_API_TOKEN"
-
-    path = token_file or token_file_path()
-    if path.exists():
-        try:
-            token = path.read_text(encoding="utf-8").strip()
-        except OSError as e:
-            raise TokenError(f"Cannot read token file {path}: {e}") from e
-        if not token:
-            raise TokenError(
-                f"Token file {path} is empty; delete it to generate a new token, "
-                "or set MCP_API_TOKEN"
-            )
-        return token, f"file {path}"
-
-    token = secrets.token_urlsafe(32)
-    _write_private_file(path, token)
-    logger.info("Generated a new MCP API token and saved it to %s", path)
-    return token, f"file {path} (newly generated)"
+    return auth.resolve_token(TOKEN_ENV, token_file or token_file_path(), generate=True)
 
 
 def origin_allowed(origin: str | None, extra_origins: Iterable[str] = ()) -> bool:
@@ -196,6 +162,15 @@ def _tool_arguments(params: dict[str, Any]) -> dict[str, Any] | str | None:
     return args
 
 
+def _config_signature(path: Path) -> tuple[int, int] | None:
+    """``(st_mtime_ns, st_size)`` of the config file, or None when it does not exist."""
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return None
+    return info.st_mtime_ns, info.st_size
+
+
 def create_app(
     token: str,
     config: AppConfig | None = None,
@@ -220,13 +195,69 @@ def create_app(
     expected = token.encode("utf-8")
     extra_origins = frozenset(allowed_origins)
 
-    state = SimpleNamespace(repo=None, allowed=None, sync_manager=None, sse_sessions={})
+    state = SimpleNamespace(
+        repo=None,
+        allowed=None,
+        sync_manager=None,
+        sse_sessions={},
+        config_path=None,
+        config_signature=None,
+    )
+    allowed_lock = threading.Lock()
+
+    def current_allowed() -> frozenset[str] | None:
+        """The configured folder names, re-read when ``config.yaml`` changed.
+
+        Called from worker threads. If the file cannot be read, the previous
+        list stays in place.
+        """
+        path = state.config_path
+        if path is None:
+            return state.allowed
+        try:
+            signature = _config_signature(path)
+        except OSError as e:
+            logger.warning("Cannot check %s for changes; keeping the folder list: %s", path, e)
+            return state.allowed
+        if signature is None or signature == state.config_signature:
+            return state.allowed
+        with allowed_lock:
+            if signature == state.config_signature:
+                return state.allowed
+            try:
+                cfg = load_config(path)
+            except Exception as e:
+                logger.warning("Cannot re-read %s; keeping the folder list: %s", path, e)
+                return state.allowed
+            allowed = frozenset(c.name for c in cfg.connectors)
+            if allowed != state.allowed:
+                logger.info("Folder list re-read from %s: %d folder(s)", path, len(allowed))
+            state.allowed = allowed
+            state.config_signature = signature
+            return allowed
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Note the file's state before reading the folder list, so a change
+        # made in between is picked up by the first tool call. The config
+        # passed in may have been read earlier (before the socket was bound),
+        # so the folder list is read from the file again here.
+        state.config_path = config_file_path()
+        try:
+            state.config_signature = _config_signature(state.config_path)
+        except OSError:
+            state.config_signature = None
         cfg = config or get_config()
         state.repo = DocumentRepository(cfg.database.path)
-        state.allowed = frozenset(c.name for c in cfg.connectors)
+        connectors = cfg.connectors
+        if state.config_signature is not None:
+            try:
+                connectors = load_config(state.config_path).connectors
+            except Exception as e:
+                logger.warning(
+                    "Cannot re-read %s; using the folder list given: %s", state.config_path, e
+                )
+        state.allowed = frozenset(c.name for c in connectors)
         stats = state.repo.get_statistics()
         logger.info(
             "Database ready: %d documents, %s characters",
@@ -301,12 +332,15 @@ def create_app(
             name = params.get("name")
             if not isinstance(name, str) or not name:
                 raise JsonRpcError(-32602, "Missing tool name")
-            ctx = tools.ToolContext(allowed_connectors=state.allowed)
             logger.info("Tool call: %s", name)
-            # Tool execution is blocking SQLite I/O; keep it off the event loop.
-            result = await asyncio.to_thread(
-                tools.execute, name, _tool_arguments(params), state.repo, ctx
-            )
+
+            def run_tool(arguments: dict[str, Any] | str | None) -> tools.ToolResult:
+                ctx = tools.ToolContext(allowed_connectors=current_allowed())
+                return tools.execute(name, arguments, state.repo, ctx)
+
+            # Tool execution (and the config check) is blocking I/O; keep it
+            # off the event loop.
+            result = await asyncio.to_thread(run_tool, _tool_arguments(params))
             return {
                 "content": [{"type": "text", "text": result.text}],
                 "isError": result.is_error,
@@ -442,7 +476,8 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help=(
             "Also run the background indexer in this process. Only when no other "
-            "process (such as the REST API) indexes the same database."
+            "process (such as the REST API) indexes the same database. The indexer "
+            "keeps the folders it started with; restart after changing them."
         ),
     )
     args = parser.parse_args(argv)
@@ -454,7 +489,12 @@ def main(argv: list[str] | None = None) -> None:
     config = init_config(args.config)
 
     try:
-        token, source = resolve_token()
+        try:
+            token, source = resolve_token()
+        finally:
+            # The token is not needed in the environment once read; no process
+            # started later inherits it.
+            os.environ.pop(TOKEN_ENV, None)
         app = create_app(
             token, config, allowed_origins=_env_allowed_origins(), enable_scheduler=args.index
         )

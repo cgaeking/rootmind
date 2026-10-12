@@ -3,12 +3,13 @@
 import contextlib
 import os
 import secrets
+import stat
 import time
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LlmProvider = Literal["anthropic", "openai", "xai"]
@@ -127,10 +128,14 @@ class IndexerConfig(BaseModel):
 
 
 class APIConfig(BaseModel):
-    """REST API server configuration.
+    """REST API server configuration, used by ``rootmind api``.
 
-    The REST API has no authentication, so it binds to the loopback interface
-    by default. Do not expose it on a network interface.
+    The bind address resolves as: command-line flag, then ``RLM_HOST`` /
+    ``RLM_PORT``, then these values. The API binds to the loopback interface
+    by default and refuses connections from other machines. A bearer token
+    (``RLM_API_TOKEN`` or ``--require-token``) is optional for the CLI; the
+    desktop app's built-in backend and the Windows service always use one.
+    Do not expose the API on a network interface.
     """
 
     host: str = "127.0.0.1"
@@ -168,6 +173,15 @@ def _resolve_config_path(config_path: str | Path | None, settings: Settings) -> 
     if not path.is_absolute():
         path = app_home() / path
     return path
+
+
+def config_file_path() -> Path:
+    """The config file that :func:`get_config` loads and :func:`save_config` writes.
+
+    That is the file passed to :func:`init_config`, or ``CONFIG_PATH`` /
+    ``config.yaml``, resolved under the app home.
+    """
+    return _resolve_config_path(active_config_path(), Settings())
 
 
 def load_config(config_path: str | Path | None = None) -> AppConfig:
@@ -347,6 +361,125 @@ def _write_private_atomic(path: Path, text: str) -> None:
         with contextlib.suppress(OSError):
             tmp.unlink()
         raise
+
+
+# A config file is a few kilobytes; import_config() refuses anything larger.
+MAX_IMPORT_BYTES = 1024 * 1024
+
+
+def _is_reparse_point(info: os.stat_result) -> bool:
+    """True for symlinks and, on Windows, any reparse point (junctions included)."""
+    attributes = getattr(info, "st_file_attributes", 0)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _read_import_source(source: Path) -> str:
+    """Read a config file for :func:`import_config`, refusing links and odd files.
+
+    The file is checked before it is opened (no link or reparse point, a
+    regular file with one name, at most 1 MB), and the opened handle must be
+    the file that was checked, so a link swapped in between is not followed.
+    """
+    info = os.lstat(source)
+    if _is_reparse_point(info):
+        raise ValueError(f"{source} is a link or reparse point; import the file itself")
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"{source} is not a regular file")
+    if info.st_nlink > 1:
+        raise ValueError(f"{source} has more than one hard link")
+    if info.st_size > MAX_IMPORT_BYTES:
+        raise ValueError(f"{source} is larger than 1 MB")
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(source, flags), "rb") as f:
+        opened = os.fstat(f.fileno())
+        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+            raise ValueError(f"{source} was replaced while it was being read")
+        data = f.read(MAX_IMPORT_BYTES + 1)
+    if len(data) > MAX_IMPORT_BYTES:
+        raise ValueError(f"{source} is larger than 1 MB")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{source} is not UTF-8 text") from e
+
+
+def _validation_summary(error: ValidationError) -> str:
+    """The field paths and messages of a validation error, without the input values.
+
+    Input values can be API keys, which must not reach a log.
+    """
+    return "; ".join(
+        f"{'.'.join(str(part) for part in item['loc']) or 'config'}: {item['msg']}"
+        for item in error.errors(include_url=False, include_input=False)
+    )
+
+
+def import_config(source: str | Path, home: str | Path, *, database_path: str) -> AppConfig:
+    """Replace ``<home>/config.yaml`` with the config in ``source``.
+
+    Used when RootMind switches between the desktop app's built-in backend and
+    the background service, so the folders, provider and keys follow the user.
+
+    - The file is read directly (YAML, validated against :class:`AppConfig`).
+      API keys from environment variables or a ``.env`` file are not merged
+      in, unlike :func:`load_config`.
+    - Links, reparse points, hard-linked files, non-regular files and files
+      over 1 MB are refused.
+    - ``database.path`` is always set to ``database_path``, because the source
+      belongs to another installation with its own index.
+    - The previous ``config.yaml`` is kept as ``config.yaml.bak``, and the new
+      file is written atomically (owner-only on POSIX).
+
+    Returns:
+        The imported configuration, as written (``database.path`` unresolved).
+
+    Raises:
+        FileNotFoundError: ``source`` does not exist.
+        ValueError: ``source`` is refused, is not valid YAML or is not a valid
+            config. The message never contains values from the file.
+        OSError: reading or writing failed.
+    """
+    source = Path(source)
+    text = _read_import_source(source)
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        raise ValueError(f"{source} is not valid YAML{where}") from None
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{source} does not contain a RootMind config")
+    database = data.get("database") or {}
+    if not isinstance(database, dict):
+        raise ValueError(f"{source} has an invalid 'database' section")
+    data["database"] = {**database, "path": database_path}
+    try:
+        config = AppConfig.model_validate(data)
+    except ValidationError as e:
+        raise ValueError(
+            f"{source} is not a valid RootMind config: {_validation_summary(e)}"
+        ) from None
+
+    # Only the fields the source sets (plus database.path), validated and
+    # normalized; unknown keys are dropped.
+    out = yaml.safe_dump(
+        config.model_dump(mode="json", exclude_unset=True),
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    )
+    target_dir = Path(home)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / "config.yaml"
+    if target.exists():
+        _write_private_atomic(
+            target.with_name(target.name + ".bak"), target.read_text(encoding="utf-8")
+        )
+    _write_private_atomic(target, out)
+    return config
 
 
 # Global config instance (lazy loaded) and the file it was loaded from, so a

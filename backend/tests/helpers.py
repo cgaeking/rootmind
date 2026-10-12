@@ -20,11 +20,40 @@ LOCAL_PEER = ("127.0.0.1", 50000)
 REST_BASE_URL = "http://127.0.0.1:8000"
 
 
-def rest_client(app):
-    """A TestClient for the REST app that connects like the local desktop app."""
+def rest_client(app, token: str | None = None):
+    """A TestClient for the REST app that connects like the local desktop app.
+
+    With ``token``, every request carries ``Authorization: Bearer <token>``.
+    """
     from fastapi.testclient import TestClient
 
-    return TestClient(app, base_url=REST_BASE_URL, client=LOCAL_PEER)
+    headers = {"Authorization": f"Bearer {token}"} if token is not None else None
+    return TestClient(app, base_url=REST_BASE_URL, client=LOCAL_PEER, headers=headers)
+
+
+def capture_serving(monkeypatch) -> dict[str, Any]:
+    """Make ``rootmind.main`` record what it would serve instead of binding a socket.
+
+    After ``main(["api", ...])`` the returned dict holds ``bind`` (host, port),
+    ``app`` (the FastAPI app) and ``exit_with_parent``.
+    """
+    from rootmind import main as main_module
+
+    seen: dict[str, Any] = {}
+    sock = object()
+
+    def fake_bind(host: str, port: int):
+        seen["bind"] = (host, port)
+        return sock
+
+    def fake_serve(app, bound, *, exit_with_parent=False):
+        assert bound is sock
+        seen["app"] = app
+        seen["exit_with_parent"] = exit_with_parent
+
+    monkeypatch.setattr(main_module, "bind_socket", fake_bind)
+    monkeypatch.setattr(main_module, "serve", fake_serve)
+    return seen
 
 
 def index_config(cfg: AppConfig, full: bool = False) -> DocumentRepository:
