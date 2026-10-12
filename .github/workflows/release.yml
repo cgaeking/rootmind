@@ -3,9 +3,11 @@ name: release
 # Builds and checks everything a release ships, and publishes it for a
 # version tag:
 #
-#   meta       versions agree (and match the tag); the tag has release notes
+#   meta       versions agree (and match the tag); the tag has release notes;
+#              the NSIS template is the one for the locked Tauri CLI
 #   backend    backend-exe.yml: onedir build, smoke test, service end-to-end test
-#   installer  the NSIS installer with exactly that backend, installer smoke test
+#   installer  the NSIS installer with exactly that backend, a check that it
+#              updates an installed version in place, installer smoke test
 #   winget     the winget manifests, rendered and validated against the schemas
 #   publish    tags only: backend zip, checksums, attestations, GitHub Release
 #
@@ -29,6 +31,7 @@ on:
       - "backend/packaging/**"
       - "packaging/winget/**"
       - "scripts/check_versions.py"
+      - "scripts/nsis_template.py"
       - "scripts/prepare_backend.py"
       - "scripts/release_notes.py"
       - "scripts/winget_manifests.py"
@@ -106,6 +109,12 @@ jobs:
             echo "::notice::CHANGELOG.md has no section for $VERSION; a tag would fail here."
           fi
 
+      # desktop/src-tauri/installer/installer.nsi is Tauri's NSIS template
+      # for the locked @tauri-apps/cli with RootMind's changes (no reinstall
+      # page). Downloads the upstream template from the Tauri repository.
+      - name: NSIS template
+        run: python3 scripts/nsis_template.py --check
+
   backend:
     name: Backend
     needs: meta
@@ -182,6 +191,30 @@ jobs:
           "Toolchain: $(rustc -V), node $(node -v), pnpm $(pnpm -v)" >> $env:GITHUB_STEP_SUMMARY
           pnpm tauri build --ci --config src-tauri/tauri.release.conf.json
 
+      # The script Tauri rendered from installer/installer.nsi. An installed
+      # version must be updated in place without questions: no reinstall page
+      # ("already installed, uninstall it first?"), and the folder page is
+      # skipped when the app is installed. /S never shows pages, so the smoke
+      # test below cannot see a page; this check can.
+      - name: Check the installer script
+        run: |
+          $nsi = "desktop/src-tauri/target/release/nsis/x64/installer.nsi"
+          if (-not (Test-Path -LiteralPath $nsi -PathType Leaf)) { throw "$nsi not found" }
+          $page = @(Select-String -LiteralPath $nsi -Pattern 'PageReinstall|Page custom|ReinstallPageCheck')
+          if ($page.Count) {
+            $page | ForEach-Object { "::error::installer.nsi line $($_.LineNumber): $($_.Line.Trim())" }
+            throw "the installer has a reinstall page"
+          }
+          $required = @(
+            '^!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrInstalled$',
+            '^Function SkipIfPassiveOrInstalled$',
+            '^!include ".*\\installer\\hooks\.nsh"$'
+          )
+          foreach ($pattern in $required) {
+            if (-not (Select-String -LiteralPath $nsi -Pattern $pattern -Quiet)) { throw "installer.nsi has no line matching $pattern" }
+          }
+          "Installer script: no reinstall page; the folder page is skipped for an update" >> $env:GITHUB_STEP_SUMMARY
+
       - name: Installer smoke test
         env:
           VERSION: ${{ needs.meta.outputs.version }}
@@ -193,7 +226,8 @@ jobs:
           $conf = Get-Content desktop/src-tauri/tauri.conf.json -Raw -Encoding utf8 | ConvertFrom-Json
           ./desktop/scripts/installer-smoke.ps1 -Setup $setup[0].FullName -Version $env:VERSION `
             -BackendVersion $env:BACKEND_VERSION -BackendTreeSha256 $env:TREE_SHA256 `
-            -Publisher $conf.bundle.publisher -Port 18770 -WorkDir (Join-Path $env:RUNNER_TEMP "installer-smoke")
+            -Publisher $conf.bundle.publisher -Identifier $conf.identifier -Port 18770 `
+            -WorkDir (Join-Path $env:RUNNER_TEMP "installer-smoke")
 
       - name: Release asset
         run: |

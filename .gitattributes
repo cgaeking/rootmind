@@ -2,11 +2,12 @@
 * text=auto eol=lf
 
 # cmd.exe can misparse labels and goto in LF-only batch files; keep Windows
-# scripts and NSIS hooks in CRLF.
+# scripts and NSIS files (the installer template and its hooks) in CRLF.
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 *.nsh text eol=crlf
+*.nsi text eol=crlf
 
 # Binary formats
 *.png binary

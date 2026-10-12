@@ -1,5 +1,6 @@
 ; RootMind NSIS installer hooks (bundle.windows.nsis.installerHooks in
-; tauri.conf.json), inserted into Tauri's NSIS template.
+; tauri.conf.json), inserted into the installer template installer.nsi
+; (bundle.windows.nsis.template).
 ;
 ; The installer is per user and never elevates. The app starts its bundled
 ; backend from $INSTDIR\backend, so before files are replaced or removed both
@@ -7,17 +8,20 @@
 ; by path: the background service, which runs from
 ; %ProgramFiles%\RootMind Service, is never touched here.
 ;
-; The bundled backend is a folder of about 900 files. Before an install or
-; an uninstall the whole $INSTDIR\backend folder is removed: copying the new
+; Installing over an installed version (older, newer or the same) replaces it
+; in place without asking: the template has no reinstall page and never runs
+; the installed version's uninstaller, so app data and shortcuts stay. The
+; bundled backend is a folder of about 900 files. Before an install or an
+; uninstall the whole $INSTDIR\backend folder is removed: copying the new
 ; version over the old one would leave files that are no longer shipped (an
 ; old version's metadata among them, which would then report the old version).
 ;
 ; Uninstalling also offers to remove the background service, which outlives
 ; the app. That needs administrator approval and runs the service's own copy
-; from Program Files. It is not offered when an installer of a newer version
-; runs this uninstaller to replace the app, nor in silent uninstalls (/S, as
-; package managers run them); `rootmind-backend.exe service status` then warns
-; about a service that is left.
+; from Program Files. It is not offered for an uninstall that is part of an
+; update (/UPDATE), nor in silent or passive uninstalls (/S, /P, as package
+; managers run them); `rootmind-backend.exe service status` then warns about
+; a service that is left.
 
 !include "LogicLib.nsh"
 
@@ -46,13 +50,9 @@
 
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro ROOTMIND_CLOSE_APP_AND_BACKEND
-  ; Keep the service when this uninstall is part of an update or reinstall:
-  ; - the updater runs it with /UPDATE;
-  ; - the installer of another version runs it in place (_?=$INSTDIR), so it
-  ;   runs from $INSTDIR. A normal uninstall (Settings > Apps) runs from a
-  ;   temporary copy instead.
+  ; Keep the service when this uninstall is part of an update: Tauri marks
+  ; that with /UPDATE.
   ${If} $UpdateMode <> 1
-  ${AndIf} $EXEDIR != $INSTDIR
     !insertmacro ROOTMIND_OFFER_SERVICE_REMOVAL
   ${EndIf}
   !insertmacro ROOTMIND_REMOVE_BACKEND
