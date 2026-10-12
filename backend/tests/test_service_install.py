@@ -279,7 +279,7 @@ def run_uninstall(env, purge=False):
     return code, "\n".join(out), "\n".join(err)
 
 
-def install_existing(env, *, mcp_port=None, port=8000, sid=USER_SID, folder="1.1.0-11111111"):
+def install_existing(env, *, mcp_port=None, port=8000, sid=USER_SID, folder="1.2.0-11111111"):
     """Services as an earlier install left them (running)."""
     env.manager.add(
         BACKEND_SERVICE, imagepath.build(program_exe(folder), "backend", port, sid), pid=100
@@ -488,11 +488,10 @@ def test_access_context_failure(env):
 
 
 FOREIGN_IMAGES = [
-    r"C:\Users\me\AppData\Local\RootMind-Backend\tools\nssm.exe",
+    r"C:\tools\other-service.exe",
     r'"C:\Windows\System32\cmd.exe" /c exit 0',
-    # the old per-machine install folder
-    r'"C:\Program Files\RootMind\rootmind-backend.exe" service run backend --port 8000 '
-    f"--user-sid {USER_SID}",
+    # our command line, but a program outside the service's program folder
+    rf'"{USER_EXE}" service run backend --port 8000 --user-sid {USER_SID}',
 ]
 
 
@@ -501,10 +500,10 @@ FOREIGN_IMAGES = [
     [(name, image) for name in (BACKEND_SERVICE, MCP_SERVICE) for image in FOREIGN_IMAGES]
     + [
         # our layout, but the other role for this name
-        (BACKEND_SERVICE, rf'"{program_exe("1.1.0-1")}" service run mcp-http --port 3000'),
+        (BACKEND_SERVICE, rf'"{program_exe("1.2.0-1")}" service run mcp-http --port 3000'),
         (
             MCP_SERVICE,
-            rf'"{program_exe("1.1.0-1")}" service run backend --port 8000 --user-sid {USER_SID}',
+            rf'"{program_exe("1.2.0-1")}" service run backend --port 8000 --user-sid {USER_SID}',
         ),
     ],
 )
@@ -581,10 +580,10 @@ def test_a_failed_import_keeps_a_working_config(env, tmp_path):
 
 def test_mcp_token_from_file(env, tmp_path):
     source = tmp_path / "api_token.txt"
-    source.write_text("\ufeffold-mcp-token-value\n", encoding="utf-8")
+    source.write_text("\ufeffexisting-mcp-token-value\n", encoding="utf-8")
     code, _out, err = run_install(env, mcp=True, mcp_token_from=source)
     assert code == 0, err
-    assert (env.root / "data" / "api_token.txt").read_text() == "old-mcp-token-value"
+    assert (env.root / "data" / "api_token.txt").read_text() == "existing-mcp-token-value"
 
 
 # --- update ------------------------------------------------------------------------------------
@@ -731,7 +730,7 @@ def test_turning_mcp_off_removes_the_service_and_its_entries(env):
 def test_update_with_only_the_mcp_service_left(env):
     env.manager.add(
         MCP_SERVICE,
-        imagepath.build(program_exe("1.1.0-1"), "mcp-http", 18400),
+        imagepath.build(program_exe("1.2.0-1"), "mcp-http", 18400),
         account=MCP_ACCOUNT,
     )
     code, _out, err = run_install(env, port="auto")
@@ -893,10 +892,10 @@ def test_uninstall_nothing_installed(env):
 
 
 def test_uninstall_refuses_a_foreign_service(env):
-    env.manager.add(BACKEND_SERVICE, r"C:\tools\nssm.exe")
+    env.manager.add(BACKEND_SERVICE, r"C:\tools\other-service.exe")
     code, _out, _err = run_uninstall(env)
     assert code == ExitCode.FOREIGN_SERVICE
-    assert env.manager.services[BACKEND_SERVICE]["image_path"] == r"C:\tools\nssm.exe"
+    assert env.manager.services[BACKEND_SERVICE]["image_path"] == r"C:\tools\other-service.exe"
     assert not env.manager.calls
 
 
@@ -1036,7 +1035,7 @@ def test_status_warnings(env):
     assert "service is stopped" in info["warnings"]
     assert "token not readable for this account" in info["warnings"]
     hint = [w for w in info["warnings"] if w.startswith("RootMind is not installed")]
-    assert hint and f'"{program_exe("1.1.0-11111111")}" service uninstall' in hint[0]
+    assert hint and f'"{program_exe("1.2.0-11111111")}" service uninstall' in hint[0]
 
 
 def test_status_uninstall_hint_only_for_the_stored_account(env):
@@ -1046,7 +1045,7 @@ def test_status_uninstall_hint_only_for_the_stored_account(env):
 
 
 def test_status_foreign_service(env):
-    env.manager.add(BACKEND_SERVICE, r"C:\tools\nssm.exe")
+    env.manager.add(BACKEND_SERVICE, r"C:\tools\other-service.exe")
     info = install.status(env)
     assert info["installed"] is True and info["ours"] is False
     assert info["port"] is None and info["token_file"] is None
@@ -1121,7 +1120,7 @@ def test_cli_windows_only(env):
         ["uninstall"],
         ["uninstall", "--purge"],
         ["status", "--json"],
-        # The migration from a manual setup (documented).
+        # Every file option with fixed ports, without starting (command line).
         [
             "install",
             "--port",
@@ -1130,9 +1129,9 @@ def test_cli_windows_only(env):
             "--mcp-port",
             "3000",
             "--import-config",
-            r"C:\old\config.yaml",
+            r"C:\data\config.yaml",
             "--mcp-token-from",
-            r"C:\old\data\api_token.txt",
+            r"C:\data\api_token.txt",
             "--no-start",
         ],
     ],

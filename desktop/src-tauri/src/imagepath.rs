@@ -169,8 +169,8 @@ mod tests {
         let bad = [
             // unquoted path
             r"C:\Program Files\RootMind Service\1.2.0-0a1b2c3d\rootmind-backend.exe service run backend --port 8000 --user-sid S-1-5-21-1",
-            // NSSM, the removed legacy setup
-            r#""C:\Program Files\RootMind Service\nssm.exe""#,
+            // another program, without arguments
+            r#""C:\Program Files\RootMind Service\other-service.exe""#,
             // no arguments
             r#""C:\x\rootmind-backend.exe""#,
             // no space after the closing quote
@@ -209,8 +209,8 @@ mod tests {
         assert!(exe_is_ours(&ok.to_uppercase(), PF));
 
         let not_ours = [
-            // the old per-machine install folder
-            r"C:\Program Files\RootMind\backend\rootmind-backend.exe",
+            // other folders with the same file name
+            r"C:\Program Files\Other\backend\rootmind-backend.exe",
             r"C:\Program Files (x86)\RootMind Service\1.2.0-0a1b2c3d\rootmind-backend.exe",
             r"C:\Users\jane\AppData\Local\RootMind\backend\rootmind-backend.exe",
             // directly in the service folder, or nested deeper
@@ -222,7 +222,7 @@ mod tests {
             r"C:\Program Files\RootMind Service\\rootmind-backend.exe",
             r"C:\Program Files\RootMind Service/1.2.0/rootmind-backend.exe",
             // another program
-            r"C:\Program Files\RootMind Service\1.2.0-0a1b2c3d\nssm.exe",
+            r"C:\Program Files\RootMind Service\1.2.0-0a1b2c3d\other-service.exe",
         ];
         for exe in not_ours {
             assert!(!exe_is_ours(exe, PF), "accepted {exe}");

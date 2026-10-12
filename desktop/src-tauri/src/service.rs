@@ -994,13 +994,13 @@ mod tests {
         assert!(backend.present && backend.ours());
         // The MCP ImagePath under the backend's name is not ours.
         assert!(!view(Some(GOLDEN_MCP), None, Role::Backend).ours());
-        // The legacy NSSM service is present but foreign.
-        let nssm = view(
-            Some(r#""C:\Program Files\RootMind Service\nssm.exe""#),
+        // Another program's service under our name is present but foreign.
+        let foreign = view(
+            Some(r#""C:\Program Files\RootMind Service\other-service.exe""#),
             None,
             Role::Backend,
         );
-        assert!(nssm.present && !nssm.ours());
+        assert!(foreign.present && !foreign.ours());
         // Without the Program Files path nothing is ours.
         assert!(!ServiceView::from_parts(Some(GOLDEN_BACKEND), None, Role::Backend, None).ours());
         assert!(!view(None, None, Role::Backend).present);
@@ -1116,7 +1116,7 @@ mod tests {
             ),
             (
                 "foreign service",
-                view(Some(r#""C:\nssm\nssm.exe""#), Some(RUNNING), Role::Backend),
+                view(Some(r#""C:\x\other.exe""#), Some(RUNNING), Role::Backend),
                 own(),
                 ConnectFailure::NotInstalled,
             ),
@@ -1202,7 +1202,7 @@ mod tests {
     fn blocked_reasons() {
         let none = ServiceView::default();
         let ours = view(Some(GOLDEN_BACKEND), Some(RUNNING), Role::Backend);
-        let foreign = view(Some(r#""C:\nssm\nssm.exe""#), Some(RUNNING), Role::Backend);
+        let foreign = view(Some(r#""C:\x\other.exe""#), Some(RUNNING), Role::Backend);
         let readable = TokenRead::Readable("abc".into());
 
         assert_eq!(

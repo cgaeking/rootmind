@@ -48,9 +48,9 @@ def test_tolerates_surrounding_and_repeated_whitespace():
         # unquoted path
         r"C:\Program Files\RootMind Service\1.2.0-0a1b2c3d\rootmind-backend.exe service run "
         r"backend --port 8000 --user-sid S-1-5-21-1",
-        # NSSM, the removed legacy setup
-        r'"C:\Program Files\RootMind Service\nssm.exe"',
-        r"C:\Users\me\AppData\Local\RootMind-Backend\tools\nssm.exe",
+        # another program, without arguments
+        r'"C:\Program Files\RootMind Service\other.exe"',
+        r"C:\tools\other-service.exe",
         # no arguments, no closing quote, no space after the quote
         r'"C:\x\rootmind-backend.exe"',
         r'"C:\x\rootmind-backend.exe service run mcp-http --port 3000',
@@ -82,8 +82,9 @@ def test_rejects_other_shapes(raw):
         (EXE, True),
         (EXE.upper(), True),
         (r"C:\Program Files\RootMind Service\x\rootmind-backend.exe", True),
-        # the old per-machine install folder, user folders, other names and depths
-        (r"C:\Program Files\RootMind\rootmind-backend.exe", False),
+        # other folders (a similar name, the user profile), other names and depths
+        (r"C:\Program Files\Other\rootmind-backend.exe", False),
+        (r"C:\Program Files\RootMind Service2\x\rootmind-backend.exe", False),
         (r"C:\Users\me\AppData\Local\RootMind\backend\rootmind-backend.exe", False),
         (r"C:\Program Files\RootMind Service\1.2.0-0a1b2c3d\other.exe", False),
         (r"C:\Program Files\RootMind Service\rootmind-backend.exe", False),

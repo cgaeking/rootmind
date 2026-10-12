@@ -555,8 +555,8 @@ def _prepare_files(
     if not config_file.exists():
         _write_atomic(config_file, DEFAULT_CONFIG)
     elif not _database_in_service_folder(config_file, root):
-        # A config kept from an earlier setup (or edited by hand) may name a
-        # database the MCP account cannot open. The index is rebuilt there.
+        # A config edited by hand may name a database outside data\db, where
+        # the MCP account cannot open it. The index is rebuilt in data\db.
         from ..config import import_config
 
         try:

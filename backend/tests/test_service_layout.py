@@ -160,7 +160,7 @@ def test_remove_tree_never_follows_links(tmp_path):
 
 def test_remove_version_folders_keeps_one(tmp_path):
     base = tmp_path / "RootMind Service"
-    for name in ("1.1.0-aaaaaaaa", "1.2.0-bbbbbbbb", "1.2.0-cccccccc"):
+    for name in ("1.2.0-aaaaaaaa", "1.2.0-bbbbbbbb", "1.2.0-cccccccc"):
         make_tree(base / name)
     assert layout.remove_version_folders(base, keep=base / "1.2.0-CCCCCCCC".lower()) == []
     assert [p.name for p in base.iterdir()] == ["1.2.0-cccccccc"]
