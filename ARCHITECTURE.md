@@ -2,10 +2,16 @@
 
 This document describes how RootMind is put together, which guardrails the
 agent loop has, and which trade-offs were made. Paths are relative to
-`backend/src/rootmind/` unless they start with `backend/` or `desktop/`.
+`backend/src/rootmind/` unless they start with `backend/`, `desktop/`,
+`scripts/`, `packaging/` (the folder at the repository root) or `.github/`.
+In the [Desktop app](#desktop-app) section, `src/...` and `src-tauri/...` are
+relative to `desktop/`.
 
 - [Components](#components)
-- [Deployments](#deployments)
+- [Deployment modes](#deployment-modes)
+- [Interfaces between the parts](#interfaces-between-the-parts)
+- [Background service](#background-service)
+- [Folder access policy](#folder-access-policy)
 - [Packaging](#packaging)
 - [The agent loop](#the-agent-loop)
 - [The tool layer](#the-tool-layer)
@@ -28,6 +34,7 @@ flowchart TB
         stdio["MCP stdio<br/>mcp_stdio.py"]
         http["MCP HTTP<br/>mcp_http.py"]
         cli["CLI<br/>main.py"]
+        host["Windows service host<br/>service/host.py"]
     end
     engine["Agent loop<br/>rlm_engine/engine.py"]
     tools["Tool layer<br/>tools.py"]
@@ -37,7 +44,11 @@ flowchart TB
     indexer["Indexer<br/>indexer/indexer.py"]
     parsers["Parsers<br/>indexer/parser.py"]
     conn["LocalConnector<br/>connectors/local.py"]
+    policy["Folder access policy<br/>access.py, winaccess.py"]
 
+    cli --> rest
+    host --> rest
+    host --> http
     rest --> engine
     rest --> repo
     rest --> sync
@@ -50,122 +61,393 @@ flowchart TB
     repo --> db
     sync --> indexer
     indexer --> conn
+    conn --> policy
     indexer --> parsers
     indexer --> repo
 ```
 
 | Component | Code | Responsibility |
 |---|---|---|
-| Connector | `connectors/local.py` | Walks one folder, applies include and exclude patterns, reads files, computes a SHA-256 per file, keeps every resolved path inside the folder root, never follows links or junctions out of it, and raises when the folder is unreachable |
+| Connector | `connectors/local.py` | Walks one folder, applies include and exclude patterns, reads files, computes a SHA-256 per file, keeps every resolved path inside the folder root, never follows links or junctions out of it, asks the folder access policy before it enters a folder or reads a file, and raises when the folder is unreachable |
+| Folder access policy | `access.py`, `winaccess.py` | Decides which folders and files a backend may read. Unrestricted everywhere except in the Windows service, where reads are confined to the installing account's unelevated rights |
 | Parsers | `indexer/parser.py` | Extract text per file extension; insert `[Page N]`, `=== Slide N ===` and `=== Sheet: Name ===` markers |
 | Indexer | `indexer/indexer.py` | Skips unchanged files by hash, enforces the size limit, stores text and records parse errors per file; reports each file as indexed, skipped or error |
 | Sync manager | `indexer/sync.py` | Full and incremental syncs, one at a time per database; the background schedule; pruning of removed folders |
 | Repository | `database/repository.py`, `database/models.py` | SQLite schema, FTS5 search, trigram fuzzy search, windowed reads, location lookup |
 | Tool layer | `tools.py` | The five read-only tools: schemas, argument validation, execution, result formatting |
 | Agent loop | `rlm_engine/engine.py` | Provider adapters, the bounded tool loop, condensing follow-up questions, sources |
-| REST API | `api/app.py`, `api/routes.py` | Localhost API for the desktop app; config hot reload |
+| REST API | `api/app.py`, `api/routes.py`, `auth.py` | Localhost API for the desktop app with an optional bearer token; config hot reload |
 | MCP servers | `mcp_stdio.py`, `mcp_http.py` | The same tools for external MCP clients |
-| Desktop app | `desktop/` | Tauri 2 UI; a pure client of the REST API |
+| CLI | `main.py` | One command tree: `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service`; bind and token resolution |
+| Windows service | `service/` | `service install`, `uninstall` and `status`, and the service host that the Service Control Manager starts |
+| Desktop app | `desktop/` | Tauri 2 UI; starts and stops its built-in backend, manages the background service, and talks to the backend over REST |
 
-## Deployments
+## Deployment modes
 
-**From source.** `uv run rootmind api` runs the REST API and the background
-indexer in one process. `uv run rootmind index` runs one incremental sync
-(`--full` for a full one) and exits. Config and database live under
-`RLM_HOME`, or the working directory when it is unset.
+| Mode | Started by | Home (`RLM_HOME`) | Address | REST token | MCP |
+|---|---|---|---|---|---|
+| **Built-in** (the app's default) | The desktop app, as a child process | `%LOCALAPPDATA%\io.github.cgaeking.rootmind\backend` | `127.0.0.1` on a free port | New on every app launch, passed only in the child's environment (`RLM_API_TOKEN`) | stdio: `rootmind-backend.exe mcp` with the same `RLM_HOME` |
+| **Background service** | The Service Control Manager, at boot | `%ProgramData%\RootMind` | `127.0.0.1:8000`, or a port from 18300–18399 when 8000 is taken | `data\rest_token.txt` | Optional service `RootMind-MCP-HTTP` on 3000 or 18400–18499, token in `data\api_token.txt` |
+| **Custom** (Settings → Advanced) | You | Whatever that backend uses | The address you enter (loopback only, because of the app's CSP) | Optional, entered by you | Not managed by the app |
+| **Command line** | You (`rootmind api`, `uv run ...`, `rootmind-backend.exe api`) | `RLM_HOME`, or the working directory | `--host`/`--port`, then `RLM_HOST`/`RLM_PORT`, then `api.*` in `config.yaml`, then `127.0.0.1:8000` | Off unless `RLM_API_TOKEN` or `--require-token` | `rootmind mcp` / `rootmind-mcp`, `rootmind mcp-http` / `rootmind-mcp-http` |
 
-**Windows installer and service (experimental).** The full installer (see
-[Packaging](#packaging)) installs the desktop app per machine, plus
-`rootmind-backend.exe` (a PyInstaller build of the REST API), the service
-scripts and NSSM. An NSIS post-install hook runs
-`backend/deploy/windows/_service-backend.ps1 -Install`, which registers the
-service `RootMind-Backend`:
+```
+RootMind.exe  (per user, %LOCALAPPDATA%\RootMind\)
+  |-- backend\rootmind-backend.exe + backend\_internal\     (onedir build, Tauri resources)
+  |-- built-in: runs backend\rootmind-backend.exe api --host 127.0.0.1 --port 0 --exit-with-parent
+  |             env RLM_HOME=<app local data>\backend, RLM_API_TOKEN=<random>   (child only)
+  |-- service:  reads SCM state and PID, the ImagePath (port), the TCP table (listener PID)
+  |             and data\rest_token.txt; elevates `service ...` commands
+  '-- custom:   your URL and optional token
 
-- runs as LocalSystem and starts with Windows, so indexing continues while the
-  desktop app is closed;
-- binds to `127.0.0.1:8000`;
-- `RLM_HOME` is `%ProgramData%\RootMind` (`config.yaml`, `data\index.db`,
-  `logs\backend-service.log`, rotated at 10 MB). The install step removes
-  inherited permissions from that folder and grants access to SYSTEM and
-  Administrators only;
-- on upgrade, a pre-install hook stops and removes the old service so the
-  executable is not locked; uninstall removes the service.
+%ProgramFiles%\RootMind Service\<version>-<id>\   rootmind-backend.exe, _internal\   (admin-only)
+%ProgramData%\RootMind\                          config.yaml, data\, logs\, tmp\
+```
 
-Because the service runs as LocalSystem and its REST API has no
-authentication, any local process can point it at a folder it cannot read
-itself (see [SECURITY.md](SECURITY.md)). The service setup is therefore
-marked experimental and meant for single-user machines. RootMind's own data
-folder is never indexed. The install step refuses to register the service
-when anything it would run as SYSTEM (executable, NSSM, Python, checkout) is
-writable by non-administrators, or when the data folder was created by
-someone else or contains links.
+**Choosing the backend.** When the app starts, `decideBackend()` in
+`desktop/src/state/bootstrap.ts` (a pure, unit-tested function) picks the
+backend from the stored mode, the build type and the service state:
 
-The desktop app stores its chat history per user in
-`%APPDATA%\io.github.cgaeking.rootmind\conversations`. Without the installer,
-`backend/deploy/windows/install-backend-service.bat` installs the same service
-from a source checkout (see
-[backend/deploy/windows/README.md](backend/deploy/windows/README.md)).
+1. A stored custom backend (`rlm.backendMode` = `custom`) wins.
+2. A debug build uses the bundled backend if it has one, otherwise the backend
+   dialog asks for an address and nothing is contacted until you connect. It
+   never probes port 8000 and never picks the service on its own.
+3. A release build uses the background service when it is installed, belongs
+   to this app and its token is readable. If it belongs to another account,
+   the app uses the built-in backend and Settings says so.
+4. On the first start of a version with this logic, an address typed into an
+   older version is kept as a custom backend. Otherwise the app probes
+   `http://127.0.0.1:8000/` once (2 s); if a RootMind server without a token
+   answers, it asks once whether to use it or the built-in backend.
+5. Otherwise the built-in backend.
 
-**MCP over stdio.** The MCP client starts `rootmind-mcp` as a child process.
-It never indexes; apart from creating the schema in a new database, it only
-reads. SQLite runs in WAL mode, so it can read while another process (the
-REST API or `rootmind index`) writes.
+`localStorage` holds `rlm.backendMode` (`auto` or `custom`), and `rlm.baseUrl`
+and `rlm.token` only for a custom backend. "Use default backend" under
+Settings → Advanced, and "Use built-in backend" in the dialogs of a custom
+backend, return to `auto`.
 
-**MCP over HTTP.** `rootmind-mcp-http` is a separate process on
-`127.0.0.1:3000`. Like the stdio server it only serves by default.
-`--index` also runs the background indexer there; use it only when no REST
-API indexes the same database. Each indexing process prunes the folders
-missing from its own copy of the config, so two of them with different
-configs would keep deleting each other's folders.
+**Built-in backend lifecycle** (`desktop/src-tauri/src/backend.rs`). The app
+starts `<resource folder>\backend\rootmind-backend.exe` through
+`tauri-plugin-shell` from Rust, in its own process group, with
+`api --host 127.0.0.1 --port 0 --exit-with-parent`, `RLM_HOME` and the working
+directory set to the backend home, and a fresh 32-byte token in
+`RLM_API_TOKEN` for every start. `CONFIG_PATH` is set to `config.yaml` and
+`RLM_DISABLE_SCHEDULER` to empty, so the user's environment cannot point the
+backend at another config or turn indexing off. Debug builds also set
+`RLM_DEV=1` and pass an absolute `RLM_HOME` from their own environment
+through, for scratch folders.
 
-Both MCP servers read the list of configured folders (which the tools may
-return documents from) at startup; restart them after changing folders.
+- The backend binds the port itself and prints one ready line,
+  `ROOTMIND_LISTENING {"port":N}`. The app waits up to 90 seconds for it; the
+  UI says that the first start can take longer while Windows checks the app.
+- stdout and stderr go to `<home>\logs\backend.log` (rotated above 5 MB, one
+  old file kept); the last 200 lines stay in memory for the error dialog.
+- On exit the app writes `shutdown` to the backend's stdin, waits 5 seconds,
+  then ends the process group. If the app crashes, stdin closes and the
+  backend stops on its own.
+- After a crash the backend is restarted after 1, 2 and 4 seconds. Three
+  failures within 2 minutes give up; 5 minutes of healthy running reset the
+  count. The port and the token change, and the UI picks up both through
+  `sidecar_status`; a token sent to the old port is worthless. A start that
+  fails before the process exists (for example its log folder cannot be
+  created) is recorded as failed, so nothing waits for it.
+- Start errors are reported by kind: the file is missing, Windows security
+  blocked it (Smart App Control, WDAC or antivirus: Windows error codes 225,
+  226, 1260 and 4550–4599, or an early exit whose last lines say an
+  Application Control policy blocked a file), access was denied, it exited
+  early, or it never printed the ready line.
+- A second app launch focuses the running window (`tauri-plugin-single-instance`),
+  so two backends never share one data folder.
 
-The PyInstaller executable contains the REST API and the CLI, but not the MCP
-servers; those run from a source checkout. Because the service's data folder
-is restricted to SYSTEM and Administrators, an MCP server running as a normal
-user cannot use the service's index; give it its own `RLM_HOME`.
+**Switching between built-in and service.** The configuration follows the
+user; the index does not. Turning the service on passes the built-in
+`config.yaml`, when there is one, to `service install --import-config`.
+Turning it off copies the service's `config.yaml` to
+`<built-in home>\config.from-service.yaml`, and the app starts its built-in
+backend with `--import-config` on that file.
+`config.import_config()` reads the file directly (no API keys from the
+environment or a `.env` file are merged in), refuses links and files over
+1 MB, keeps the previous file as `config.yaml.bak`, and always resets
+`database.path` (`./data/index.db` for the built-in backend,
+`./data/db/index.db` for the service). The service builds its own index from
+scratch; after it is turned off, the built-in backend reuses its earlier index
+and brings it up to date.
+
+**MCP servers.** The stdio server is started by the MCP client as a child
+process. The HTTP server is a separate process on `127.0.0.1:3000`, or the
+`RootMind-MCP-HTTP` service. Both only serve by default; `--index` also runs
+the background indexer in the HTTP server, which is only safe when no REST
+API indexes the same database: each indexing process prunes the folders
+missing from its own copy of the config. SQLite runs in WAL mode, so they can
+read while another process writes. The HTTP server re-reads the folder list
+on the next tool call after `config.yaml` changed (size and modification
+time); the stdio server reads it at startup. With `--index` the in-process
+indexer keeps the folders it started with until a restart. In service mode, use MCP over
+HTTP: the service's database lives in a folder that your account can only
+read, and SQLite readers in WAL mode need to write.
+
+## Interfaces between the parts
+
+These contracts are shared by the backend, the desktop app and the CI scripts.
+
+**Backend executable**
+
+| Item | Value |
+|---|---|
+| Build output | `backend/dist/rootmind-backend/` with `rootmind-backend.exe` and `_internal\` |
+| In the installer | `$INSTDIR\backend\rootmind-backend.exe` (resource map from `desktop/src-tauri/binaries/rootmind-backend/`) |
+| Release assets | `RootMind-Setup-x64.exe`; `rootmind-backend-windows-x64.zip` with the folder `rootmind-backend/`; `SHA256SUMS.txt` |
+| `--version` | `rootmind-backend <version>` (`rootmind <version>` from a Python install); the last word is the version in PEP 440 normal form |
+| Commands | `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service install\|uninstall\|status`, and `service run backend\|mcp-http` (started by the Service Control Manager, not listed in the help) |
+| `api` options | `--host`, `--port` (0 = a free port), `--require-token`, `--exit-with-parent`, `--import-config FILE` |
+| Ready line | Once on stdout, flushed: `ROOTMIND_LISTENING {"port":N}` |
+| Lifeline | With `--exit-with-parent`, the backend shuts down on stdin EOF or a `shutdown` line |
+| Token files | `<RLM_HOME>/data/rest_token.txt` (REST), `<RLM_HOME>/data/api_token.txt` (MCP) |
+| Open routes with a token | `GET`/`HEAD` on `/` (with `"auth": "bearer"` or `"none"`) and `/health`; everything else 401 |
+| Service names | `RootMind-Backend`, `RootMind-MCP-HTTP` |
+
+The commands `mcp`, `mcp-http` and `service` are handed to their own entry
+points before logging and the config are set up, with the rest of the command
+line unchanged, so `mcp` keeps stdout clean for JSON-RPC. Without a command,
+`rootmind` and `rootmind-backend.exe` run `api`.
+
+**Desktop commands** (Rust, `desktop/src-tauri/src/`; camelCase over IPC):
+
+| Command | Returns | What it does |
+|---|---|---|
+| `app_mode` | `{version, dev, builtinAvailable}` | Build information |
+| `sidecar_start`, `sidecar_restart` | `{url, token}` | Start (idempotent) or restart the built-in backend |
+| `sidecar_status` | `{state, url, token, exitCode, error, logTail}` | State of the built-in backend; `url` and `token` only while it runs |
+| `backend_log_dir` | path | The log folder of the backend in use |
+| `service_info` | `ServiceInfo` | Installed, ours, state, port, whether the token is readable, whether this account can turn it on and why not; the same for MCP. Starts no process |
+| `service_connect` | `{ok, url, token}` or `{ok: false, reason}` | Checks the listener (below) and only then reads the token |
+| `service_enable({mcp})`, `service_disable({purge})`, `service_set_mcp({enabled})`, `service_update` | `{ok: true, backend}` or `{ok: false, cancelled, code, backend}` | Elevated `service install` or `service uninstall`; `code` is the service exit code, or 1223 when the approval was cancelled |
+| `service_mcp_token` | string | Reads `data\api_token.txt` |
+| `service_details` | string | `service status --json` (not elevated) and the end of `logs\install.log` |
+
+The webview cannot reach any other command that starts a process.
+`capabilities/default.json` grants the shell plugin nothing; the app's own
+commands need no capability entry.
+
+## Background service
+
+**Services.**
+
+| Service | Account | Runs |
+|---|---|---|
+| `RootMind-Backend` | LocalSystem, start automatic | REST API and indexer, with the folder access policy of the installing account |
+| `RootMind-MCP-HTTP` (optional) | `NT SERVICE\RootMind-MCP-HTTP` (virtual account, unrestricted service SID, only `SeChangeNotifyPrivilege`), start automatic | MCP over HTTP from the same index, without the scheduler |
+
+Both restart after 5, 30 and 60 seconds on failure (reset after one day). A
+stop because of a config, token or access error reports service-specific
+code 2 and is not restarted. The registered command lines (ImagePath) are
+quoted and carry no secrets:
+
+```
+"C:\Program Files\RootMind Service\1.2.0-0a1b2c3d\rootmind-backend.exe" service run backend --port 8000 --user-sid S-1-5-21-1-2-3-1001
+"C:\Program Files\RootMind Service\1.2.0-0a1b2c3d\rootmind-backend.exe" service run mcp-http --port 3000
+```
+
+A service counts as "ours" when its program lies under
+`%ProgramFiles%\RootMind Service\`. The Python package (`service/imagepath.py`)
+and the desktop app (`desktop/src-tauri/src/imagepath.rs`) parse these lines
+with the same rules and the same test strings.
+
+**Service host** (`service/host.py`). `service run <role>` hosts one service
+through pywin32's `ServiceFramework`. It sets `RLM_HOME` and the working
+directory to `%ProgramData%\RootMind` (from the known-folder API), points
+`TEMP`/`TMP` of the backend at its `tmp\` folder, removes `RLM_API_TOKEN`,
+`MCP_API_TOKEN`, `CONFIG_PATH`, `RLM_DEV`, `RLM_HOST` and `RLM_PORT` from its
+environment, and sends stdout, stderr and logging to a rotating log (10 MB,
+5 files) in `logs\backend\` or `logs\mcp-http\`. Both check that the
+configured database lies under `data\` (the MCP role: under `data\db\`,
+where its account may write) and stop with a config error otherwise. The
+backend reads the token from
+`data\rest_token.txt` (created if missing), and builds
+`create_app(api_token=..., folder_access=WindowsUserAccess(sid))`. The MCP role
+reads `data\api_token.txt` and builds the MCP app without the scheduler. Both
+bind `127.0.0.1:<port>` exclusively and run uvicorn; a stop request reports
+STOP_PENDING and lets the normal shutdown stop the scheduler, a running sync
+and the database.
+
+**`service install`** (`service/install.py`, elevated, release build only):
+
+1. Checks: Windows and the onedir release build (else exit 2 with the
+   download address of the release zip), elevated (5), `--user-sid` equal to
+   the approving account (8), and an access context for that account (9).
+2. A service with our name that is not ours: exit 3, with the `sc.exe`
+   commands to remove it; it is never changed. Our own services switch to
+   update mode: port, MCP setting and MCP port come from the ImagePath, and
+   another account's service is refused (8).
+3. Ports: no flag means 8000 and 3000 strictly (busy: exit 4); `auto` falls
+   back to 18300–18399 and 18400–18499. Updates keep the ports.
+4. In update mode, stops the services and waits for their processes, so
+   nothing writes into the data folder while it is checked.
+5. Creates or validates the data folder (exit 6 when an existing folder is not
+   protected) and sets its permissions, each through a handle that does not
+   follow a reparse point. New files are owned by Administrators, also when
+   User Account Control is off.
+6. Copies the program into a new version folder, unless it already runs from
+   the registered one (MCP on or off).
+7. Imports `--import-config`, or writes a default config; a database outside
+   `data\db\` is moved there (the index is rebuilt).
+8. Creates missing tokens; `--mcp-token-from FILE` sets the MCP token. Existing
+   tokens are kept.
+9. Registers or updates the services; `--no-mcp-http` removes the MCP service.
+10. Starts them and waits until each one runs and answers `/health`. Before
+    any request with a token it checks, like the app, that the service's own
+    process owns the listening socket (`service/listeners.py`). Then it checks
+    a 401 without and a 200 with the token, and the same for MCP `initialize`
+    (failure: exit 7; the services stay installed so their logs can be read).
+11. Deletes older version folders and appends the result to `logs\install.log`.
+
+A failure before step 9 restarts the services that were running.
+`service uninstall [--purge]` stops and deletes both services, deletes the
+version folders and `data\rest_token.txt`, and with `--purge` the data folder
+(not elevated: 5; not installed: 0; not ours: 3). It touches the data folder
+only when it passes the same check as for a reinstall. `service status [--json]`
+needs no elevation:
+
+```json
+{"installed": true, "ours": true, "state": "running", "port": 8000, "version": "1.2.0",
+ "binary": "C:\\Program Files\\RootMind Service\\1.2.0-0a1b2c3d\\rootmind-backend.exe",
+ "user_sid": "S-1-5-21-...", "token_file": "C:\\ProgramData\\RootMind\\data\\rest_token.txt",
+ "token_readable": true,
+ "mcp_http": {"installed": true, "state": "running", "port": 3000,
+              "token_file": "C:\\ProgramData\\RootMind\\data\\api_token.txt", "token_readable": true},
+ "warnings": []}
+```
+
+Warnings: "service is not ours", "service is stopped", "token not readable for
+this account", "MCP service is not ours", "MCP service is stopped", and a hint
+with the uninstall command when the app is no longer installed for the
+service's account.
+
+**Exit codes** of `service install`, `uninstall` and `status`:
+
+| Code | Meaning |
+|---|---|
+| 0 | OK |
+| 1 | Unexpected error (also an unprotected `%ProgramFiles%\RootMind Service`) |
+| 2 | Usage error, not Windows, or not the release build |
+| 3 | A service with RootMind's name exists that RootMind did not install |
+| 4 | Port in use |
+| 5 | Not elevated |
+| 6 | Data folder refused |
+| 7 | The services did not pass the health check |
+| 8 | Account mismatch: the approving account is not the app's account, or the service belongs to another account |
+| 9 | The access context for the account could not be built |
+
+The app shows 1223 when the approval prompt was cancelled. Program and data
+locations and their permissions are described in
+[SECURITY.md](SECURITY.md#background-service).
+
+**Connecting from the app** (`desktop/src-tauri/src/service.rs`, `win/`). The
+app reads the ImagePath from the registry and the state from the Service
+Control Manager without elevation. Before it reads the token, it compares the
+service's process ID with the owner of the listening socket on its port
+(`GetExtendedTcpTable`); a mismatch returns `listener_mismatch` and no token.
+Elevated commands run through `ShellExecuteExW` with the `runas` verb, the
+arguments are built and quoted in Rust, and the app waits up to 10 minutes
+for the result. Turning the service on or updating it elevates the per-user
+backend; turning it off and MCP on or off elevate the program under
+`%ProgramFiles%\RootMind Service\`.
+
+## Folder access policy
+
+`access.py` defines the protocol every connector reads through:
+
+```python
+class FolderAccess(Protocol):
+    def check_root(self, path: str | Path) -> Path: ...            # canonical root, or FolderNotAllowed
+    def may_descend(self, directory: Path, root: Path) -> bool: ...
+    def open_file(self, path: Path, root: Path) -> BinaryIO: ...   # PermissionError, or ValueError outside root
+```
+
+`Unrestricted` (`UNRESTRICTED`) keeps the plain behaviour: resolve the path,
+enter every folder, `open(path, "rb")`. The built-in backend, the command line
+and the MCP servers use it. `LocalConnector` calls `check_root` once,
+`may_descend` before it enters a folder and `open_file` for every read and
+hash. Under any other policy it never follows a link itself: it resolves
+paths lexically instead of with `Path.resolve()`, examines every component
+below the root with `lstat` before it uses a file (a link counts as missing),
+and walks with `os.scandir` without looking at link targets, which `os.walk`
+would do. `create_connectors(config, access, errors)` records folders that
+cannot be used, `GET /connectors` lists them with `"available": false` and the
+reason, and under a restricting policy `POST /config` checks every new folder
+before it saves (400 with the reason); folders that are already configured
+stay.
+
+`winaccess.WindowsUserAccess(user_sid)` is the background service's policy. It
+answers one question: can this account read the file without elevation? It
+builds an AuthZ client context for the SID with the groups that UAC filters
+made deny-only, checks the root's path and final path against the refused
+locations, and checks every folder and file on its open handle, opened
+without following a link at the path itself: the final path must lie under
+the root's final path, and `AuthzAccessCheck` must grant
+list or read access on the handle's security descriptor. Results are cached
+per security descriptor (4,096 entries) and AuthZ calls are serialized. Any
+error denies. [SECURITY.md](SECURITY.md#background-service) lists the refused
+locations and what follows from the model.
 
 ## Packaging
 
-The app-only installer needs nothing but the desktop toolchain:
+**Backend.** `backend/packaging/rootmind-backend.spec` builds a PyInstaller
+onedir folder: `rootmind-backend.exe` (console) and `_internal\`. It contains
+the REST API, the CLI, both MCP servers and, on Windows, the service host
+(pywin32). The interpreter runs in UTF-8 mode, so logs and pipes are UTF-8.
+The executable carries a Windows version resource (product RootMind, the
+package version). Builds set `PYTHONHASHSEED=0` and `SOURCE_DATE_EPOCH` and
+install from the lockfile without development tools. The measured build has
+about 910 files and 84 MB; in the smoke test the API answers about 1 to 2
+seconds after start. `backend/packaging/entry.py` runs `api` when the
+executable gets no arguments.
 
-```bash
-cd desktop
-pnpm install
-pnpm tauri build          # per-user NSIS installer; the backend is not included
-```
+- `backend/packaging/smoke-test.ps1` checks a build: `--version`, the API with
+  and without a token, the ready line and the lifeline, indexing of every
+  document format in the eval corpus, that both LLM client libraries load,
+  and MCP over HTTP and stdio.
+- `backend/packaging/tree_hash.py` computes the tree hash (SHA-256 over the
+  sorted `<path>\t<sha256>` lines of every file). CI uses it to make sure the
+  installer and the zip contain exactly the tested build.
 
-The full installer bundles the backend and installs the Windows service. Build
-it on Windows in this order:
+**Installer.** `scripts/prepare_backend.py` copies the build to
+`desktop/src-tauri/binaries/rootmind-backend/` (gitignored) and checks its
+tree hash, its size and `--version`. The overlay
+`desktop/src-tauri/tauri.release.conf.json` maps that folder to
+`$INSTDIR\backend\`. Without the overlay there is no backend, so `cargo
+check`, `pnpm tauri dev` and the desktop CI work without a backend build.
 
-```powershell
-# 1. Backend executable -> backend/dist/rootmind-backend.exe
-cd backend
-uv run --group build pyinstaller packaging/rootmind-backend.spec --noconfirm --clean --distpath dist
+The NSIS installer installs per user (`installMode: currentUser`, default
+folder `%LOCALAPPDATA%\RootMind`). `desktop/src-tauri/installer/hooks.nsh`:
 
-# 2. NSSM, checked against a pinned SHA-256 -> backend/deploy/windows/tools/nssm.exe
-powershell -ExecutionPolicy Bypass -File deploy\windows\fetch-nssm.ps1
+- before installing or uninstalling, closes the app and then
+  `$INSTDIR\backend\rootmind-backend.exe` through Tauri's Restart Manager
+  check, which matches by path and so never touches the service's copy under
+  Program Files;
+- then removes the whole `$INSTDIR\backend\` folder (when it holds the
+  backend executable), so an upgrade leaves no files the new version does not
+  ship, such as an older version's package metadata;
+- before an interactive uninstall that is not part of an update, reads the
+  ImagePath of
+  `RootMind-Backend`, requires it to lie under
+  `$PROGRAMFILES64\RootMind Service\`, asks "Also remove the RootMind
+  background service? (administrator approval required)" and runs that
+  program elevated with `service uninstall`. An update is recognized by
+  `/UPDATE` (the updater) or by the uninstaller running in place, as the
+  installer of another version runs it (`_?=$INSTDIR`); Settings → Apps runs
+  a temporary copy instead. A silent uninstall leaves the service.
 
-# 3. Installer with the overlay config (resources, per-machine install, service hooks)
-cd ..\desktop
-pnpm install
-pnpm tauri build --config src-tauri/tauri.installer.conf.json
-```
+`bundle.publisher` is "Christian Gäking"; it names the "Installed apps" entry
+that winget matches. The release workflow measures the installer and states
+its size in the release notes. Build commands are in the README
+([Build the installer yourself](README.md#build-the-installer-yourself)).
 
-`desktop/src-tauri/tauri.installer.conf.json` adds the backend files as
-resources and enables the hooks in `desktop/src-tauri/installer/hooks.nsh`.
-Set `VITE_APP_LANG=de` before step 3 to build the German UI. The versions in
-`backend/pyproject.toml`, `desktop/package.json` and
-`desktop/src-tauri/Cargo.toml` must match; `scripts/check_versions.py`
-checks that in the backend workflow, and the desktop workflow checks the
-latter two against the tag. Installers are not code-signed.
-
-The PyInstaller build (with a smoke test of the executable) and the NSSM hash
-check of an existing copy have been run locally. The NSSM download, the
-overlay build and its service hooks have not yet been verified end to end in
-this repository; the full installer is experimental (see
-[Deployments](#deployments)).
+**Versions.** `backend/pyproject.toml`, `desktop/package.json` (which
+`tauri.conf.json` reads) and `desktop/src-tauri/Cargo.toml` carry the same
+version. `scripts/check_versions.py` compares them in PEP 440 normal form, and
+with `--tag` also the release tag. The release steps are in
+[CONTRIBUTING.md](CONTRIBUTING.md#releasing).
 
 ## The agent loop
 
@@ -403,32 +685,59 @@ each field. Sections:
   directory.
 - `connectors`: one entry per folder (`name`, `type: local`, `path`, optional
   `include` and `exclude`). Relative folder paths resolve against the working
-  directory, so use absolute paths.
+  directory, so use absolute paths. The background service refuses relative
+  paths.
 - `indexer`: schedule, size limit, global include and exclude patterns.
-- `api`: host and port for `rootmind` without a subcommand.
+- `api`: host and port for `rootmind api` (and `rootmind` without a command)
+  when neither `--host`/`--port` nor `RLM_HOST`/`RLM_PORT` are given. The
+  built-in backend and the service get their port on the command line.
 
 | Environment variable | Used by | Effect |
 |---|---|---|
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` | backend | Provider keys, used when `config.yaml` has no key for that provider. Also read from a `.env` file in the working directory |
 | `CONFIG_PATH` | MCP servers | Config file when `--config` is not given (the `rootmind` CLI always defaults to `config.yaml`). Also read from `.env` |
 | `RLM_HOME` | all backend processes | Folder for `config.yaml` and `data/`; created if missing. Never indexed itself |
+| `RLM_API_TOKEN` | `rootmind api` | REST bearer token; turns authentication on. Set but empty: exit 2. Removed from the process environment after reading. The desktop app sets it for its built-in backend |
+| `RLM_HOST`, `RLM_PORT` | `rootmind api`, `rootmind`, `rootmind-backend.exe` | Bind address when `--host`/`--port` are not given; they take precedence over `api.*` in `config.yaml`. An invalid `RLM_PORT`: exit 2 |
 | `RLM_DISABLE_SCHEDULER` | REST API | Serve only; never index in this process (the MCP servers serve only unless started with `--index`) |
-| `RLM_DEV` | REST API | Also allow the Vite dev server origins (`localhost:1420`) for `pnpm tauri dev` |
-| `MCP_API_TOKEN` | MCP HTTP | Bearer token. If set but empty, the server refuses to start |
+| `RLM_DEV` | REST API | Also allow the Vite dev server origins (`localhost:1420`) for `pnpm tauri dev`. Debug builds of the app set it for their built-in backend |
+| `MCP_API_TOKEN` | MCP HTTP | Bearer token. If set but empty, the server refuses to start. Removed from the process environment after reading |
 | `MCP_ALLOWED_ORIGINS` | MCP HTTP | Extra browser origins to accept, comma-separated |
 | `MCP_HTTP_HOST`, `MCP_HTTP_PORT` | MCP HTTP | Bind address, default `127.0.0.1:3000` |
-| `RLM_HOST`, `RLM_PORT` | `rootmind-backend.exe` | Bind address when the executable starts without arguments, default `127.0.0.1:8000` |
 | `VITE_APP_LANG` | desktop build | `de` builds the German UI; English is the default |
+
+The background service sets `RLM_HOME` itself and ignores `RLM_API_TOKEN`,
+`MCP_API_TOKEN`, `CONFIG_PATH`, `RLM_DEV`, `RLM_HOST` and `RLM_PORT`, so a
+variable set for the whole machine cannot change its token or its files.
 
 ## REST API
 
-FastAPI app on `127.0.0.1:8000`; OpenAPI docs at `/docs`. The desktop app
-uses a subset of these endpoints (see `desktop/src/api/rlm.ts`). Requests from
-non-loopback addresses get 403.
+FastAPI app on `127.0.0.1`: port 8000 from the command line by default, a
+free port for the built-in backend, and the service's port for the background
+service. The desktop app uses a subset of these endpoints (see
+`desktop/src/api/rlm.ts`). Requests from non-loopback addresses get 403.
+
+**Authentication.** `create_app(config, api_token=..., folder_access=...)`
+adds a pure ASGI middleware when a token is given. It is the innermost
+middleware, so the checks run in the order loopback peer (403), CORS (which
+answers preflights; 401 responses carry CORS headers), `Host` header (400),
+token (401). Only `GET`/`HEAD` on `/` and `/health` are open. The token is
+read from the `Authorization` header only (scheme case-insensitive) and
+compared in constant time; WebSocket connections without it are closed with
+code 1008. While a token is required, `/docs`, `/redoc` and `/openapi.json`
+do not exist. Where the token comes from:
+
+1. `RLM_API_TOKEN`, if set (empty: exit 2);
+2. with `--require-token`, `<RLM_HOME>/data/rest_token.txt`, created with
+   `secrets.token_urlsafe(32)` if missing (empty file: exit 2);
+3. otherwise no authentication, with a warning in the log.
+
+`auth.py` holds the token helpers that the REST API and the MCP HTTP server
+share. The two tokens are separate secrets in separate files.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /`, `GET /health` | Name and version; liveness |
+| `GET /`, `GET /health` | Name, version and `auth` (`"bearer"` or `"none"`); liveness. Both open |
 | `GET /status`, `GET /statistics` | Sync status and document counts |
 | `GET /documents`, `GET /documents/{id}` | Paged document list (limit 1 to 1,000, offset), metadata |
 | `GET /documents/{id}/content` | Text, optionally a `start`/`end` range |
@@ -436,45 +745,70 @@ non-loopback addresses get 403.
 | `POST /search`, `GET /search` | Full-text search (limit 1 to 1,000 and 1 to 100); `with_snippets` / `snippets=true` adds snippets, hit positions and pages |
 | `POST /index/refresh` | Start an incremental or full sync in the background; 409 if one is running, 404 for an unknown folder |
 | `GET /index/status`, `GET /index/progress`, `GET /index/recent` | Sync progress and recently indexed files |
-| `GET /connectors`, `GET /connectors/{name}` | Configured folders and their status |
+| `GET /connectors`, `GET /connectors/{name}` | Configured folders and their status; folders that cannot be used appear with `"available": false` and an `error` |
 | `POST /query` | Ask a question (the agent loop). Returns `answer`, `sources` (with `page`), `tool_calls`, `tokens_used`, `stop_reasons`. 400 without an API key, 422 for an empty or oversized question, 502 for provider errors, 504 on LLM timeout |
 | `POST /chat/title` | Short title for a conversation (one LLM call); same error codes |
-| `GET /config`, `POST /config` | Editable config with masked API keys; save and hot reload |
+| `GET /config`, `POST /config` | Editable config with masked API keys; save and hot reload. Under a restricting folder access policy, a folder the policy refuses gets 400 and nothing is saved |
 | `POST /llm/models` | Model list from the provider, using the key in the request or the stored key; 502 or 504 when the provider fails |
 
-The API has no authentication. How it is protected, and what remains open, is
-described in [SECURITY.md](SECURITY.md).
+How the API is protected, and what remains open, is described in
+[SECURITY.md](SECURITY.md#rest-api).
 
 ## Desktop app
 
-- **A pure REST client.** The React app (`desktop/src/`) calls the backend
-  through a small typed client (`src/api/client.ts`, `src/api/rlm.ts`,
-  `src/types/`) with a 15-second default timeout per request and 15 minutes
-  for questions. It never starts or stops the backend. The backend URL is
-  configurable, but the CSP only allows `localhost` and `127.0.0.1`.
-- **Connection state.** A heartbeat checks `/health` every 5 seconds. When the
-  backend is unreachable, a modal explains how to start it.
+- **REST client.** The React app (`desktop/src/`) calls the backend through a
+  small typed client (`src/api/client.ts`, `src/api/rlm.ts`, `src/types/`)
+  with a 15-second default timeout per request and 15 minutes for questions.
+  It sends `Authorization: Bearer` only when it has a token, and never to
+  `GET /health` and `GET /`, which the connectivity check calls before it
+  knows who answers. The CSP only allows `localhost` and `127.0.0.1`.
+- **Backends.** `src/state/bootstrap.ts`, `src/hooks/useBackendBootstrap.ts`
+  and `src/state/backendActions.ts` choose and switch between the built-in
+  backend, the background service and a custom address (see
+  [Deployment modes](#deployment-modes)). `src/api/backend.ts` wraps the Rust
+  commands.
+- **Connection state.** A heartbeat checks the backend every 5 seconds: with a
+  token, one authenticated `GET /status`. In service mode every check goes
+  through `service_connect`, which repeats the listener check and clears the
+  address and token when it fails. A 401 makes the built-in and service modes
+  fetch the current token again, and a custom backend ask for one. A dialog per
+  mode offers the next step: restart or show the log (built-in), repair or use
+  the built-in backend for now (service), or enter an address and token
+  (custom).
+- **Stale data.** Settings, Folders and Status load their data for the backend
+  that is live (`src/hooks/useLiveBackend.ts`), reset it when the backend
+  changes, drop answers from a previous backend, and refuse to save settings
+  that were loaded from another backend.
 - **Screens.** Chat (with sources that open the file or reveal it in
-  Explorer), folders, settings (provider, model, keys, schedule) and status.
-- **Rust side.** `src-tauri/src/conversations.rs` stores each conversation as
-  a JSON file in the app data folder. Every command that takes a conversation
-  id validates it with `safe_id` (ASCII letters, digits, `-` and `_`, at most
-  100 characters), so an id cannot escape that folder.
+  Explorer, and hints when no folder, no API key or no index exists yet),
+  Folders (in service mode with the folders the service cannot read),
+  Settings (Background service, provider, model, keys, schedule, and
+  Advanced for a custom backend) and Status.
+- **Rust side.** `src-tauri/src/backend.rs` runs the built-in backend,
+  `service.rs` and `win/` read the service state, check the listener and run
+  the elevated `service` commands, and `conversations.rs` stores each
+  conversation as a JSON file in the app data folder. Every command that takes
+  a conversation id validates it with `safe_id` (ASCII letters, digits, `-` and
+  `_`, at most 100 characters), so an id cannot escape that folder. Every
+  `unsafe` block states why it is sound (clippy enforces the comment).
 - **Permissions.** `src-tauri/capabilities/default.json` grants only what the
   UI uses. Opening files is limited to the document types the backend indexes;
-  `src-tauri/tests/opener_scope.rs` checks this against `parser.py`.
+  `src-tauri/tests/opener_scope.rs` checks this against `parser.py`. The shell
+  plugin is used from Rust only and has no permission in the capabilities.
 - **Language.** Labels are selected at build time (`src/i18n/`); English is
-  the default and `VITE_APP_LANG=de` builds German. There is no runtime
-  switch.
+  the default and `VITE_APP_LANG=de` builds German. Both label files must have
+  the same keys, which the type checker and a test enforce. There is no
+  runtime switch.
 
 ## Testing and evals
 
 **Unit and integration tests** (`backend/tests/`):
 
 - Offline by construction. An autouse fixture replaces the Anthropic and
-  OpenAI client constructors with functions that raise, removes API keys, and
-  gives every test its own `RLM_HOME` and working directory, so a developer's
-  `.env` or `config.yaml` is never read.
+  OpenAI client constructors with functions that raise, removes API keys and
+  the `RLM_API_TOKEN`, `RLM_HOST` and `RLM_PORT` variables, and gives every
+  test its own `RLM_HOME` and working directory, so a developer's `.env` or
+  `config.yaml` is never read.
 - The engine takes an optional `client`. Tests pass `FakeAnthropic` or
   `FakeOpenAI` from `tests/fakes.py`: a script of responses, exceptions or
   callables, with every call's arguments recorded. That makes the loop
@@ -482,13 +816,49 @@ described in [SECURITY.md](SECURITY.md).
   `tool_choice` on the fallback call, and the sources.
 - API tests use FastAPI's `TestClient` with the real lifespan. MCP tests drive
   the stdio server through the official MCP client in-process and the HTTP
-  server through `TestClient`.
+  server through `TestClient`. Command-line tests start `rootmind api` on
+  port 0 in a subprocess for the ready line, the token and the lifeline.
+- The authentication tests run every route of the app without a token and
+  expect 401 except for the open ones, so a new route cannot be left open by
+  accident.
+- The folder access policy is tested on Windows against folders and files with
+  crafted permissions, junctions and hard links. The service logic (command
+  lines, exit codes, ports, update and uninstall) runs against fake Service
+  Control Manager and file system adapters on every OS; the permission
+  layout is checked against real temporary folders on Windows.
 - A small corpus with one file per format (PDF with two pages, XLSX with two
   sheets, PPTX with three slides, DOCX, CSV, Markdown, text) is generated for
   the tests.
 - Bugs found by the tests have regression tests, for example ranking that
   changed with the page size, a partial `POST /config` that removed stored
   keys and folders, and citations that pointed one page early.
+
+**Executable, service and installer** (Windows, in CI):
+
+- `backend/packaging/smoke-test.ps1` checks every onedir build (see
+  [Packaging](#packaging)).
+- `backend/tests/e2e/service_e2e.ps1` installs the services on the elevated
+  CI runner and checks the refusals (foreign service, busy port, wrong
+  account, unprotected data folder), the accounts, privileges and quoted
+  command lines, the permissions of the program and data folders, both
+  tokens, read confinement (a file only administrators can read is not found
+  by search; system folders and shares are refused), the MCP folder reload,
+  restart and update, and uninstall with and without `--purge`. It refuses to
+  run outside CI.
+- `desktop/scripts/installer-smoke.ps1` installs the release installer
+  silently, checks the "Installed apps" entry and the backend's tree hash,
+  starts the installed backend, reinstalls over it, and uninstalls.
+- `scripts/tests/` covers the release scripts.
+
+**Desktop.** ESLint and the TypeScript compiler; vitest with happy-dom for
+the backend choice, the store, the client's token handling, the stale-data
+guards (including a render test of Settings switching backends), the service
+result messages and the label files; Rust tests for the ready-line parser,
+argument quoting, exit-code mapping, the ImagePath and TCP table parsers, the
+restart policy, `safe_id` and the file-opening scope, plus lifecycle tests that
+start a fake backend process. The approval prompts and the installer's
+dialogs are checked by hand before a release (see
+[CONTRIBUTING.md](CONTRIBUTING.md#releasing)).
 
 **Evals** (`backend/evals/`, `backend/scripts/run_evals.py`) measure the agent
 on a fictional corpus with known answers. Live mode is the eval: it runs a
@@ -498,9 +868,6 @@ a scripted policy with a hand-written query per case stands in for the model,
 so it checks the index and the tool layer, not the agent's decisions. See
 [backend/evals/README.md](backend/evals/README.md).
 
-**Desktop:** ESLint, the TypeScript compiler, `cargo clippy`, and Rust tests
-for `safe_id` and the file-opening scope. There are no UI tests.
-
 ## Design decisions
 
 **Full-text search plus an agent instead of embeddings.** Exact terms, codes
@@ -509,13 +876,39 @@ retrieval step is visible. The cost is more LLM round trips per question and
 no synonym matching; the README has the trade-off table. The repository class
 is the seam for a different retrieval backend.
 
-**An unauthenticated REST API on localhost.** The desktop app and the backend
-run on the same machine for the same user. A token would have to be stored
-where the same user (and any process of theirs) could read it anyway. Instead,
-the API binds to 127.0.0.1, refuses non-loopback peers and checks `Host` and
-`Origin`. The consequence is the single-user assumption described in
-[SECURITY.md](SECURITY.md); it is also why the LocalSystem service setup is
-experimental.
+**A built-in backend started by the app.** The app ships the backend and runs
+it as a child process, so an install needs neither Python nor administrator
+rights. The backend picks a free port itself (`--port 0`) and reports it on
+stdout, which avoids clashes with anything else on 8000. Its lifetime is tied
+to the app through stdin, which also covers an app crash.
+
+**REST tokens where the app manages the backend.** The built-in backend gets a
+new token for every start, and the service a token in a file only its account
+can read, so other accounts and web pages cannot use them. A token cannot
+stop programs of the same user, which can read it. The plain command line
+stays without a token unless asked, so existing scripts and the curl examples
+keep working; a token by default there may come with a future major version.
+The middleware is pure ASGI so it also covers WebSockets, and `/` and
+`/health` stay open so the app can identify a backend and its `auth` mode.
+
+**LocalSystem with read confinement for the service.** A service has to read
+the user's folders while no one is logged in. A dedicated service account
+would need its own permission entry on every file of every indexed folder,
+could not read folders the user may read but does not own, and would change
+how folders are added. LocalSystem can read them without changes, so the
+service runs as LocalSystem and confines itself with an AuthZ check to what
+the user can read without elevation, failing closed. MCP over HTTP, which
+never reads the folders, runs as a virtual account instead. The service is
+offered to administrator accounts only, because its parsers run as SYSTEM.
+
+**A native service host instead of a wrapper.** The executable hosts itself
+through pywin32's `ServiceFramework`: no third-party service wrapper to
+download and verify, a clean stop through the Service Control Manager, and one
+program for the app, the command line and the service.
+
+**Onedir packaging.** The onedir build starts in about 1 to 2 seconds instead
+of extracting itself to a temporary folder on every start, leaves nothing
+behind in `%TEMP%`, and the service can run it from Program Files as is.
 
 **Bearer token for MCP HTTP.** That server exists for clients that cannot
 start a local process, possibly on other machines behind a tunnel, so it
@@ -533,17 +926,13 @@ official MCP SDK.
 keep every component free of language state. Switching languages means a
 separate build.
 
-**NSSM for the Windows service.** A Python process cannot be a Windows service
-without extra code. NSSM wraps the existing executable, handles log rotation,
-and is fetched at build time with a pinned hash.
-
 ## How this would map to a server deployment
 
 RootMind is a single-user desktop tool. Running the same design as a shared
 service would need:
 
-- **Auth on every API**, per-user identity, and authorization on folders and
-  documents. Today the folder scope is "everything in the config".
+- **Per-user identity** and authorization on folders and documents. Today one
+  token grants everything, and the folder scope is "everything in the config".
 - **A server database.** The repository is the seam: PostgreSQL full-text
   search (`tsvector`, `ts_rank`) can replace FTS5, `pg_trgm` can replace the
   trigram table, and `pgvector` could add hybrid retrieval next to it. The
@@ -557,15 +946,25 @@ service would need:
 
 ## Known gaps and next steps
 
+- The release binaries are not code-signed. SmartScreen warns, and Smart App
+  Control may block them. The winget submission waits for signed binaries
+  (`packaging/winget/README.md`).
+- The approval prompts, the installer's dialogs and switching modes in the
+  app are tested by hand; CI covers the service through its command line and
+  the installer in silent mode.
+- The background service is offered to administrator accounts only and cannot
+  index network drives or shares. Domain accounts whose domain cannot be
+  reached may not get an access context, and the service then refuses to
+  start.
+- The built-in backend and the service do not share an index; turning the service
+  on builds a new one.
+- No token rotation command; delete the token file and run `service install`
+  again.
+- No installers or services for macOS or Linux, and no automatic updates.
 - The text of each document is stored twice (documents table and FTS table).
 - Incremental syncs hash every file, including unchanged and oversized files.
 - Files are parsed one after another; there is no parallel indexing.
 - No OCR, no streaming, no total time or token budget per question.
-- MCP servers read the folder list at startup and need a restart after
-  folder changes.
-- The REST API has no authentication, which makes the LocalSystem service
-  setup unsafe on shared machines. A per-user backend (started at logon or by
-  the desktop app) or a bearer token kept in an owner-only file would remove
-  that limitation.
+- The MCP stdio server reads the folder list at startup and needs a restart
+  after folder changes.
 - The MCP HTTP transport could move to the official SDK's streamable HTTP app.
-- The full installer path needs an end-to-end test and code signing.

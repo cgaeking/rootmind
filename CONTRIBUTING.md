@@ -22,29 +22,92 @@ uv sync
 uv run ruff check .
 uv run ruff format .
 uv run pytest -q
+uv run pytest ../scripts/tests -q         # release scripts: versions, notes, backend copy, winget
 uv run python scripts/run_evals.py        # retrieval regression (dry evals), offline
 python ../scripts/check_versions.py       # backend and desktop versions match
 ```
 
-Desktop, with the backend running as `RLM_DEV=1 uv run rootmind api` (this
-allows the Vite dev origin):
+The backend CLI has the commands `api`, `index`, `rebuild-trigrams`, `mcp`,
+`mcp-http` and `service`; `uv run rootmind <command> --help` describes each.
+
+Desktop:
 
 ```bash
 cd desktop
 pnpm install
-pnpm tauri dev
-
 pnpm lint
 pnpm typecheck
+pnpm test          # vitest with happy-dom; no browser, network or Tauri needed
 pnpm build
 cd src-tauri
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test         # includes lifecycle tests that start a fake backend process
 ```
 
 CI runs the same commands (`.github/workflows/backend.yml` and
 `.github/workflows/desktop.yml`).
+
+### Running the desktop app during development
+
+A development build (`pnpm tauri dev`) has no bundled backend. It contacts
+no backend on its own: the app shows the backend dialog, which suggests
+`http://127.0.0.1:8000`. Start a backend from source with the Vite dev origin
+allowed, then confirm its address there:
+
+```bash
+cd backend
+RLM_DEV=1 uv run rootmind api                 # PowerShell: $env:RLM_DEV=1; uv run rootmind api
+RLM_DEV=1 uv run rootmind api --port 18000    # if 8000 is taken; enter http://127.0.0.1:18000
+```
+
+The address you connect to is stored as a custom backend; **Use default
+backend** under Settings → Advanced removes it again. `pnpm dev` in a plain
+browser behaves the same way.
+
+To try the bundled backend in a development build, build it (see
+[Build the installer yourself](README.md#build-the-installer-yourself)), run
+`python scripts/prepare_backend.py`, and start
+`pnpm tauri dev --config src-tauri/tauri.release.conf.json` with `RLM_HOME`
+set to the absolute path of a scratch folder. Debug builds use that folder as
+the built-in backend's home instead of the app's data folder.
+
+### Ports for local testing
+
+- Unit tests use FastAPI's `TestClient` or port 0; they never need a free
+  port.
+- The smoke test of a backend build uses 18765 and 18766 by default, the
+  installer smoke test 18770, and the service end-to-end test in CI 18080 and
+  18081. The service itself falls back to 18300–18399 and 18400–18499.
+- Do not point tests or a development build at a port where a RootMind
+  backend you use every day is listening, such as the background service on
+  8000.
+
+### Packaged backend, service and installer
+
+```powershell
+cd backend
+uv sync --locked --no-dev --group build
+uv run --no-sync pyinstaller packaging/rootmind-backend.spec --noconfirm --clean --distpath dist
+powershell -File packaging/smoke-test.ps1 -ExeDir dist/rootmind-backend -ApiPort 18765 -McpPort 18766 -WorkDir <scratch folder>
+uv sync                                   # back to the development environment
+```
+
+The smoke test works with Windows PowerShell 5.1 and PowerShell 7 and writes
+only below `-WorkDir`.
+
+Installing the Windows services, the approval prompts and the installer are
+tested in CI on GitHub's Windows runners, which run elevated:
+
+- `backend/tests/e2e/service_e2e.ps1` refuses to run unless the process is
+  elevated and `CI=true` is set (or `-Force` is given, for throwaway
+  machines), and unless no RootMind service or data folder exists.
+- `desktop/scripts/installer-smoke.ps1` refuses unless `CI=true` or `-Force`,
+  and whenever RootMind is installed for the current account.
+
+On your own machine, `rootmind service status` and an unelevated
+`rootmind service install` (which stops before it changes anything) are safe
+to run. For the rest, use a virtual machine or Windows Sandbox.
 
 ## Rules
 
@@ -67,6 +130,9 @@ CI runs the same commands (`.github/workflows/backend.yml` and
 - **Commits:** [Conventional Commits](https://www.conventionalcommits.org/)
   (`feat:`, `fix:`, `docs:`, `test:`, ...).
 - **Bug fixes come with a regression test.**
+- **Changelog:** add user-visible changes to the `## [Unreleased]` section of
+  [CHANGELOG.md](CHANGELOG.md).
+- **Versions** change only in the release commit (see [Releasing](#releasing)).
 
 ## Common changes
 
@@ -89,8 +155,16 @@ the extension to the opener scope in
 **Add a connector.** Subclass `BaseConnector` in
 `backend/src/rootmind/connectors/` and register the type in
 `create_connectors` in `api/app.py`. A connector must keep every path inside
-its root; see `LocalConnector._resolve_path` and
-`tests/test_connector_confinement.py`.
+its root, read through the folder access policy it is given
+(`backend/src/rootmind/access.py`), and under a policy never follow a link
+itself (no `Path.resolve()`, `stat()` or `os.walk` on paths below the root),
+as `LocalConnector` does; see
+`LocalConnector._resolve_path`, `tests/test_connector_confinement.py` and
+`tests/test_connector_access.py`.
+
+**Add a REST route.** `tests/test_api_auth.py` calls every route without a
+token and expects 401, except for `/` and `/health`. A new route is covered
+automatically; do not add it to the open list.
 
 **Change the eval corpus.** Edit `scripts/make_demo_corpus.py`, regenerate
 with `uv run python scripts/make_demo_corpus.py`, and update
@@ -121,3 +195,79 @@ FROM documents_fts WHERE documents_fts MATCH '"invoice"';
 Tool calls are logged at INFO level. `uv run rootmind --debug api` adds debug
 output, such as skipped unchanged files and FTS query strategies that SQLite
 rejected.
+
+## Releasing
+
+A tag `vX.Y.Z` makes `.github/workflows/release.yml` build the backend and
+the installer, test both, render the winget manifests and publish a GitHub
+Release with `RootMind-Setup-x64.exe`, `rootmind-backend-windows-x64.zip`,
+`SHA256SUMS.txt` and attestations. The release notes are the version's
+section of `CHANGELOG.md` plus a fixed part about the downloads and how to
+verify them.
+
+1. **Versions.** Set the new version in `backend/pyproject.toml`,
+   `desktop/package.json` and `desktop/src-tauri/Cargo.toml`, then run
+   `uv lock` in `backend/` and `cargo check` in `desktop/src-tauri/` so the
+   lockfiles follow. For a prerelease, write `1.2.0rc1` in `pyproject.toml`
+   and `1.2.0-rc.1` in the other two files; the tag is then `v1.2.0-rc.1`,
+   spelled exactly like that, and the release is marked as a prerelease.
+   Update the tag in the README's `uv tool install` line as well.
+2. **Changelog.** Turn `## [Unreleased]` into `## [X.Y.Z] - YYYY-MM-DD` and
+   start a new, empty `## [Unreleased]` above it. For a prerelease, use the
+   prerelease version in the heading, for example `## [1.2.0-rc.1] - YYYY-MM-DD`.
+3. **Check locally:**
+
+   ```bash
+   python scripts/check_versions.py --tag vX.Y.Z
+   python scripts/release_notes.py vX.Y.Z      # prints the release notes
+   ```
+
+4. **Dry run.** Push the release commit to a branch and run the workflow
+   manually: `gh workflow run release.yml --ref <branch>` (or Actions →
+   release → Run workflow). Every job except "Publish the release" must pass.
+   The run's summary shows the release notes, the installer's size and its
+   SHA-256; the artifacts are `rootmind-installer-windows-x64`,
+   `rootmind-backend-windows-x64` and `winget-manifests`.
+5. **Manual checks** in Windows Sandbox or a throwaway virtual machine, with
+   the installer from the dry run:
+   - first start from the installer, including the SmartScreen warning;
+   - with a RootMind server on `http://127.0.0.1:8000`, the one-time question
+     on the first start;
+   - turning the background service on with and without MCP over HTTP,
+     including cancelling the approval prompt;
+   - turning it off with and without deleting its data;
+   - the **Update service** banner after installing a newer build;
+   - installing a newer build over an older one interactively, with the
+     default "uninstall before installing": no question about removing the
+     background service, and the service keeps running;
+   - turning the service on from an administrator account with User Account
+     Control turned off;
+   - uninstalling the app while the service is installed, interactively and
+     with `/S`;
+   - Claude Desktop from the Microsoft Store with the built-in stdio
+     configuration from the README, once with the app running and once with
+     it closed: search results follow a change in an indexed folder;
+   - **Delete the application data** removes the built-in backend's
+     `config.yaml` and index.
+6. **Tag** the merged release commit on `main` and push the tag:
+
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+   The first job fails early if `CHANGELOG.md` has no section for the version.
+
+**winget.** The manifests are prepared in `packaging/winget/` and rendered by
+every release run, but RootMind is not submitted to the winget repository
+yet; the first submission is planned once the binaries are code-signed.
+[packaging/winget/README.md](packaging/winget/README.md) has the submission
+steps. Do not add `winget install` to the README before the first submission
+is merged.
+
+**One-time repository settings** (GitHub web UI):
+
+- turn on release immutability, so published assets cannot be replaced;
+- add a tag ruleset for `v*`, so only maintainers can create or move release
+  tags;
+- optionally, turn on Dependabot security updates.
