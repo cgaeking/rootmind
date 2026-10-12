@@ -30,6 +30,8 @@ ERROR_SERVICE_CANNOT_ACCEPT_CTRL = 1061
 ERROR_SERVICE_NOT_ACTIVE = 1062
 ERROR_SERVICE_ALREADY_RUNNING = 1056
 ERROR_SERVICE_MARKED_FOR_DELETE = 1072
+# Standard access right needed for DeleteService (win32con.DELETE; not in win32service).
+DELETE = 0x00010000
 
 # Restart after 5 s, 30 s and 60 s; the failure count resets after one day.
 # They apply only when the process ends without reporting SERVICE_STOPPED, so a
@@ -256,7 +258,7 @@ class Scm:
     def delete(self, name: str) -> None:
         """Mark the service for deletion (it disappears once stopped and unused)."""
         ws = self._ws
-        handle = self._open(name, ws.DELETE)
+        handle = self._open(name, DELETE)
         try:
             ws.DeleteService(handle)
         except Exception as e:
