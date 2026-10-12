@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { BackendModal } from "./BackendModal";
-import { FirstRunChoice } from "./FirstRunChoice";
 import { useBackendHeartbeat } from "../hooks/useBackend";
 import { useBackendBootstrap } from "../hooks/useBackendBootstrap";
 import { useStore } from "../state/store";
@@ -11,7 +10,7 @@ import styles from "./AppLayout.module.css";
 
 export function AppLayout() {
   // Choose the backend once at start, then keep checking it.
-  const firstRun = useBackendBootstrap();
+  useBackendBootstrap();
   useBackendHeartbeat();
   const conn = useStore((s) => s.conn);
   const kind = useStore((s) => s.kind);
@@ -44,9 +43,6 @@ export function AppLayout() {
           <Outlet />
         </main>
       </div>
-      {firstRun.url && firstRun.answer && (
-        <FirstRunChoice url={firstRun.url} onAnswer={firstRun.answer} />
-      )}
       {showBackendModal && <BackendModal />}
     </div>
   );

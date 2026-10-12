@@ -96,8 +96,6 @@ export async function applyDecision(d: Decision): Promise<void> {
     case "service":
       await connectService();
       return;
-    default:
-      throw new Error(`Unresolved start-up decision: ${d.action}`);
   }
 }
 

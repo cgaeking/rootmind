@@ -147,11 +147,12 @@ describe("BackgroundServiceSection", () => {
       baseUrl: "http://127.0.0.1:8000",
       token: "v",
       conn: "online",
-      version: "1.1.0",
+      version: "1.2.0",
+      appMode: { version: "1.3.0", dev: false, builtinAvailable: true },
     });
     render(<BackgroundServiceSection />);
     expect(
-      await screen.findByText("The background service runs version 1.1.0; this app is version 1.2.0."),
+      await screen.findByText("The background service runs version 1.2.0; this app is version 1.3.0."),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Update service" }));
     await waitFor(() => expect(backend.serviceUpdate).toHaveBeenCalledTimes(1));

@@ -89,13 +89,6 @@ export const labels = {
     connect: "Verbinden",
     useBuiltin: "Eingebautes Backend nutzen",
   },
-  firstRun: {
-    title: "RootMind-Server gefunden",
-    text: (url: string) =>
-      `Unter ${url} läuft ein RootMind-Server. Möchtest du ihn nutzen oder das eingebaute Backend?`,
-    useServer: "Diesen Server nutzen",
-    useBuiltin: "Eingebautes Backend nutzen",
-  },
   settings: {
     subtitle: "Backend-, LLM- und Indizierungs-Einstellungen.",
     appearanceTitle: "Darstellung",

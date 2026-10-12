@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROBE_URL, classifyProbe, decideBackend } from "./bootstrap";
+import { decideBackend } from "./bootstrap";
 import type { BootstrapInputs } from "./bootstrap";
 import { DEFAULT_BASE_URL } from "./store";
 import { serviceInfoFixture } from "../test/helpers";
@@ -63,24 +63,35 @@ describe("decideBackend", () => {
     });
   });
 
-  it("never probes 8000 or picks the service in a dev build", () => {
+  it("never picks the service in a dev build", () => {
     for (const builtinAvailable of [true, false]) {
-      const d = decideBackend(
-        inputs({ dev: true, builtinAvailable, storedMode: null, service: serviceOurs }),
-      );
-      expect(d.action).not.toBe("probe");
-      expect(d.action).not.toBe("service");
+      for (const storedMode of [null, "auto"] as const) {
+        const d = decideBackend(
+          inputs({ dev: true, builtinAvailable, storedMode, service: serviceOurs }),
+        );
+        expect(d.action).not.toBe("service");
+      }
+    }
+  });
+
+  it("starts the built-in backend on the first start", () => {
+    expect(decideBackend(inputs({ storedMode: null }))).toEqual({ action: "builtin" });
+  });
+
+  it("ignores a stored URL without the custom mode", () => {
+    for (const storedMode of [null, "auto"] as const) {
+      expect(
+        decideBackend(inputs({ storedMode, storedBaseUrl: "http://127.0.0.1:18200", storedToken: "t" })),
+      ).toEqual({ action: "builtin" });
     }
   });
 
   it("connects to our service when its token is readable", () => {
-    expect(decideBackend(inputs({ storedMode: "auto", service: serviceOurs }))).toEqual({
-      action: "service",
-    });
-    // Also on the first start: the service wins over the probe.
-    expect(decideBackend(inputs({ storedMode: null, service: serviceOurs }))).toEqual({
-      action: "service",
-    });
+    for (const storedMode of [null, "auto"] as const) {
+      expect(decideBackend(inputs({ storedMode, service: serviceOurs }))).toEqual({
+        action: "service",
+      });
+    }
   });
 
   it("runs built-in when our service belongs to another account (token unreadable)", () => {
@@ -92,72 +103,16 @@ describe("decideBackend", () => {
   it("ignores a service that is not ours", () => {
     const service = serviceInfoFixture({ installed: true, ours: false, blockedReason: "foreign_service" });
     expect(decideBackend(inputs({ storedMode: "auto", service }))).toEqual({ action: "builtin" });
-  });
-
-  it("keeps a URL typed into version 1.1 on the first start", () => {
-    expect(
-      decideBackend(inputs({ storedMode: null, storedBaseUrl: "http://127.0.0.1:9000" })),
-    ).toEqual({ action: "custom", url: "http://127.0.0.1:9000", token: null });
-  });
-
-  it("probes 8000 on the first start without a stored URL", () => {
-    expect(decideBackend(inputs({ storedMode: null }))).toEqual({ action: "probe" });
-  });
-
-  it("asks once when an open RootMind server answers on 8000", () => {
-    expect(decideBackend(inputs({ storedMode: null, probe8000: "rootmind_open" }))).toEqual({
-      action: "ask_choice",
-      url: PROBE_URL,
-    });
-  });
-
-  it("uses the found server when the user picks it", () => {
-    expect(
-      decideBackend(
-        inputs({ storedMode: null, probe8000: "rootmind_open", firstRunChoice: "custom" }),
-      ),
-    ).toEqual({ action: "custom", url: PROBE_URL, token: null });
-  });
-
-  it("uses the built-in backend when the user picks it", () => {
-    expect(
-      decideBackend(
-        inputs({ storedMode: null, probe8000: "rootmind_open", firstRunChoice: "builtin" }),
-      ),
-    ).toEqual({ action: "builtin" });
-  });
-
-  it("starts built-in when something else (or nothing) answers on 8000", () => {
-    expect(decideBackend(inputs({ storedMode: null, probe8000: "other" }))).toEqual({
-      action: "builtin",
-    });
+    expect(decideBackend(inputs({ storedMode: null, service }))).toEqual({ action: "builtin" });
   });
 
   it("starts built-in in auto mode", () => {
     expect(decideBackend(inputs({ storedMode: "auto" }))).toEqual({ action: "builtin" });
-    // auto never probes, even with a leftover URL
-    expect(decideBackend(inputs({ storedMode: "auto", storedBaseUrl: "http://x" }))).toEqual({
-      action: "builtin",
-    });
   });
 
   it("starts built-in when service_info could not be read", () => {
-    expect(decideBackend(inputs({ storedMode: "auto", service: null }))).toEqual({
-      action: "builtin",
-    });
-  });
-});
-
-describe("classifyProbe", () => {
-  it("accepts an unauthenticated RootMind API", () => {
-    expect(classifyProbe({ name: "RootMind API", version: "1.1.0" })).toBe("rootmind_open");
-    expect(classifyProbe({ name: "RootMind API", auth: "none" })).toBe("rootmind_open");
-  });
-
-  it("rejects a RootMind API that needs a token, and anything else", () => {
-    expect(classifyProbe({ name: "RootMind API", auth: "bearer" })).toBe("other");
-    expect(classifyProbe({ name: "Something else" })).toBe("other");
-    expect(classifyProbe(null)).toBe("other");
-    expect(classifyProbe("RootMind API")).toBe("other");
+    for (const storedMode of [null, "auto"] as const) {
+      expect(decideBackend(inputs({ storedMode, service: null }))).toEqual({ action: "builtin" });
+    }
   });
 });

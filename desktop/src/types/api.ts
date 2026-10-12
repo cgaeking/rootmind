@@ -9,8 +9,8 @@ export interface RootInfo {
   version: string;
   status: string;
   features: string[];
-  /** Whether requests need a bearer token; missing on backends before 1.2. */
-  auth?: "bearer" | "none";
+  /** Whether requests need a bearer token. */
+  auth: "bearer" | "none";
 }
 
 /** One entry of GET /connectors. */
