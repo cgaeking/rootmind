@@ -1,14 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { Link } from "react-router-dom";
 import { labels } from "../i18n/labels";
 import { useBackend } from "../hooks/useBackend";
+import { useLiveBackend } from "../hooks/useLiveBackend";
 import { useChatStore } from "../state/chatStore";
 import { useStore } from "../state/store";
-import { askQuestion, search, getDocumentPath, generateChatTitle } from "../api/rlm";
+import {
+  askQuestion,
+  search,
+  getConfig,
+  getDocumentPath,
+  getIndexStatus,
+  generateChatTitle,
+} from "../api/rlm";
 import { ApiError, AbortedError } from "../api/client";
 import type { QuerySource } from "../types/api";
 import type { StoredMessage } from "../types/chat";
 import { Banner, Button } from "../components/ui";
+import { ConnBanner } from "../components/ConnBanner";
 import { Markdown } from "../components/Markdown";
 import { ChatLoader } from "../components/ChatLoader";
 import type { SearchResult } from "../types/api";
@@ -18,6 +28,65 @@ const SEARCH_PAGE = 100;
 const SEARCH_MAX = 1000;
 // How many recent turns to send for multi-turn context (the backend caps it too).
 const HISTORY_TURNS = 6;
+// While the first index is being built, re-check this often.
+const BUILDING_POLL_MS = 5_000;
+
+interface Hints {
+  noFolders: boolean;
+  noKey: boolean;
+  building: boolean;
+}
+
+/** First-run guidance for the empty chat: no folders, no API key, index being built. */
+function EmptyChat() {
+  const live = useLiveBackend();
+  const [hints, setHints] = useState<Hints | null>(null);
+
+  useEffect(() => {
+    setHints(null);
+    if (!live) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async () => {
+      try {
+        const [config, index] = await Promise.all([getConfig(), getIndexStatus()]);
+        if (cancelled) return;
+        const building = index.is_running && index.indexed_documents === 0;
+        setHints({
+          noFolders: config.connectors.length === 0,
+          noKey: !(config.llm.api_keys ?? {})[config.llm.provider],
+          building,
+        });
+        if (building) timer = setTimeout(() => void load(), BUILDING_POLL_MS);
+      } catch {
+        /* the hints are optional */
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [live]);
+
+  return (
+    <div className={styles.empty}>
+      <p>{labels.chat.emptyPrompt}</p>
+      {hints?.noFolders && (
+        <p>
+          <Link to="/folders">{labels.chat.hintNoFolders}</Link>
+        </p>
+      )}
+      {hints?.building && <p>{labels.chat.hintBuilding}</p>}
+      {hints?.noKey && (
+        <p>
+          {labels.chat.hintNoKey} <Link to="/settings">{labels.chat.hintNoKeyLink}</Link>
+        </p>
+      )}
+    </div>
+  );
+}
+
 // Stable empty list, so the scroll effect below does not rerun on every render.
 const NO_MESSAGES: StoredMessage[] = [];
 
@@ -329,13 +398,9 @@ export function ChatScreen() {
   return (
     <div className={styles.main}>
         <div className={styles.messages}>
-          {conn !== "online" && <Banner tone="err">{labels.common.backendUnreachable}</Banner>}
+          <ConnBanner />
 
-          {messages.length === 0 && conn === "online" && (
-            <div className={styles.empty}>
-              <p>{labels.chat.emptyPrompt}</p>
-            </div>
-          )}
+          {messages.length === 0 && conn === "online" && <EmptyChat />}
 
           {messages.map((m) => {
             const key = active ? messageKey(active.id, m.id) : String(m.id);

@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { labels } from "../i18n/labels";
-import { useStore } from "../state/store";
+import { DEFAULT_BASE_URL, useStore } from "../state/store";
 import { useBackend } from "../hooks/useBackend";
+import { isCurrentBackend, useLiveBackend } from "../hooks/useLiveBackend";
+import { connectCustom, switchToDefaultBackend } from "../state/backendActions";
 import { getConfig, listLlmModels, saveConfig } from "../api/rlm";
 import { ApiError } from "../api/client";
 import type { ThemePref } from "../state/store";
 import type { AppConfigDto, LlmProvider } from "../types/config";
-import { Badge, Banner, Button, Field, Row, Section, Select, TextInput } from "../components/ui";
+import { Banner, Button, Field, Row, Section, Select, TextInput } from "../components/ui";
+import { ConnBanner } from "../components/ConnBanner";
+import { BackgroundServiceSection } from "./BackgroundServiceSection";
 
 const PROVIDERS: LlmProvider[] = ["anthropic", "openai", "xai"];
 
@@ -32,15 +36,73 @@ function pickDefaultModel(models: string[]): string {
   );
 }
 
+/** Settings → Advanced: a custom backend URL and token, or back to the default backend. */
+function AdvancedSection() {
+  const { kind, baseUrl, version, recheck } = useBackend();
+  const token = useStore((s) => s.token);
+  const customUrl = kind === "custom" ? baseUrl : "";
+  const customToken = kind === "custom" ? (token ?? "") : "";
+
+  // The fields follow the store: the backend dialog can change the URL too.
+  const [urlDraft, setUrlDraft] = useState(customUrl);
+  const [tokenDraft, setTokenDraft] = useState(customToken);
+  useEffect(() => setUrlDraft(customUrl), [customUrl]);
+  useEffect(() => setTokenDraft(customToken), [customToken]);
+
+  const inUse =
+    kind === "builtin"
+      ? labels.settings.inUse.builtin
+      : kind === "service"
+        ? labels.settings.inUse.service
+        : kind === "custom"
+          ? labels.settings.inUse.custom(baseUrl)
+          : labels.settings.inUse.none;
+
+  return (
+    <Section title={labels.settings.advancedTitle} description={labels.settings.advancedDesc}>
+      <span className="muted">
+        {inUse}
+        {version && <> · {labels.settings.versionLabel(version)}</>}
+      </span>
+      <Field label={labels.settings.urlLabel} hint={labels.settings.urlHint}>
+        <TextInput
+          value={urlDraft}
+          onChange={(e) => setUrlDraft(e.currentTarget.value)}
+          placeholder={DEFAULT_BASE_URL}
+          spellCheck={false}
+        />
+      </Field>
+      <Field label={labels.settings.tokenLabel} hint={labels.settings.tokenHint}>
+        <TextInput
+          type="password"
+          value={tokenDraft}
+          onChange={(e) => setTokenDraft(e.currentTarget.value)}
+          spellCheck={false}
+          autoComplete="off"
+        />
+      </Field>
+      <Row>
+        <Button onClick={() => void connectCustom(urlDraft || DEFAULT_BASE_URL, tokenDraft)}>
+          {labels.settings.apply}
+        </Button>
+        <Button onClick={() => void recheck()}>{labels.settings.check}</Button>
+        <Button onClick={() => void switchToDefaultBackend()} title={labels.settings.useDefaultHint}>
+          {labels.settings.useDefault}
+        </Button>
+      </Row>
+    </Section>
+  );
+}
+
 export function SettingsScreen() {
-  const baseUrl = useStore((s) => s.baseUrl);
-  const setBaseUrl = useStore((s) => s.setBaseUrl);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
-  const { conn, version, recheck } = useBackend();
+  const { conn } = useBackend();
+  // The backend the loaded settings belong to (null while unreachable).
+  const live = useLiveBackend();
 
-  const [urlDraft, setUrlDraft] = useState(baseUrl);
   const [config, setConfig] = useState<AppConfigDto | null>(null);
+  const [configUrl, setConfigUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
@@ -51,34 +113,46 @@ export function SettingsScreen() {
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [replacedFrom, setReplacedFrom] = useState<string | null>(null);
 
-  const loadModels = useCallback(
-    async (provider: string, apiKey: string) => {
-      if (!apiKey) return;
-      setLoadingModels(true);
-      setModelsError(null);
-      try {
-        const res = await listLlmModels({ provider, api_key: apiKey });
-        setModels(res.models);
-      } catch (e) {
+  // Results for a backend that is no longer in use are dropped.
+  const loadModels = useCallback(async (provider: string, apiKey: string) => {
+    if (!apiKey) return;
+    const from = useStore.getState().baseUrl;
+    const stillCurrent = () => useStore.getState().baseUrl === from;
+    setLoadingModels(true);
+    setModelsError(null);
+    try {
+      const res = await listLlmModels({ provider, api_key: apiKey });
+      if (stillCurrent()) setModels(res.models);
+    } catch (e) {
+      if (stillCurrent()) {
         setModels([]);
         setModelsError(errMsg(e));
-      } finally {
-        setLoadingModels(false);
       }
-    },
-    [],
-  );
+    } finally {
+      if (stillCurrent()) setLoadingModels(false);
+    }
+  }, []);
 
-  // Load the editable config once the backend is reachable, then fetch models
-  // for the active provider if a key is present.
+  // Load the editable config from the live backend, then fetch models for the
+  // active provider if a key is present. Another backend (or a lost
+  // connection) first clears everything loaded from the previous one.
   useEffect(() => {
-    if (conn !== "online") return;
+    setConfig(null);
+    setConfigUrl(null);
+    setLoadError(null);
+    setSaveMsg(null);
+    setSaveError(null);
+    setModels(null);
+    setModelsError(null);
+    setLoadingModels(false);
+    setReplacedFrom(null);
+    if (!live) return;
     let cancelled = false;
     getConfig()
       .then((c) => {
         if (cancelled) return;
         setConfig(c);
-        setLoadError(null);
+        setConfigUrl(live);
         const key = (c.llm.api_keys ?? {})[c.llm.provider];
         if (key) {
           void loadModels(c.llm.provider, key);
@@ -90,7 +164,7 @@ export function SettingsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [conn, loadModels]);
+  }, [live, loadModels]);
 
   // If the saved model is not among the available ones (e.g. deprecated), switch to a valid one.
   useEffect(() => {
@@ -102,10 +176,6 @@ export function SettingsScreen() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [models]);
-
-  function applyUrl() {
-    setBaseUrl(urlDraft.trim().replace(/\/+$/, ""));
-  }
 
   function updateLlm(patch: Partial<AppConfigDto["llm"]>) {
     setConfig((c) => (c ? { ...c, llm: { ...c.llm, ...patch } } : c));
@@ -140,30 +210,24 @@ export function SettingsScreen() {
 
   async function save() {
     if (!config) return;
-    setSaving(true);
     setSaveError(null);
     setSaveMsg(null);
+    // Never send one backend's settings to another one.
+    if (!isCurrentBackend(configUrl)) {
+      setSaveError(labels.settings.staleConfig);
+      return;
+    }
+    setSaving(true);
     try {
       const res = await saveConfig(config);
       setReplacedFrom(null);
       setSaveMsg(res.restart_required ? labels.settings.savedRestart : labels.settings.saved);
     } catch (e) {
-      setSaveError(errMsg(e));
+      setSaveError(labels.settings.saveFailed(errMsg(e)));
     } finally {
       setSaving(false);
     }
   }
-
-  const connBadge =
-    conn === "online" ? (
-      <Badge tone="ok">{labels.conn.online}</Badge>
-    ) : conn === "offline" ? (
-      <Badge tone="err">{labels.conn.offline}</Badge>
-    ) : conn === "checking" ? (
-      <Badge tone="muted">{labels.conn.checking}</Badge>
-    ) : (
-      <Badge tone="muted">{labels.conn.unknown}</Badge>
-    );
 
   const currentKey = config ? ((config.llm.api_keys ?? {})[config.llm.provider] ?? "") : "";
   const modelOptions = models ?? (config?.llm.model ? [config.llm.model] : []);
@@ -172,6 +236,8 @@ export function SettingsScreen() {
     <div className="screen">
       <h1>{labels.nav.settings}</h1>
       <p className="subtitle">{labels.settings.subtitle}</p>
+
+      <ConnBanner />
 
       <Section title={labels.settings.appearanceTitle} description={labels.settings.appearanceDesc}>
         <Field label={labels.settings.designLabel} hint={labels.settings.designHint}>
@@ -184,21 +250,7 @@ export function SettingsScreen() {
         </Field>
       </Section>
 
-      <Section title={labels.settings.backendTitle} description={labels.settings.backendDesc} actions={connBadge}>
-        <Field label={labels.settings.urlLabel} hint={labels.settings.urlHint}>
-          <Row>
-            <TextInput
-              value={urlDraft}
-              onChange={(e) => setUrlDraft(e.currentTarget.value)}
-              placeholder="http://127.0.0.1:8000"
-            />
-            <Button onClick={applyUrl}>{labels.settings.apply}</Button>
-            <Button onClick={() => void recheck()}>{labels.settings.check}</Button>
-          </Row>
-        </Field>
-        {version && <span className="muted">{labels.settings.versionLabel(version)}</span>}
-        {conn === "offline" && <Banner tone="err">{labels.common.backendUnreachable}</Banner>}
-      </Section>
+      <BackgroundServiceSection />
 
       <Section title={labels.settings.llmTitle} description={labels.settings.llmDesc}>
         {conn !== "online" && (
@@ -207,7 +259,7 @@ export function SettingsScreen() {
         {loadError && (
           <Banner tone="err">{labels.settings.loadConfigError(loadError)}</Banner>
         )}
-        {conn === "online" && !config && !loadError && (
+        {live && !config && !loadError && (
           <p className="muted">{labels.common.loading}</p>
         )}
 
@@ -334,7 +386,11 @@ export function SettingsScreen() {
           {saveMsg && <span className="muted">{saveMsg}</span>}
         </Row>
       )}
-      {saveError && <Banner tone="err">{labels.settings.saveFailed(saveError)}</Banner>}
+      {saveError && <Banner tone="err">{saveError}</Banner>}
+
+      <div style={{ marginTop: 18 }}>
+        <AdvancedSection />
+      </div>
     </div>
   );
 }

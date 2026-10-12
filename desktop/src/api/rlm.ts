@@ -11,16 +11,25 @@ import type {
   SaveConfigResponse,
   RecentResponse,
   DocPathResponse,
+  ConnectorsResponse,
 } from "../types/api";
 import type { AppConfigDto } from "../types/config";
 
 // Health/root drive the connectivity badge. Keep them snappy so a hung
 // backend resolves to "offline" (and shows the reconnect modal) quickly
 // instead of leaving the app stuck on "Unknown".
-export const getHealth = () => api<HealthResponse>("/health", undefined, { timeoutMs: 6_000 });
-export const getRoot = () => api<RootInfo>("/", undefined, { timeoutMs: 6_000 });
+// The open routes of the connectivity check carry no token.
+export const getHealth = () =>
+  api<HealthResponse>("/health", undefined, { timeoutMs: 6_000, anonymous: true });
+export const getRoot = () => api<RootInfo>("/", undefined, { timeoutMs: 6_000, anonymous: true });
+/** The cheap authenticated request of the connectivity check. */
+export const checkAuth = () => api<StatusResponse>("/status", undefined, { timeoutMs: 6_000 });
 
 export const getStatus = () => api<StatusResponse>("/status");
+export const getIndexStatus = () => api<StatusResponse>("/index/status");
+// Counts the files of every folder, which can take a while on large trees.
+export const getConnectors = () =>
+  api<ConnectorsResponse>("/connectors", undefined, { timeoutMs: 60_000 });
 export const getStatistics = () => api<Statistics>("/statistics");
 export const getProgress = () => api<ProgressResponse>("/index/progress");
 export const getRecentIndexed = (limit = 20) =>

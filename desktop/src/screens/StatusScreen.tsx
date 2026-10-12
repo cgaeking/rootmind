@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { labels } from "../i18n/labels";
-import { useBackend } from "../hooks/useBackend";
+import { useLiveBackend } from "../hooks/useLiveBackend";
+import { useStore } from "../state/store";
 import { getStatus, getStatistics, getProgress, getRecentIndexed, refreshIndex } from "../api/rlm";
 import { ApiError } from "../api/client";
 import type { ProgressResponse, RecentDoc, Statistics, StatusResponse } from "../types/api";
 import { Badge, Banner, Button, Row, Section } from "../components/ui";
+import { ConnBanner } from "../components/ConnBanner";
+
+/** True while `url` is the backend in use and reachable; older results are dropped. */
+function isLive(url: string): boolean {
+  const s = useStore.getState();
+  return s.conn === "online" && s.baseUrl === url;
+}
 
 function fmtNum(n: number): string {
   return n.toLocaleString(labels.locale);
@@ -51,7 +59,8 @@ function Stat({ value, label, title }: { value: string; label: string; title?: s
 }
 
 export function StatusScreen() {
-  const { conn } = useBackend();
+  // The backend the shown numbers belong to (null while unreachable).
+  const live = useLiveBackend();
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [stats, setStats] = useState<Statistics | null>(null);
@@ -63,57 +72,76 @@ export function StatusScreen() {
   const prevRunning = useRef(false);
 
   // Statistics are heavier (full DB scan) -> only on mount and after a sync finishes.
-  const loadStats = useCallback(async () => {
+  const loadStats = useCallback(async (url: string) => {
     try {
-      setStats(await getStatistics());
+      const st = await getStatistics();
+      if (isLive(url)) setStats(st);
     } catch {
       /* keep last value */
     }
   }, []);
 
   // Status is the light poll; progress only while a sync runs.
-  const loadStatus = useCallback(async () => {
-    try {
-      const s = await getStatus();
-      setStatus(s);
-      setError(null);
-      if (s.is_running) {
-        try {
-          setProgress(await getProgress());
-        } catch {
-          /* progress is best-effort */
-        }
-      } else {
-        setProgress(null);
-      }
+  const loadStatus = useCallback(
+    async (url: string) => {
       try {
-        setRecent((await getRecentIndexed(15)).documents);
-      } catch {
-        /* recent list is best-effort */
+        const s = await getStatus();
+        if (!isLive(url)) return;
+        setStatus(s);
+        setError(null);
+        if (s.is_running) {
+          try {
+            const p = await getProgress();
+            if (isLive(url)) setProgress(p);
+          } catch {
+            /* progress is best-effort */
+          }
+        } else {
+          setProgress(null);
+        }
+        try {
+          const docs = (await getRecentIndexed(15)).documents;
+          if (isLive(url)) setRecent(docs);
+        } catch {
+          /* recent list is best-effort */
+        }
+        if (prevRunning.current && !s.is_running) void loadStats(url);
+        prevRunning.current = s.is_running;
+      } catch (e) {
+        if (isLive(url)) setError(e instanceof ApiError ? e.message : String(e));
       }
-      if (prevRunning.current && !s.is_running) void loadStats();
-      prevRunning.current = s.is_running;
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e));
-    }
-  }, [loadStats]);
+    },
+    [loadStats],
+  );
 
-  // Poll while the screen is open and the backend is reachable.
+  // Poll while the screen is open and the backend is reachable. Another
+  // backend (or a lost connection) first clears what was shown.
   useEffect(() => {
-    if (conn !== "online") return;
-    void loadStats();
-    void loadStatus();
-    const id = setInterval(() => void loadStatus(), 3500);
+    setStatus(null);
+    setStats(null);
+    setProgress(null);
+    setRecent([]);
+    setError(null);
+    setActionMsg(null);
+    prevRunning.current = false;
+    if (!live) return;
+    void loadStats(live);
+    void loadStatus(live);
+    const id = setInterval(() => void loadStatus(live), 3500);
     return () => clearInterval(id);
-  }, [conn, loadStatus, loadStats]);
+  }, [live, loadStatus, loadStats]);
 
   async function startSync() {
+    if (!live) return;
+    const url = live;
     setActionMsg(null);
     try {
       await refreshIndex();
+      if (!isLive(url)) return;
       setActionMsg(labels.status.incSyncStarted);
-      void loadStatus();
+      void loadStatus(url);
     } catch (e) {
+      if (!isLive(url)) return;
       if (e instanceof ApiError && e.status === 409) {
         setActionMsg(labels.status.syncAlreadyRunning);
       } else {
@@ -133,8 +161,8 @@ export function StatusScreen() {
       <h1>{labels.nav.status}</h1>
       <p className="subtitle">{labels.status.subtitle}</p>
 
-      {conn !== "online" && <Banner tone="err">{labels.common.backendUnreachable}</Banner>}
-      {error && conn === "online" && (
+      <ConnBanner />
+      {error && live && (
         <Banner tone="err">{labels.status.loadError(error)}</Banner>
       )}
 

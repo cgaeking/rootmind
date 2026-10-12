@@ -1,36 +1,27 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { BackendModal } from "./BackendModal";
-import { useBackend } from "../hooks/useBackend";
+import { FirstRunChoice } from "./FirstRunChoice";
+import { useBackendHeartbeat } from "../hooks/useBackend";
+import { useBackendBootstrap } from "../hooks/useBackendBootstrap";
 import { useStore } from "../state/store";
 import { labels } from "../i18n/labels";
 import styles from "./AppLayout.module.css";
 
 export function AppLayout() {
-  const { conn, recheck } = useBackend();
-  const baseUrl = useStore((s) => s.baseUrl);
-  const setBaseUrl = useStore((s) => s.setBaseUrl);
+  // Choose the backend once at start, then keep checking it.
+  const firstRun = useBackendBootstrap();
+  useBackendHeartbeat();
+  const conn = useStore((s) => s.conn);
+  const kind = useStore((s) => s.kind);
 
   // Mobile nav drawer (hidden on desktop via CSS). Closed on every navigation.
   const [navOpen, setNavOpen] = useState(false);
 
-  // Heartbeat: re-check the backend every 5s so a reconnect (e.g. the user
-  // starts the service) is picked up automatically. Paused while a query is in
-  // flight so a backend busy answering it isn't misreported as offline.
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (useStore.getState().busy) return;
-      void recheck();
-    }, 5000);
-    return () => clearInterval(id);
-  }, [recheck]);
-
-  async function connect(url: string) {
-    const clean = url.trim().replace(/\/+$/, "");
-    if (clean && clean !== baseUrl) setBaseUrl(clean);
-    await recheck();
-  }
+  // Starting, switching and a built-in or service backend that answered 401
+  // (it gets a fresh token on the next check) do not open the dialog.
+  const showBackendModal = conn === "offline" || (conn === "unauthorized" && kind === "custom");
 
   return (
     <div className={styles.layout}>
@@ -53,7 +44,10 @@ export function AppLayout() {
           <Outlet />
         </main>
       </div>
-      {conn === "offline" && <BackendModal baseUrl={baseUrl} onConnect={connect} />}
+      {firstRun.url && firstRun.answer && (
+        <FirstRunChoice url={firstRun.url} onAnswer={firstRun.answer} />
+      )}
+      {showBackendModal && <BackendModal />}
     </div>
   );
 }

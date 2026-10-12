@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { labels } from "../i18n/labels";
-import { useBackend } from "../hooks/useBackend";
-import { getConfig, saveConfig } from "../api/rlm";
+import { isCurrentBackend, useLiveBackend } from "../hooks/useLiveBackend";
+import { useStore } from "../state/store";
+import { getConfig, getConnectors, saveConfig } from "../api/rlm";
 import { ApiError } from "../api/client";
 import type { AppConfigDto, ConnectorDto } from "../types/config";
 import { Banner, Button, Row, Section, TextInput } from "../components/ui";
+import { ConnBanner } from "../components/ConnBanner";
 
 interface Entry {
   name: string; // preserved for existing folders; "" for new ones
@@ -26,28 +28,42 @@ function slugify(path: string): string {
 }
 
 export function FoldersScreen() {
-  const { conn } = useBackend();
+  // The backend the loaded folders belong to (null while unreachable).
+  const live = useLiveBackend();
+  const kind = useStore((s) => s.kind);
 
   const [config, setConfig] = useState<AppConfigDto | null>(null);
+  const [configUrl, setConfigUrl] = useState<string | null>(null);
   const [entries, setEntries] = useState<Entry[]>([]);
+  // Background service: folder name → why the service cannot use it.
+  const [refused, setRefused] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Bumped after a save so the service's folder check is read again.
+  const [saveCount, setSaveCount] = useState(0);
 
+  // Another backend (or a lost connection) first clears what was loaded.
   useEffect(() => {
-    if (conn !== "online") return;
+    setConfig(null);
+    setConfigUrl(null);
+    setEntries([]);
+    setLoadError(null);
+    setSaveMsg(null);
+    setSaveError(null);
+    if (!live) return;
     let cancelled = false;
     getConfig()
       .then((c) => {
         if (cancelled) return;
         setConfig(c);
+        setConfigUrl(live);
         setEntries(
           c.connectors
             .filter((x) => x.type === "local")
             .map((x) => ({ name: x.name, path: x.path ?? "" })),
         );
-        setLoadError(null);
       })
       .catch((e) => {
         if (!cancelled) setLoadError(errMsg(e));
@@ -55,7 +71,30 @@ export function FoldersScreen() {
     return () => {
       cancelled = true;
     };
-  }, [conn]);
+  }, [live]);
+
+  // The background service reads only what this account may read: mark the
+  // folders it refused (GET /connectors lists them with available: false).
+  useEffect(() => {
+    setRefused({});
+    if (!live || kind !== "service") return;
+    let cancelled = false;
+    getConnectors()
+      .then((res) => {
+        if (cancelled) return;
+        const out: Record<string, string> = {};
+        for (const c of res.connectors) {
+          if (c.available === false) out[c.name] = c.error ?? "";
+        }
+        setRefused(out);
+      })
+      .catch(() => {
+        /* the marks are best-effort */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [live, kind, saveCount]);
 
   function setPath(i: number, path: string) {
     setEntries((e) => e.map((x, j) => (j === i ? { ...x, path } : x)));
@@ -91,9 +130,14 @@ export function FoldersScreen() {
 
   async function save() {
     if (!config) return;
-    setSaving(true);
     setSaveError(null);
     setSaveMsg(null);
+    // Never send one backend's folders to another one.
+    if (!isCurrentBackend(configUrl)) {
+      setSaveError(labels.folders.staleConfig);
+      return;
+    }
+    setSaving(true);
     try {
       const used = new Set<string>();
       const connectors: ConnectorDto[] = entries
@@ -107,8 +151,10 @@ export function FoldersScreen() {
         });
       const res = await saveConfig({ ...config, connectors });
       setSaveMsg(res.restart_required ? labels.folders.savedRestart : labels.folders.saved);
+      setSaveCount((n) => n + 1);
     } catch (e) {
-      setSaveError(errMsg(e));
+      // A folder the background service refuses comes back as 400 with the reason.
+      setSaveError(labels.folders.saveFailed(errMsg(e)));
     } finally {
       setSaving(false);
     }
@@ -119,7 +165,7 @@ export function FoldersScreen() {
       <h1>{labels.nav.folders}</h1>
       <p className="subtitle">{labels.folders.subtitle}</p>
 
-      {conn !== "online" && <Banner tone="err">{labels.common.backendUnreachable}</Banner>}
+      <ConnBanner />
       {loadError && (
         <Banner tone="err">{labels.folders.loadError(loadError)}</Banner>
       )}
@@ -130,16 +176,21 @@ export function FoldersScreen() {
             <p className="muted">{labels.folders.none}</p>
           )}
           {entries.map((e, i) => (
-            <Row key={i}>
-              <TextInput
-                value={e.path}
-                onChange={(ev) => setPath(i, ev.currentTarget.value)}
-                placeholder={labels.folders.pathPlaceholder}
-              />
-              <Button onClick={() => removeEntry(i)} aria-label={labels.folders.removeAria}>
-                ✕
-              </Button>
-            </Row>
+            <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <Row>
+                <TextInput
+                  value={e.path}
+                  onChange={(ev) => setPath(i, ev.currentTarget.value)}
+                  placeholder={labels.folders.pathPlaceholder}
+                />
+                <Button onClick={() => removeEntry(i)} aria-label={labels.folders.removeAria}>
+                  ✕
+                </Button>
+              </Row>
+              {e.name && e.name in refused && (
+                <Banner tone="err">{labels.folders.notAccessible(refused[e.name])}</Banner>
+              )}
+            </div>
           ))}
           <Row>
             <Button onClick={() => void addEntry()}>{labels.folders.addFolder}</Button>
@@ -155,7 +206,7 @@ export function FoldersScreen() {
           {saveMsg && <span className="muted">{saveMsg}</span>}
         </Row>
       )}
-      {saveError && <Banner tone="err">{labels.folders.saveFailed(saveError)}</Banner>}
+      {saveError && <Banner tone="err">{saveError}</Banner>}
     </div>
   );
 }
