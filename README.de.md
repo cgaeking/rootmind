@@ -51,7 +51,8 @@ Der Installer ist noch nicht codesigniert. Windows SmartScreen zeigt eventuell
 und dann **Trotzdem ausführen**. Ist Smart App Control aktiv, blockiert es den
 Installer oder das Backend der App eventuell ohne diese Wahl; ein blockiertes
 Backend meldet die App. Smart App Control kennt keine Ausnahme für eine
-einzelne App; signierte Releases, die geplant sind, vermeiden das.
+einzelne App; signierte Releases, die geplant sind, vermeiden das (siehe
+[Code-Signing-Richtlinie](CODE_SIGNING.md)).
 
 Füge danach unter **Ordner** einen Ordner hinzu. Die Indizierung beginnt
 innerhalb etwa einer Minute, und die Suche funktioniert ohne API-Key, sobald
@@ -696,3 +697,10 @@ beschrieben.
 
 Das gepackte Backend und der Installer enthalten Abhängigkeiten von Dritten,
 die ihre eigenen Lizenzen behalten.
+
+## Code-Signing-Richtlinie
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate
+by [SignPath Foundation](https://signpath.org). Was signiert wird, die Rollen im
+Team und die Datenschutzerklärung stehen in [CODE_SIGNING.md](CODE_SIGNING.md)
+(englisch).
