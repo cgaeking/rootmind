@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rootmind-backend"
-version = "1.1.0"
+version = "1.2.0"
 description = "Local document search with an agentic LLM tool loop (SQLite FTS5), exposed via REST and MCP"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -33,6 +33,8 @@ dependencies = [
     "python-docx>=1.2.0",
     "python-dotenv>=1.2.4",
     "python-pptx>=1.0.2",
+    # The Windows service host (rootmind.service); already locked through mcp.
+    "pywin32>=312; sys_platform == 'win32'",
     "pyyaml>=6.0.3",
     "sqlalchemy>=2.1.4",
     "uvicorn[standard]>=0.54.0",

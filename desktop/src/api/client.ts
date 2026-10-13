@@ -41,15 +41,35 @@ function combineSignals(a: AbortSignal | undefined, b: AbortSignal): AbortSignal
 export interface ApiOptions {
   /** Per-request timeout in ms. Pass 0 to disable. Defaults to 15 s. */
   timeoutMs?: number;
+  /**
+   * Send no token: for the routes that need none (GET /health and GET /),
+   * which the connectivity check calls before it knows who answers.
+   */
+  anonymous?: boolean;
+}
+
+/**
+ * The request headers: the JSON content type, the caller's headers, and the
+ * bearer token when the backend has one. Without a token no Authorization
+ * header is sent.
+ */
+export function requestHeaders(token: string | null, extra?: HeadersInit): Headers {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  new Headers(extra ?? {}).forEach((value, key) => headers.set(key, value));
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  else headers.delete("Authorization");
+  return headers;
 }
 
 /**
  * Thin typed fetch wrapper around the RootMind backend REST API.
- * Base URL comes from the app store (configurable in Settings).
- * Every request is bounded by a timeout and can be aborted via `init.signal`.
+ * The base URL and token come from the app store (the backend chosen at start
+ * or in Settings). Every request is bounded by a timeout and can be aborted via
+ * `init.signal`. A 401 answer sets the connection state to "unauthorized", so
+ * the app fetches a fresh token (built-in, service) or asks for one (custom).
  */
 export async function api<T>(path: string, init?: RequestInit, opts?: ApiOptions): Promise<T> {
-  const baseUrl = useStore.getState().baseUrl;
+  const { baseUrl, token } = useStore.getState();
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const timeoutCtrl = new AbortController();
@@ -66,7 +86,7 @@ export async function api<T>(path: string, init?: RequestInit, opts?: ApiOptions
     res = await fetch(`${baseUrl}${path}`, {
       cache: "no-store",
       ...init,
-      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      headers: requestHeaders(opts?.anonymous ? null : token, init?.headers),
       signal,
     });
   } catch (e) {
@@ -80,6 +100,12 @@ export async function api<T>(path: string, init?: RequestInit, opts?: ApiOptions
     throw new ApiError(0, (e as Error).message || labels.common.connectionFailed);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+
+  if (res.status === 401) {
+    // Only when the answer came from the backend that is still in use.
+    const now = useStore.getState();
+    if (now.baseUrl === baseUrl && now.token === token) now.setConn("unauthorized");
   }
 
   if (!res.ok) {

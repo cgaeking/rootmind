@@ -1,7 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// @ts-expect-error process is a nodejs global
+// The Node.js types come in with vitest (vitest.config.ts is part of the same
+// tsconfig.node.json project).
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/

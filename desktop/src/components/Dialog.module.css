@@ -12,32 +12,41 @@
 
 .card {
   width: 100%;
-  max-width: 440px;
+  max-width: 480px;
+  max-height: 100%;
+  overflow-y: auto;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 22px 24px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .title {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 16px;
   font-weight: 650;
 }
 
 .text {
-  margin: 0 0 16px;
+  margin: 0;
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.5;
 }
 
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .label {
-  display: block;
   font-size: 12px;
   color: var(--text-muted);
-  margin-bottom: 4px;
 }
 
 .input {
@@ -54,37 +63,50 @@
   border-color: var(--accent);
 }
 
-.actions {
-  margin-top: 14px;
+.check {
   display: flex;
-  justify-content: flex-end;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 13px;
+}
+.check input {
+  margin-top: 3px;
 }
 
-.button {
-  padding: 9px 18px;
-  border: none;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-fg);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
+.log {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
-.button:disabled {
+
+.actions {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.link {
+  margin-right: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: underline;
+}
+.link:disabled {
   opacity: 0.6;
   cursor: default;
-}
-
-.hint {
-  margin: 16px 0 0;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.hint code {
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 0.92em;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 1px 5px;
 }

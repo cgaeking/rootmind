@@ -1,0 +1,368 @@
+name: release
+
+# Builds and checks everything a release ships, and publishes it for a
+# version tag:
+#
+#   meta       versions agree (and match the tag); the tag has release notes;
+#              the NSIS template is the one for the locked Tauri CLI
+#   backend    backend-exe.yml: onedir build, smoke test, service end-to-end test
+#   installer  the NSIS installer with exactly that backend, a check that it
+#              updates an installed version in place, installer smoke test
+#   winget     the winget manifests, rendered and validated against the schemas
+#   publish    tags only: backend zip, checksums, attestations, GitHub Release
+#
+# A manual run (workflow_dispatch) and pull requests that change the packaging
+# are dry runs: the same builds and checks, nothing is published. Every run
+# builds from scratch without caches, so a dry run rehearses the tag build.
+# The binaries are not code-signed yet; signing jobs would go between backend
+# and installer, and between installer and publish.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "desktop/src-tauri/tauri.conf.json"
+      - "desktop/src-tauri/tauri.release.conf.json"
+      - "desktop/src-tauri/installer/**"
+      # The Tauri CLI locked here builds the installer.
+      - "desktop/pnpm-lock.yaml"
+      - "desktop/scripts/**"
+      - "backend/packaging/**"
+      - "packaging/winget/**"
+      - "scripts/check_versions.py"
+      - "scripts/nsis_template.py"
+      - "scripts/prepare_backend.py"
+      - "scripts/release_notes.py"
+      - "scripts/winget_manifests.py"
+      - ".github/workflows/release.yml"
+      # The backend job; this workflow uses its artifact name and outputs.
+      - ".github/workflows/backend-exe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# No job has an API key. The base URLs point at a closed local port, so even a
+# request that bypassed the checks could not reach a provider.
+env:
+  ANTHROPIC_BASE_URL: "http://127.0.0.1:9"
+  OPENAI_BASE_URL: "http://127.0.0.1:9"
+
+jobs:
+  meta:
+    name: Version and release notes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # backend/pyproject.toml, desktop/package.json and Cargo.toml carry the
+      # same version (PEP 440 normal form), and a tag names it, spelled as in
+      # package.json (v1.2.0-rc.1, not v1.2.0rc1): the installer's download
+      # URL in the winget manifest uses that spelling.
+      - name: Versions
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(jq -r .version desktop/package.json)
+          if [ "$REF_TYPE" = tag ]; then
+            python3 scripts/check_versions.py --tag "$REF_NAME"
+            if [ "$REF_NAME" != "v$version" ]; then
+              echo "::error::The tag must be v$version, spelled as in desktop/package.json."
+              exit 1
+            fi
+          else
+            python3 scripts/check_versions.py
+          fi
+          case "$version" in
+            *-*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Version $version (prerelease: $prerelease)" >> "$GITHUB_STEP_SUMMARY"
+
+      # A tag without a CHANGELOG.md section fails here, before the long
+      # builds. Dry runs only preview the notes.
+      - name: Release notes
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if python3 scripts/release_notes.py "v$VERSION" > "$RUNNER_TEMP/notes.md"; then
+            { echo "### Release notes"; echo; cat "$RUNNER_TEMP/notes.md"; } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$REF_TYPE" = tag ]; then
+            exit 1
+          else
+            echo "::notice::CHANGELOG.md has no section for $VERSION; a tag would fail here."
+          fi
+
+      # desktop/src-tauri/installer/installer.nsi is Tauri's NSIS template
+      # for the locked @tauri-apps/cli with RootMind's changes (no reinstall
+      # page). Downloads the upstream template from the Tauri repository.
+      - name: NSIS template
+        run: python3 scripts/nsis_template.py --check
+
+  backend:
+    name: Backend
+    needs: meta
+    # A local reusable workflow runs from the same commit as this workflow.
+    # The newer "$/" form is not understood by actionlint yet.
+    uses: ./.github/workflows/backend-exe.yml # zizmor: ignore[self-repository]
+    with:
+      use-cache: false
+
+  installer:
+    name: Installer
+    needs: [meta, backend]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No dependency caches in this job: a release build never restores a
+      # cache written by another run.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: desktop/package.json # pnpm version from "packageManager"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # The pinned compiler that desktop.yml tests with (RUST_TOOLCHAIN there).
+      - name: Rust toolchain
+        env:
+          RUST_TOOLCHAIN: "1.96.0"
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
+          rustup default $env:RUST_TOOLCHAIN
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rootmind-backend-windows-x64
+          path: ${{ runner.temp }}/rootmind-backend
+
+      # Copies the tested build into desktop/src-tauri/binaries/ and checks
+      # its tree hash against the one backend-exe.yml reported, its size and
+      # --version.
+      - name: Place the backend
+        env:
+          TREE_SHA256: ${{ needs.backend.outputs.tree-sha256 }}
+        run: >-
+          python scripts/prepare_backend.py
+          --from (Join-Path $env:RUNNER_TEMP "rootmind-backend")
+          --expect-tree-sha256 $env:TREE_SHA256
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: pnpm install --frozen-lockfile
+
+      # tauri build runs cargo without --locked: fail here instead if
+      # Cargo.lock does not match Cargo.toml, so the release builds exactly
+      # the crates CI tested.
+      - name: Check Cargo.lock
+        working-directory: desktop/src-tauri
+        run: cargo fetch --locked
+
+      # Runs `pnpm build` first (beforeBuildCommand), then the release build
+      # and the NSIS bundle. The overlay adds the backend as resources.
+      - name: Build the installer
+        working-directory: desktop
+        run: |
+          "Toolchain: $(rustc -V), node $(node -v), pnpm $(pnpm -v)" >> $env:GITHUB_STEP_SUMMARY
+          pnpm tauri build --ci --config src-tauri/tauri.release.conf.json
+
+      # The script Tauri rendered from installer/installer.nsi. An installed
+      # version must be updated in place without questions: no reinstall page
+      # ("already installed, uninstall it first?"), and the folder page is
+      # skipped when the app is installed. /S never shows pages, so the smoke
+      # test below cannot see a page; this check can.
+      - name: Check the installer script
+        run: |
+          $nsi = "desktop/src-tauri/target/release/nsis/x64/installer.nsi"
+          if (-not (Test-Path -LiteralPath $nsi -PathType Leaf)) { throw "$nsi not found" }
+          $page = @(Select-String -LiteralPath $nsi -Pattern 'PageReinstall|Page custom|ReinstallPageCheck')
+          if ($page.Count) {
+            $page | ForEach-Object { "::error::installer.nsi line $($_.LineNumber): $($_.Line.Trim())" }
+            throw "the installer has a reinstall page"
+          }
+          $required = @(
+            '^!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrInstalled$',
+            '^Function SkipIfPassiveOrInstalled$',
+            '^!include ".*\\installer\\hooks\.nsh"$'
+          )
+          foreach ($pattern in $required) {
+            if (-not (Select-String -LiteralPath $nsi -Pattern $pattern -Quiet)) { throw "installer.nsi has no line matching $pattern" }
+          }
+          "Installer script: no reinstall page; the folder page is skipped for an update" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Installer smoke test
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          BACKEND_VERSION: ${{ needs.backend.outputs.version }}
+          TREE_SHA256: ${{ needs.backend.outputs.tree-sha256 }}
+        run: |
+          $setup = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*_x64-setup.exe)
+          if ($setup.Count -ne 1) { throw "expected one NSIS installer, found $($setup.Count)" }
+          $conf = Get-Content desktop/src-tauri/tauri.conf.json -Raw -Encoding utf8 | ConvertFrom-Json
+          ./desktop/scripts/installer-smoke.ps1 -Setup $setup[0].FullName -Version $env:VERSION `
+            -BackendVersion $env:BACKEND_VERSION -BackendTreeSha256 $env:TREE_SHA256 `
+            -Publisher $conf.bundle.publisher -Identifier $conf.identifier -Port 18770 `
+            -WorkDir (Join-Path $env:RUNNER_TEMP "installer-smoke")
+
+      - name: Release asset
+        run: |
+          $setup = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*_x64-setup.exe)[0]
+          $dir = New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP "installer")
+          $asset = Join-Path $dir "RootMind-Setup-x64.exe"
+          Copy-Item -LiteralPath $setup.FullName -Destination $asset
+          $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $asset).Length
+          ("Installer: RootMind-Setup-x64.exe, {0:N1} MB, SHA-256 {1}" -f ($size / 1MB), $hash) >> $env:GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rootmind-installer-windows-x64
+          path: ${{ runner.temp }}/installer/RootMind-Setup-x64.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  winget:
+    name: winget manifests
+    needs: [meta, installer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rootmind-installer-windows-x64
+          path: ${{ runner.temp }}/installer
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: false
+
+      # The publisher comes from tauri.conf.json, like the installer's own
+      # entry. On a tag, the version must be spelled like the tag, since the
+      # installer URL names it.
+      - name: Render
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          sha=$(sha256sum "$RUNNER_TEMP/installer/RootMind-Setup-x64.exe" | cut -d ' ' -f 1)
+          args=(--version "$VERSION" --sha256 "$sha" --out "$RUNNER_TEMP/winget")
+          if [ "$REF_TYPE" = tag ]; then args+=(--tag "$REF_NAME"); fi
+          python3 scripts/winget_manifests.py "${args[@]}" > "$RUNNER_TEMP/winget-schemas.tsv"
+
+      - name: Validate against the vendored schemas
+        run: |
+          while IFS=$'\t' read -r manifest schema; do
+            uvx --from check-jsonschema==0.38.2 check-jsonschema --schemafile "$schema" "$manifest"
+          done < "$RUNNER_TEMP/winget-schemas.tsv"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: winget-manifests
+          path: ${{ runner.temp }}/winget/
+          if-no-files-found: error
+          retention-days: 90
+
+  publish:
+    name: Publish the release
+    needs: [meta, backend, installer, winget]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The only job that can write. Nothing it runs is built here: it packs
+    # and publishes what the jobs above built and tested.
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # the Sigstore certificate for the attestations
+      attestations: write # store the attestations
+    steps:
+      # For CHANGELOG.md and the scripts.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rootmind-installer-windows-x64
+          path: ${{ runner.temp }}/assets
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rootmind-backend-windows-x64
+          path: ${{ runner.temp }}/backend/rootmind-backend
+
+      # The zip holds the folder rootmind-backend/ with exactly the tested
+      # tree, files whose names start with a dot included.
+      - name: Backend zip and checksums
+        env:
+          TREE_SHA256: ${{ needs.backend.outputs.tree-sha256 }}
+        run: |
+          hash=$(python3 scripts/prepare_backend.py --tree-hash "$RUNNER_TEMP/backend/rootmind-backend")
+          if [ "$hash" != "$TREE_SHA256" ]; then
+            echo "::error::backend tree hash $hash, expected $TREE_SHA256"
+            exit 1
+          fi
+          assets="$RUNNER_TEMP/assets"
+          (
+            cd "$RUNNER_TEMP/backend"
+            find rootmind-backend -type f | LC_ALL=C sort | zip -X -q "$assets/rootmind-backend-windows-x64.zip" -@
+          )
+          cd "$assets"
+          sha256sum RootMind-Setup-x64.exe rootmind-backend-windows-x64.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          ls -l
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/assets/RootMind-Setup-x64.exe
+            ${{ runner.temp }}/assets/rootmind-backend-windows-x64.zip
+            ${{ runner.temp }}/assets/SHA256SUMS.txt
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+        run: |
+          assets="$RUNNER_TEMP/assets"
+          python3 scripts/release_notes.py "$TAG" --installer "$assets/RootMind-Setup-x64.exe" > "$RUNNER_TEMP/notes.md"
+          flags=(--verify-tag --title "RootMind $VERSION" --notes-file "$RUNNER_TEMP/notes.md")
+          if [ "$PRERELEASE" = true ]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$TAG" "${flags[@]}" \
+            "$assets/RootMind-Setup-x64.exe" \
+            "$assets/rootmind-backend-windows-x64.zip" \
+            "$assets/SHA256SUMS.txt"

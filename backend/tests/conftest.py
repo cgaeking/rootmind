@@ -1,8 +1,9 @@
 """Shared fixtures. Tests run fully offline: constructing a real LLM client fails.
 
 - ``offline_llm`` / ``isolated_config`` (autouse): no real SDK clients, no API
-  keys, no background scheduler, a fresh ``RLM_HOME`` and working directory per
-  test, so a developer's own ``.env`` or ``config.yaml`` is never read.
+  keys or tokens, no background scheduler, a fresh ``RLM_HOME`` and working
+  directory per test, so a developer's own ``.env`` or ``config.yaml`` is never
+  read, and no ``RLM_HOST``/``RLM_PORT`` from the environment.
 - ``tiny_corpus``: one small file per supported format, copied per test.
 - ``app_config`` / ``repo`` / ``indexed_repo``: config, empty and indexed repository.
 - ``rlm_home`` / ``api``: a ``config.yaml`` in ``RLM_HOME`` and a ``TestClient``
@@ -48,7 +49,13 @@ def offline_llm(monkeypatch):
     ):
         for name in names:
             monkeypatch.setattr(module, name, _refuse)
-    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "MCP_API_TOKEN"):
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "XAI_API_KEY",
+        "MCP_API_TOKEN",
+        "RLM_API_TOKEN",
+    ):
         monkeypatch.delenv(var, raising=False)
     yield
 
@@ -58,7 +65,7 @@ def isolated_config(monkeypatch, tmp_path):
     """Fresh global config per test, no background scheduler, cwd-independent paths."""
     monkeypatch.setenv("RLM_DISABLE_SCHEDULER", "1")
     monkeypatch.setenv("RLM_HOME", str(tmp_path / "rlm_home"))
-    for var in ("CONFIG_PATH", "RLM_DEV", "MCP_ALLOWED_ORIGINS", "DEBUG"):
+    for var in ("CONFIG_PATH", "RLM_DEV", "MCP_ALLOWED_ORIGINS", "DEBUG", "RLM_HOST", "RLM_PORT"):
         monkeypatch.delenv(var, raising=False)
     # Settings() reads ".env" from the working directory: never pick up a real one.
     workdir = tmp_path / "cwd"

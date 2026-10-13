@@ -1,4 +1,4 @@
-// Response shapes of the RootMind backend REST API (http://127.0.0.1:8000).
+// Response shapes of the RootMind backend REST API.
 
 export interface HealthResponse {
   status: string; // "healthy"
@@ -9,6 +9,24 @@ export interface RootInfo {
   version: string;
   status: string;
   features: string[];
+  /** Whether requests need a bearer token. */
+  auth: "bearer" | "none";
+}
+
+/** One entry of GET /connectors. */
+export interface ConnectorInfo {
+  name: string;
+  type: string;
+  root_path: string | null;
+  exists?: boolean;
+  /** false for a folder the backend could not use (see `error`). */
+  available?: boolean;
+  /** Why the folder could not be used, e.g. refused by the background service. */
+  error?: string;
+}
+
+export interface ConnectorsResponse {
+  connectors: ConnectorInfo[];
 }
 
 export interface ConnectorStatus {

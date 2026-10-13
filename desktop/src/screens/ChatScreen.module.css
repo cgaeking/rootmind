@@ -21,6 +21,10 @@
   max-width: 420px;
 }
 
+.empty a {
+  color: var(--accent);
+}
+
 .msg {
   max-width: 760px;
   white-space: pre-wrap;

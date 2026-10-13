@@ -1,12 +1,14 @@
 """REST API routes."""
 
 import logging
+import os
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, StringConstraints
 
 from .. import __version__
+from ..access import UNRESTRICTED, FolderAccess, FolderNotAllowed
 from ..config import (
     DEFAULT_MODEL,
     LlmProvider,
@@ -223,6 +225,34 @@ def _list_chat_models(provider: str, api_key: str | None) -> list[str]:
     raise ValueError(f"Unknown provider: {provider}")
 
 
+def _refused_folder(body: ConfigBody, access: FolderAccess) -> str | None:
+    """Why the folder access policy refuses a new folder in ``body``, or None.
+
+    Only folders that are not configured yet are checked: a new folder that
+    the policy refuses or that cannot be opened (missing, an unplugged drive)
+    is an error. A folder that is already configured stays, even when it is
+    unavailable or refused (for example a network folder carried over when
+    the background service was turned on), so other settings can still be
+    saved. It is listed as unavailable by ``GET /connectors``.
+    """
+    if access is UNRESTRICTED or "connectors" not in body.model_fields_set:
+        return None
+    configured = {os.path.normcase(c.path) for c in get_config().connectors if c.path}
+    for connector in body.connectors:
+        if connector.type != "local" or not connector.path:
+            continue
+        if os.path.normcase(connector.path) in configured:
+            continue
+        try:
+            access.check_root(connector.path)
+        except FolderNotAllowed as e:
+            return f"Cannot use {connector.path}: {e}"
+        except OSError as e:
+            reason = "folder not found" if isinstance(e, FileNotFoundError) else e.strerror
+            return f"Cannot use {connector.path}: {reason or e}"
+    return None
+
+
 def _llm_http_error(e: Exception, action: str) -> HTTPException:
     """Map an LLM failure to a status code and a short message without provider internals."""
     if isinstance(e, LLMTimeoutError):
@@ -246,17 +276,21 @@ def create_router(app_state: Any) -> APIRouter:
     """
     router = APIRouter()
 
+    # GET and HEAD on / and /health answer without a token (see api.app).
     @router.get("/", tags=["Health"])
+    @router.head("/", include_in_schema=False)
     async def root():
-        """Root endpoint: service name and version."""
+        """Root endpoint: service name, version and whether requests need a bearer token."""
         return {
             "name": "RootMind API",
             "version": __version__,
             "status": "running",
             "features": ["FTS5 full-text search", "agentic tool-use query"],
+            "auth": "bearer" if getattr(app_state, "auth_enabled", False) else "none",
         }
 
     @router.get("/health", tags=["Health"])
+    @router.head("/health", include_in_schema=False)
     async def health():
         """Health check endpoint."""
         return {"status": "healthy"}
@@ -421,8 +455,30 @@ def create_router(app_state: Any) -> APIRouter:
 
     @router.get("/connectors", tags=["Connectors"])
     def list_connectors():
-        """List all configured connectors."""
-        return {"connectors": [c.status() for c in app_state.connectors.values()]}
+        """List all configured connectors.
+
+        Folders that could not be used (refused by the folder access policy,
+        missing, not a folder) are listed after the others with
+        ``"available": false`` and the reason in ``error``.
+        """
+        connectors = [c.status() for c in app_state.connectors.values()]
+        errors = getattr(app_state, "connector_errors", None) or {}
+        if errors:
+            paths = {c.name: c.path for c in app_state.config.connectors}
+            for name, reason in errors.items():
+                if name in app_state.connectors:
+                    continue
+                connectors.append(
+                    {
+                        "name": name,
+                        "type": "LocalConnector",
+                        "root_path": paths.get(name),
+                        "exists": False,
+                        "available": False,
+                        "error": reason,
+                    }
+                )
+        return {"connectors": connectors}
 
     @router.get("/connectors/{connector_name}", tags=["Connectors"])
     def get_connector(connector_name: str):
@@ -524,10 +580,17 @@ def create_router(app_state: Any) -> APIRouter:
 
         Saves are serialized, so two clients saving at the same time cannot
         interleave their read-modify-write of the file or the reload.
+
+        Under a folder access policy (the Windows background service), every
+        folder is checked first; a refused folder answers 400 with the reason
+        and nothing is saved.
         """
         from .app import config_update_lock, reload_app_state
 
         with config_update_lock:
+            refused = _refused_folder(body, getattr(app_state, "folder_access", UNRESTRICTED))
+            if refused is not None:
+                raise HTTPException(status_code=400, detail=refused)
             try:
                 save_config(body.model_dump(exclude_unset=True), active_config_path())
             except Exception as e:

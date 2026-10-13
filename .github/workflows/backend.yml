@@ -9,6 +9,14 @@ on:
       # The version check compares these with backend/pyproject.toml.
       - "desktop/package.json"
       - "desktop/src-tauri/Cargo.toml"
+      # The release script tests read these. The NSIS template test fails
+      # when the locked Tauri CLI is not the one the template was made for.
+      - "desktop/src-tauri/tauri.conf.json"
+      - "desktop/src-tauri/tauri.release.conf.json"
+      - "desktop/src-tauri/installer/**"
+      - "desktop/pnpm-lock.yaml"
+      - "desktop/scripts/**"
+      - "packaging/**"
       - ".github/workflows/backend.yml"
   pull_request:
     paths:
@@ -16,6 +24,12 @@ on:
       - "scripts/**"
       - "desktop/package.json"
       - "desktop/src-tauri/Cargo.toml"
+      - "desktop/src-tauri/tauri.conf.json"
+      - "desktop/src-tauri/tauri.release.conf.json"
+      - "desktop/src-tauri/installer/**"
+      - "desktop/pnpm-lock.yaml"
+      - "desktop/scripts/**"
+      - "packaging/**"
       - ".github/workflows/backend.yml"
   workflow_dispatch:
 
@@ -54,6 +68,11 @@ jobs:
       - run: uv run ruff format --check .
       - name: Versions match across backend and desktop
         run: uv run python ../scripts/check_versions.py
+      # check_versions, release_notes, prepare_backend, winget_manifests,
+      # nsis_template (offline: the committed template against the locked
+      # Tauri CLI) and the installer smoke test's helpers (pwsh is on the runner).
+      - name: Release script tests
+        run: uv run pytest ../scripts/tests -q
 
   test:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
@@ -78,6 +97,11 @@ jobs:
       - run: uv sync --locked
       # Offline: tests use fake LLM clients; constructing a real one fails.
       - run: uv run pytest -q --cov --cov-report=term-missing
+      # Their Windows branches (junctions, Windows paths, the PowerShell tree
+      # hash) run only here; the lint job runs them on Linux.
+      - name: Release script tests (Windows)
+        if: runner.os == 'Windows'
+        run: uv run pytest ../scripts/tests -q
 
   evals-dry:
     name: Retrieval regression (dry evals, offline)

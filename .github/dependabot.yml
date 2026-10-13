@@ -21,8 +21,12 @@ updates:
 
   # Tauri's npm packages must stay on the same major.minor as the Rust crates
   # (tauri <-> @tauri-apps/api, tauri-plugin-X <-> @tauri-apps/plugin-X), or
-  # `tauri build` fails. PR CI does not run `tauri build`: merge the npm and
-  # cargo PRs of a run together and check `pnpm tauri info` first.
+  # `tauri build` fails. desktop.yml fails on a mismatch (`pnpm tauri info`),
+  # and release.yml dry-runs `tauri build` for PRs that change
+  # pnpm-lock.yaml. Merge the npm and cargo PRs of a run together.
+  # An update of @tauri-apps/cli also needs the NSIS template refreshed:
+  # `python scripts/nsis_template.py --write`, committed to the same PR
+  # (backend.yml's script tests fail until then).
   - package-ecosystem: "npm"
     directory: "/desktop"
     schedule:

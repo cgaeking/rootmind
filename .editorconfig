@@ -12,13 +12,18 @@ indent_size = 2
 [*.{py,rs,toml}]
 indent_size = 4
 
-# Windows scripts and NSIS hooks keep CRLF line endings
+# Windows scripts and NSIS files keep CRLF line endings
 [*.{bat,cmd,ps1}]
 end_of_line = crlf
 indent_size = 4
 
-[*.nsh]
+[*.{nsh,nsi}]
 end_of_line = crlf
+
+# Generated from Tauri's NSIS template, upstream whitespace included:
+# scripts/nsis_template.py --check compares it byte for byte with a fresh render
+[desktop/src-tauri/installer/installer.nsi]
+trim_trailing_whitespace = unset
 
 [*.md]
 trim_trailing_whitespace = false

@@ -25,11 +25,10 @@ logs/
 # Eval runs store full model answers
 backend/evals/results/
 
-# Build output and tools fetched at build time
+# Build output
 build/
 dist/
 *.exe
-backend/deploy/windows/tools/
 node_modules/
 *.tsbuildinfo
 desktop/src-tauri/target/

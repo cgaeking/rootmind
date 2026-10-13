@@ -26,6 +26,9 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "publisher": "Christian Gäking",
+    "homepage": "https://github.com/cgaeking/rootmind",
+    "copyright": "Copyright (c) 2026 Christian Gäking",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -35,7 +38,10 @@
     ],
     "windows": {
       "nsis": {
-        "languages": ["English", "German"]
+        "installMode": "currentUser",
+        "languages": ["English", "German"],
+        "template": "installer/installer.nsi",
+        "installerHooks": "installer/hooks.nsh"
       }
     }
   }

@@ -56,9 +56,11 @@ indexer:
     - "__pycache__"
     - "*.tmp"
 
-# REST API. Keep it on 127.0.0.1: the REST API has no authentication and must
-# never be exposed on a network. For remote agents, use the MCP HTTP server,
-# which requires a bearer token.
+# REST API bind address for `rootmind api` (--host/--port and RLM_HOST/RLM_PORT
+# take precedence). Keep it on 127.0.0.1: without RLM_API_TOKEN or
+# --require-token the REST API has no authentication, and it must never be
+# exposed on a network. For remote agents, use the MCP HTTP server, which
+# requires a bearer token.
 api:
   host: 127.0.0.1
   port: 8000

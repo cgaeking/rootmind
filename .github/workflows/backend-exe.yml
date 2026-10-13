@@ -1,0 +1,192 @@
+name: backend-exe
+
+# The packaged backend: a PyInstaller onedir build on Windows, its smoke test,
+# and the end-to-end test of the Windows background service. release.yml calls
+# this workflow for release builds (use-cache: false) and takes the tree hash,
+# the version and the artifact "rootmind-backend-windows-x64" from it.
+
+on:
+  pull_request:
+    paths:
+      - "backend/src/**"
+      - "backend/packaging/**"
+      - "backend/pyproject.toml"
+      - "backend/uv.lock"
+      - "backend/tests/e2e/**"
+      - ".github/workflows/backend-exe.yml"
+  push:
+    branches: [main]
+    paths:
+      - "backend/src/**"
+      - "backend/packaging/**"
+      - "backend/pyproject.toml"
+      - "backend/uv.lock"
+      - "backend/tests/e2e/**"
+      - ".github/workflows/backend-exe.yml"
+  workflow_call:
+    inputs:
+      use-cache:
+        description: Restore and save the uv cache (release builds pass false)
+        type: boolean
+        default: true
+    outputs:
+      tree-sha256:
+        description: SHA-256 tree hash of the onedir folder (backend/packaging/tree_hash.py)
+        value: ${{ jobs.build.outputs.tree-sha256 }}
+      version:
+        description: The backend version, as printed by rootmind-backend.exe --version
+        value: ${{ jobs.build.outputs.version }}
+  workflow_dispatch:
+    inputs:
+      use-cache:
+        description: Restore and save the uv cache
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # In a call from release.yml, github.workflow is the caller's name.
+  group: backend-exe-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# No job has an API key. The base URLs point at a closed local port, so even a
+# request that bypassed the checks could not reach a provider.
+env:
+  ANTHROPIC_BASE_URL: "http://127.0.0.1:9"
+  OPENAI_BASE_URL: "http://127.0.0.1:9"
+
+jobs:
+  build:
+    name: Build and smoke test (onedir)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    outputs:
+      tree-sha256: ${{ steps.tree.outputs.sha256 }}
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Release builds (use-cache: false) and tag builds never restore a cache.
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          working-directory: backend
+          enable-cache: ${{ format('{0}', inputs.use-cache) != 'false' && github.ref_type != 'tag' }}
+          cache-dependency-glob: uv.lock
+
+      - name: Install the build environment
+        run: uv sync --locked --no-dev --group build
+
+      - name: Build with PyInstaller
+        run: |
+          # Reproducible: fixed hash seed, timestamps from the commit.
+          $env:PYTHONHASHSEED = "0"
+          $env:SOURCE_DATE_EPOCH = (git log -1 --format=%ct).Trim()
+          $env:PYINSTALLER_CONFIG_DIR = Join-Path $env:RUNNER_TEMP "pyinstaller-config"
+          uv run --no-sync pyinstaller packaging/rootmind-backend.spec --noconfirm --clean `
+            --distpath dist --workpath (Join-Path $env:RUNNER_TEMP "pyinstaller-work")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $files = Get-ChildItem dist/rootmind-backend -Recurse -File -Force
+          $size = ($files | Measure-Object -Property Length -Sum).Sum
+          "Onedir build: $($files.Count) files, $([Math]::Round($size / 1MB, 1)) MB" | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY
+
+      - name: Version
+        id: version
+        run: |
+          $line = (& dist/rootmind-backend/rootmind-backend.exe --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "--version exited with $LASTEXITCODE" }
+          $version = ($line -split '\s+')[-1]
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "Version: $version" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Smoke test
+        run: >-
+          ./packaging/smoke-test.ps1 -ExeDir dist/rootmind-backend -ApiPort 18765 -McpPort 18766
+          -WorkDir (Join-Path $env:RUNNER_TEMP "smoke")
+
+      # Same algorithm as scripts/prepare_backend.py: SHA-256 over the sorted
+      # "relpath<TAB>sha256<LF>" lines of every file, with "/" separators.
+      - name: Tree hash
+        id: tree
+        run: |
+          $hash = (uv run --no-sync python packaging/tree_hash.py dist/rootmind-backend | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $hash -notmatch '^[0-9a-f]{64}$') { throw "tree hash failed: $hash" }
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "Tree SHA-256: $hash" >> $env:GITHUB_STEP_SUMMARY
+
+      # The artifact holds the onedir folder's content (rootmind-backend.exe and
+      # _internal\ at its top), including files whose names start with a dot.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rootmind-backend-windows-x64
+          path: backend/dist/rootmind-backend/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  service-e2e:
+    name: Windows service end-to-end
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Pull requests run the test only when the service, the code it relies on
+      # (the folder access policy in the connector and the config import among
+      # it), its dependencies (pywin32 hosts the service) or the packaging
+      # changed. Every other trigger always runs it.
+      - name: Decide whether to run
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          $run = "true"
+          if ($env:EVENT_NAME -eq "pull_request") {
+            $changed = @(git diff --name-only "$env:BASE_SHA...$env:HEAD_SHA")
+            if ($LASTEXITCODE -ne 0) { throw "git diff failed" }
+            $pattern = '^backend/src/rootmind/(service/|winaccess\.py|access\.py|auth\.py|main\.py|config\.py|connectors/|api/|mcp_http\.py)|^backend/(pyproject\.toml|uv\.lock)$|^backend/packaging/|^backend/tests/e2e/|^\.github/workflows/backend-exe\.yml$'
+            $relevant = @($changed | Where-Object { $_ -match $pattern })
+            if ($relevant.Count -eq 0) { $run = "false" }
+            "Service-relevant changes: $($relevant.Count)"
+          }
+          "run=$run" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.scope.outputs.run == 'true'
+        with:
+          name: rootmind-backend-windows-x64
+          path: ${{ runner.temp }}/rootmind-backend
+
+      # The runner is elevated and sets CI=true, which the script requires.
+      - name: Install, check, update and remove the services
+        if: steps.scope.outputs.run == 'true'
+        run: >-
+          ./backend/tests/e2e/service_e2e.ps1
+          -ExeDir (Join-Path $env:RUNNER_TEMP "rootmind-backend")
+          -ApiPort 18080 -McpPort 18081
+          -WorkDir (Join-Path $env:RUNNER_TEMP "service-e2e")
+          -DiagnosticsDir (Join-Path $env:RUNNER_TEMP "service-e2e-diagnostics")
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure() && steps.scope.outputs.run == 'true'
+        with:
+          name: service-e2e-diagnostics
+          path: ${{ runner.temp }}/service-e2e-diagnostics
+          if-no-files-found: ignore
+          retention-days: 14

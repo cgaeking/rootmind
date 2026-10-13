@@ -1,4 +1,4 @@
-"""Localhost hardening of the unauthenticated REST API: peer, Host, CORS, content type, bind."""
+"""Localhost hardening of the REST API without a token: peer, Host, CORS, content type, bind."""
 
 from __future__ import annotations
 
@@ -90,10 +90,12 @@ def test_config_post_requires_json_content_type(api):
 
 def test_default_bind_is_loopback():
     from rootmind.config import AppConfig
-    from rootmind.main import build_parser
+    from rootmind.main import build_parser, resolve_bind
+
+    args = build_parser().parse_args(["api"])
 
     assert AppConfig().api.host == "127.0.0.1"
-    assert build_parser().parse_args(["api"]).host == "127.0.0.1"
+    assert resolve_bind(args.host, args.port, AppConfig()) == ("127.0.0.1", 8000)
 
 
 def test_mcp_http_binds_to_loopback_without_host(monkeypatch):

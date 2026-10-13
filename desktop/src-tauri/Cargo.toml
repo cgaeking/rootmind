@@ -1,6 +1,6 @@
 [package]
 name = "rootmind-desktop"
-version = "1.1.0"
+version = "1.2.0"
 description = "RootMind desktop app: chat and search over your local documents"
 authors = ["Christian Gäking"]
 license = "MIT"
@@ -20,9 +20,48 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# Starts the bundled backend (backend.rs). Used from Rust only: there is no
+# @tauri-apps/plugin-shell npm package and no shell:* permission, so the
+# webview cannot spawn processes. 2.5 is the first release with
+# Command::set_process_group (a job object on Windows).
+tauri-plugin-shell = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The per-launch REST token for the bundled backend.
+getrandom = "0.4"
+# Ready-line timeout, restart backoff and state notifications in backend.rs.
+tokio = { version = "1.53", features = ["sync", "time"] }
+
+# A second launch focuses the running window instead of starting a second
+# backend on the same data folder. The plugin has no JavaScript API.
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2.5"
+
+# Background service helpers (src/win/): service and registry queries, the TCP
+# listener table, known folders, the process token and UAC elevation.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_Services",
+    "Win32_System_Registry",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+] }
 
 [dev-dependencies]
 # Same glob engine tauri uses for its path scopes (tests/opener_scope.rs).
 glob = "0.3"
+# Mock runtime for the lifecycle tests in src/backend.rs.
+tauri = { version = "2", features = ["test"] }
+
+# A stand-in for the bundled backend, started by the lifecycle tests in
+# src/backend.rs. `cargo test` builds it; nothing ships it.
+[[example]]
+name = "fake_backend"
+path = "tests/support/fake_backend.rs"
