@@ -6,11 +6,12 @@ import { NavIcon } from "./navIcons";
 import type { NavIconName } from "./navIcons";
 import styles from "./Sidebar.module.css";
 
-const navItems: { to: string; label: string; icon: NavIconName }[] = [
-  { to: "/chat", label: labels.nav.chat, icon: "chat" },
-  { to: "/folders", label: labels.nav.folders, icon: "folder" },
-  { to: "/status", label: labels.nav.status, icon: "chart" },
-  { to: "/settings", label: labels.nav.settings, icon: "settings" },
+// The label is looked up when rendering, so it follows a language change.
+const navItems: { to: string; label: keyof typeof labels.nav; icon: NavIconName }[] = [
+  { to: "/chat", label: "chat", icon: "chat" },
+  { to: "/folders", label: "folders", icon: "folder" },
+  { to: "/status", label: "status", icon: "chart" },
+  { to: "/settings", label: "settings", icon: "settings" },
 ];
 
 export function Sidebar({
@@ -84,7 +85,7 @@ export function Sidebar({
             className={({ isActive }) => (isActive ? `${styles.link} ${styles.active}` : styles.link)}
           >
             <NavIcon name={it.icon} size={20} className={styles.linkIcon} />
-            <span>{it.label}</span>
+            <span>{labels.nav[it.label]}</span>
           </NavLink>
         ))}
       </nav>

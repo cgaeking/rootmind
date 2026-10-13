@@ -1,28 +1,12 @@
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { openExternal } from "../utils/openExternal";
 import styles from "./Markdown.module.css";
 
 // Links in model output are untrusted. Only absolute web and mail links are
-// opened, and always in the system browser; the app's webview never navigates
-// or opens a popup. The opener capability enforces the same URL schemes.
-const EXTERNAL_URL = /^(https?|mailto):/i;
-const IN_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
-async function openExternal(url: string) {
-  if (!EXTERNAL_URL.test(url)) return;
-  try {
-    if (IN_TAURI) {
-      const { openUrl } = await import("@tauri-apps/plugin-opener");
-      await openUrl(url);
-    } else {
-      // Dev preview in a plain browser, where the Tauri plugin is absent.
-      window.open(url, "_blank", "noopener,noreferrer");
-    }
-  } catch (e) {
-    console.warn("Could not open link:", e);
-  }
-}
+// opened, and always in the system browser (see openExternal); the app's
+// webview never navigates or opens a popup.
 
 const components: Components = {
   a({ href, children }) {

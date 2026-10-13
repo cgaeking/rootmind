@@ -1,5 +1,5 @@
-// German strings (built with VITE_APP_LANG=de). Mirrors labels.en.ts key for
-// key; see labels.ts for how one of the two is picked at build time.
+// German strings. Mirrors labels.en.ts key for key; see labels.ts for how the
+// language is chosen at runtime.
 
 export const labels = {
   locale: "de-DE",
@@ -98,6 +98,11 @@ export const labels = {
     themeSystem: "System",
     themeLight: "Hell",
     themeDark: "Dunkel",
+    languageLabel: "Sprache",
+    languageHint: "System folgt der Anzeigesprache von Windows.",
+    languageSystem: "System",
+    languageEn: "English",
+    languageDe: "Deutsch",
     serviceTitle: "Hintergrunddienst",
     serviceHelp:
       "Hält deinen Index aktuell, während die App geschlossen ist, und startet mit Windows. Braucht die Bestätigung als Administrator. Der Dienst liest nur Ordner, die dein Konto öffnen kann; Netzlaufwerke und Freigaben sind nicht verfügbar.",
@@ -196,10 +201,14 @@ export const labels = {
     modelLabel: "Modell",
     apiKeyLabel: "API-Key", // pragma: allowlist secret (UI label)
     apiKeyHintSaved: (key: string) => `Hinterlegt: ${key}  ·  pro Anbieter gespeichert`,
-    apiKeyHintUnsaved: "Pro Anbieter gespeichert. Für die Modell-Liste nötig.", // pragma: allowlist secret (UI label)
-    loadModels: "Modelle laden",
-    loadingModels: "Lädt …",
-    modelHintNoKey: "Erst API-Key eingeben, dann Modelle laden.",
+    apiKeyHintUnsaved: "Pro Anbieter gespeichert. Nach dem Speichern wird die Modell-Liste geladen.", // pragma: allowlist secret (UI label)
+    saveKeyAria: "API-Key speichern", // pragma: allowlist secret (UI label)
+    keySaved: "API-Key gespeichert.", // pragma: allowlist secret (UI label)
+    keyRemoved: "API-Key entfernt.", // pragma: allowlist secret (UI label)
+    keyRejected: (msg: string) => `Der Key wurde nicht gespeichert: ${msg}`,
+    providerDetected: (name: string) =>
+      `Am Key erkannt: ${name}. Du kannst einen anderen Anbieter wählen.`,
+    modelHintNoKey: "Erst einen API-Key für diesen Anbieter speichern.",
     modelHintCount: (n: number) => `${n} Chat-Modelle aus der Provider-API`,
     modelHintLoading: "Modelle werden geladen …",
     modelsError: (msg: string) => `Modelle konnten nicht geladen werden: ${msg}. Prüfe den API-Key.`,
@@ -219,6 +228,16 @@ export const labels = {
     saveFailed: (msg: string) => `Speichern fehlgeschlagen: ${msg}`,
     staleConfig:
       "Das Backend hat sich inzwischen geändert. Es wurde nichts gespeichert; prüfe die Einstellungen erneut.",
+    aboutTitle: "Über RootMind",
+    aboutDesc: "Chat und Suche über deine lokalen Dokumente.",
+    aboutAppVersion: "App-Version",
+    aboutBackendVersion: "Backend-Version",
+    aboutUnknown: "unbekannt",
+    aboutAuthor: "Autor",
+    aboutLicense: "Lizenz",
+    aboutRepository: "Repository",
+    aboutReleases: "Releases und Änderungen",
+    aboutIssues: "Fehler und Wünsche (Issues)",
   },
   status: {
     subtitle: "Index-Status und Statistiken.",
@@ -255,7 +274,7 @@ export const labels = {
     subtitle: "Verzeichnisse, die indiziert werden sollen.",
     loadError: (msg: string) => `Konfiguration konnte nicht geladen werden: ${msg}`,
     title: "Verzeichnisse",
-    desc: "Je Zeile ein Ordnerpfad.",
+    desc: "Änderungen werden sofort gespeichert.",
     none: "Noch keine Verzeichnisse – unten hinzufügen.",
     pathPlaceholder: "C:\\Users\\…\\Dokumente",
     removeAria: "Entfernen",
@@ -265,7 +284,9 @@ export const labels = {
     saving: "Speichert …",
     saved: "Übernommen.",
     savedRestart: "Gespeichert – bitte Backend neu starten.",
-    saveFailed: (msg: string) => `Speichern fehlgeschlagen: ${msg}`,
+    notAdded: (msg: string) => `Der Ordner wurde nicht hinzugefügt: ${msg}`,
+    notRemoved: (msg: string) => `Der Ordner wurde nicht entfernt: ${msg}`,
+    notChanged: (msg: string) => `Die Änderung wurde nicht gespeichert: ${msg}`,
     staleConfig:
       "Das Backend hat sich inzwischen geändert. Es wurde nichts gespeichert; prüfe die Ordner erneut.",
   },

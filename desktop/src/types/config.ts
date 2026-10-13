@@ -35,3 +35,15 @@ export interface AppConfigDto {
   indexer: IndexerConfigDto;
 }
 
+
+/**
+ * A partial POST /config: sections (and LLM fields) that are left out keep
+ * their stored values. `llm` is required by the backend; `{}` changes nothing
+ * there. `api_keys` replaces the stored set: send every provider's key (the
+ * masked value from GET /config keeps a stored key, "" removes it).
+ */
+export interface ConfigPatch {
+  llm: Partial<LlmConfigDto>;
+  connectors?: ConnectorDto[];
+  indexer?: IndexerConfigDto;
+}

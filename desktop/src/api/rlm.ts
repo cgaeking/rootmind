@@ -13,7 +13,7 @@ import type {
   DocPathResponse,
   ConnectorsResponse,
 } from "../types/api";
-import type { AppConfigDto } from "../types/config";
+import type { AppConfigDto, ConfigPatch } from "../types/config";
 
 // Health/root drive the connectivity badge. Keep them snappy so a hung
 // backend resolves to "offline" (and shows the reconnect modal) quickly
@@ -39,7 +39,8 @@ export const getDocumentPath = (docId: string) =>
   api<DocPathResponse>(`/documents/${encodeURIComponent(docId)}/path`);
 
 export const getConfig = () => api<AppConfigDto>("/config");
-export const saveConfig = (config: AppConfigDto) =>
+/** Save the whole editable config, or only some sections (see ConfigPatch). */
+export const saveConfig = (config: ConfigPatch) =>
   api<SaveConfigResponse>("/config", {
     method: "POST",
     body: JSON.stringify(config),

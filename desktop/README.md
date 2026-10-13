@@ -54,7 +54,7 @@ These are the same checks that `.github/workflows/desktop.yml` runs:
 ```bash
 pnpm lint          # ESLint: JS/TS recommended rules and React hooks rules
 pnpm typecheck     # tsc for the app, vite.config.ts and vitest.config.ts
-pnpm test          # vitest with happy-dom: backend choice, store, client, stale-data guards, service messages, labels
+pnpm test          # vitest with happy-dom: backend choice, store, client, stale-data guards, service messages, labels, language, paths, folders, LLM key
 pnpm build         # tsc + vite build; the Rust build embeds dist/
 
 cd src-tauri
@@ -67,7 +67,7 @@ cargo test         # unit tests, the opener scope test, and lifecycle tests with
 
 ## Language
 
-The UI is English by default. Build the German variant with `VITE_APP_LANG=de` (PowerShell: `$env:VITE_APP_LANG='de'`). All strings live in `src/i18n/labels.en.ts` and `src/i18n/labels.de.ts`, which must have identical keys; the type checker and `src/i18n/labels.test.ts` enforce it.
+The UI speaks English and German. Settings → Appearance → Language offers *System* (the default), *English* and *Deutsch*; *System* follows the Windows display language as the webview reports it (`navigator.language`), German for any German locale and English otherwise. The choice is stored per user in `localStorage` (`rlm.language`, absent for *System*) and applies at once, without a restart. All strings live in `src/i18n/labels.en.ts` and `src/i18n/labels.de.ts`, which must have identical keys; the type checker and `src/i18n/labels.test.ts` enforce it. `src/i18n/labels.ts` explains how a language change reaches every screen.
 
 ## Installer
 

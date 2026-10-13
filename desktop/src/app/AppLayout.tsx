@@ -5,13 +5,15 @@ import { BackendModal } from "./BackendModal";
 import { useBackendHeartbeat } from "../hooks/useBackend";
 import { useBackendBootstrap } from "../hooks/useBackendBootstrap";
 import { useStore } from "../state/store";
-import { labels } from "../i18n/labels";
+import { labels, useLanguage } from "../i18n/labels";
 import styles from "./AppLayout.module.css";
 
 export function AppLayout() {
   // Choose the backend once at start, then keep checking it.
   useBackendBootstrap();
   useBackendHeartbeat();
+  // Re-render the sidebar and dialogs in a new language (the screens subscribe themselves).
+  useLanguage();
   const conn = useStore((s) => s.conn);
   const kind = useStore((s) => s.kind);
 
