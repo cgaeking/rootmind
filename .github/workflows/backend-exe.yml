@@ -146,9 +146,9 @@ jobs:
           fetch-depth: 0
 
       # Pull requests run the test only when the service, the code it relies on
-      # (the folder access policy in the connector and the config import among
-      # it), its dependencies (pywin32 hosts the service) or the packaging
-      # changed. Every other trigger always runs it.
+      # (the folder access policy in the connector, the config and the APIs it
+      # serves among it), its dependencies (pywin32 hosts the service) or the
+      # packaging changed. Every other trigger always runs it.
       - name: Decide whether to run
         id: scope
         env:

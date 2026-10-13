@@ -129,15 +129,59 @@ class WindowsSystem:
 
         WindowsUserAccess(user_sid).close()
 
-    def app_installed_for_user(self) -> bool:
-        """Whether the RootMind app is installed for the current account (HKCU uninstall key)."""
+    def uac_filters_this_account(self) -> bool:
+        """Whether this account also runs unelevated (UAC gives it a split token).
+
+        Without a split token (UAC off, or the built-in Administrator) every
+        process of the account is an administrator anyway.
+        """
+        import win32api
+        import win32security
+
+        token = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(), win32security.TOKEN_QUERY
+        )
+        try:
+            elevation = win32security.GetTokenInformation(token, win32security.TokenElevationType)
+        finally:
+            token.Close()
+        return elevation != 1  # TokenElevationTypeDefault
+
+    def program_source_problems(self, folder: str, approver_sid: str) -> list[str]:
+        """Why the program in ``folder`` must not be installed as the service (see layout).
+
+        Files an administrator without a split token creates are owned by the
+        account itself, which is then as good as Administrators. With UAC on,
+        the account's unelevated programs could change such files, so only the
+        administrator SIDs count.
+        """
+        allowed = layout.ADMIN_SIDS
+        try:
+            if not self.uac_filters_this_account():
+                allowed = allowed | {approver_sid}
+        except Exception:  # pywintypes.error: keep the strict rule
+            allowed = layout.ADMIN_SIDS
+        return layout.program_source_problems(Path(folder), owners=allowed, writers=allowed)
+
+    def app_installed(self) -> bool:
+        """Whether the RootMind app is installed: its uninstall entry in HKLM (either view).
+
+        A RootMind 1.x installation for the current account (HKCU) counts too.
+        """
         import winreg
 
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, APP_UNINSTALL_KEY):
-                return True
-        except OSError:
-            return False
+        places = (
+            (winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_64KEY),
+            (winreg.HKEY_LOCAL_MACHINE, winreg.KEY_WOW64_32KEY),
+            (winreg.HKEY_CURRENT_USER, 0),
+        )
+        for hive, view in places:
+            try:
+                with winreg.OpenKey(hive, APP_UNINSTALL_KEY, 0, winreg.KEY_READ | view):
+                    return True
+            except OSError:
+                continue
+        return False
 
     # --- folders -------------------------------------------------------------------
 

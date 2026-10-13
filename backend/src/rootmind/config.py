@@ -134,7 +134,7 @@ class APIConfig(BaseModel):
     ``RLM_PORT``, then these values. The API binds to the loopback interface
     by default and refuses connections from other machines. A bearer token
     (``RLM_API_TOKEN`` or ``--require-token``) is optional for the CLI; the
-    desktop app's built-in backend and the Windows service always use one.
+    Windows service, which the desktop app uses, always uses one.
     Do not expose the API on a network interface.
     """
 
@@ -418,8 +418,9 @@ def _validation_summary(error: ValidationError) -> str:
 def import_config(source: str | Path, home: str | Path, *, database_path: str) -> AppConfig:
     """Replace ``<home>/config.yaml`` with the config in ``source``.
 
-    Used when RootMind switches between the desktop app's built-in backend and
-    the background service, so the folders, provider and keys follow the user.
+    ``service install`` uses it to move the background service's index into
+    ``data/db`` when its ``config.yaml`` (edited by hand) names a database
+    elsewhere: ``source`` is then that same file.
 
     - The file is read directly (YAML, validated against :class:`AppConfig`).
       API keys from environment variables or a ``.env`` file are not merged

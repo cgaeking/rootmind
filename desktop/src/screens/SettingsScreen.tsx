@@ -4,14 +4,15 @@ import type { LanguagePref } from "../i18n/labels";
 import { DEFAULT_BASE_URL, useStore } from "../state/store";
 import { useBackend } from "../hooks/useBackend";
 import { isCurrentBackend, useLiveBackend } from "../hooks/useLiveBackend";
-import { connectCustom, switchToDefaultBackend } from "../state/backendActions";
+import { connectCustom, connectService } from "../state/backendActions";
 import { getConfig, listLlmModels, saveConfig } from "../api/rlm";
+import { inTauri } from "../api/backend";
 import { ApiError } from "../api/client";
 import type { ThemePref } from "../state/store";
 import type { AppConfigDto, LlmProvider } from "../types/config";
 import { Banner, Button, Field, Row, Section, Select, TextInput } from "../components/ui";
 import { ConnBanner } from "../components/ConnBanner";
-import { BackgroundServiceSection } from "./BackgroundServiceSection";
+import { ServiceSection } from "./ServiceSection";
 import { AboutSection } from "./AboutSection";
 import { PROVIDERS, PROVIDER_NAMES, detectProvider, maskKey } from "../state/llmKey";
 
@@ -37,7 +38,7 @@ function pickDefaultModel(models: string[]): string {
   );
 }
 
-/** Settings → Advanced: a custom backend URL and token, or back to the default backend. */
+/** Settings → Advanced: a backend at another address (with an optional token), or back to the RootMind service. */
 function AdvancedSection() {
   const { kind, baseUrl, version, recheck } = useBackend();
   const token = useStore((s) => s.token);
@@ -51,13 +52,11 @@ function AdvancedSection() {
   useEffect(() => setTokenDraft(customToken), [customToken]);
 
   const inUse =
-    kind === "builtin"
-      ? labels.settings.inUse.builtin
-      : kind === "service"
-        ? labels.settings.inUse.service
-        : kind === "custom"
-          ? labels.settings.inUse.custom(baseUrl)
-          : labels.settings.inUse.none;
+    kind === "service"
+      ? labels.settings.inUse.service
+      : kind === "custom" && baseUrl
+        ? labels.settings.inUse.custom(baseUrl)
+        : labels.settings.inUse.none;
 
   return (
     <Section title={labels.settings.advancedTitle} description={labels.settings.advancedDesc}>
@@ -87,9 +86,11 @@ function AdvancedSection() {
           {labels.settings.apply}
         </Button>
         <Button onClick={() => void recheck()}>{labels.settings.check}</Button>
-        <Button onClick={() => void switchToDefaultBackend()} title={labels.settings.useDefaultHint}>
-          {labels.settings.useDefault}
-        </Button>
+        {kind === "custom" && inTauri() && (
+          <Button onClick={() => void connectService()} title={labels.settings.useDefaultHint}>
+            {labels.settings.useDefault}
+          </Button>
+        )}
       </Row>
     </Section>
   );
@@ -360,7 +361,7 @@ export function SettingsScreen() {
         </Field>
       </Section>
 
-      <BackgroundServiceSection />
+      <ServiceSection />
 
       <Section title={labels.settings.llmTitle} description={labels.settings.llmDesc}>
         {conn !== "online" && (

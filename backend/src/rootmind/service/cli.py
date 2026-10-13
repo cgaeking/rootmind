@@ -3,19 +3,22 @@
 ::
 
     service install [--port N|auto] [--mcp-http | --no-mcp-http] [--mcp-port N|auto]
-                    [--import-config FILE] [--mcp-token-from FILE] [--user-sid SID] [--no-start]
+                    [--mcp-token-from FILE] [--user-sid SID] [--no-start]
     service uninstall [--purge]
     service status [--json]
 
-``install`` and ``uninstall`` need an elevated prompt; ``install`` only runs
-from the release build. ``status`` works for every account and from pip/uv
+The RootMind installer runs ``install`` (and its uninstaller ``uninstall``);
+the desktop app runs ``install`` again to repair the service or to switch MCP
+over HTTP. ``install`` and ``uninstall`` need an elevated prompt; ``install``
+only runs from the release build. MCP over HTTP is on for a new install. ``status`` works for every account and from pip/uv
 installs. ``service run backend|mcp-http`` is started by the Service Control
 Manager and not meant to be run by hand.
 
 Exit codes: 0 ok, 1 unexpected error, 2 usage (or not Windows, or not the
 release build), 3 a service with our name that RootMind did not install,
 4 port busy, 5 not elevated, 6 data folder refused, 7 health check failed,
-8 account mismatch, 9 the access check for the account cannot be built.
+8 account mismatch, 9 the access check for the account cannot be built,
+10 the program folder to copy from can be changed by non-administrators.
 """
 
 from __future__ import annotations
@@ -69,8 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
         "install",
         help="Install or update the service (elevated prompt)",
         description=(
-            "Install the background service, or update and repair it. An update keeps the "
-            "ports, the MCP setting, the tokens and the data."
+            "Install the background service, or update and repair it. A new install also "
+            "serves MCP over HTTP (127.0.0.1, bearer token) unless --no-mcp-http is given. An "
+            "update keeps the ports, the MCP setting, the tokens and the data."
         ),
     )
     install.add_argument(
@@ -86,27 +90,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_const",
         const=True,
         default=None,
-        help="Also serve MCP over HTTP (service RootMind-MCP-HTTP)",
+        help=(
+            "Serve MCP over HTTP (service RootMind-MCP-HTTP). Default: on for a new install, "
+            "unchanged for an update"
+        ),
     )
     mcp.add_argument(
         "--no-mcp-http",
         dest="mcp",
         action="store_const",
         const=False,
-        help="Remove the MCP over HTTP service",
+        help="Do not serve MCP over HTTP; removes the MCP service if it exists",
     )
     install.add_argument(
         "--mcp-port",
         type=_port_option,
         default=None,
         help="MCP port, or 'auto' (3000 if free, else 18400-18499). Default: 3000",
-    )
-    install.add_argument(
-        "--import-config",
-        metavar="FILE",
-        type=Path,
-        default=None,
-        help="Use the folders and settings from this config.yaml",
     )
     install.add_argument(
         "--mcp-token-from",
@@ -195,7 +195,6 @@ def main(argv: list[str] | None = None, env=None) -> int:
             port=args.port,
             mcp=args.mcp,
             mcp_port=args.mcp_port,
-            import_config=args.import_config,
             mcp_token_from=args.mcp_token_from,
             user_sid=args.user_sid,
             start=args.start,

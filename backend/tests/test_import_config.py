@@ -1,4 +1,4 @@
-"""config.import_config (the config follows the user between modes) and config_file_path."""
+"""config.import_config (the service resets its database path with it) and config_file_path."""
 
 from __future__ import annotations
 

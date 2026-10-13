@@ -4,9 +4,32 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-13
+
+### Breaking
+
+- **RootMind now always runs as a Windows service, and installing needs an administrator.** The installer is per machine and asks for administrator approval once; the account signed in to Windows must approve it itself. The desktop app no longer has a built-in backend of its own.
+- **The 1.x built-in backend's data is not migrated.** Upgrading removes a 1.x installation of your account, but its folders, settings, API keys and index are not carried over: add your folders and API key again. A 1.x background service, if it was on, is updated and keeps its data. Chats stay.
+
 ### Added
 
+- The installer sets up the services `RootMind-Backend` and `RootMind-MCP-HTTP` for the signed-in account (`service install --port auto --mcp-port auto`): REST on port 8000 or one from 18300–18399, MCP over HTTP on port 3000 or one from 18400–18499. If that step fails, the app stays installed and the installer names the cause and the log `%ProgramData%\RootMind\logs\install.log`.
+- Settings → **RootMind service**: the state, address and version of the service, **Repair** when it is stopped or does not answer, **Serve MCP over HTTP**, and the MCP endpoint, the token and the values for n8n to copy. Repair and **Update service** run `service install --port auto --mcp-port auto` elevated with the backend installed with the app (`%ProgramFiles%\RootMind\backend`), so an older service is brought to the app's version; only when that backend is missing do they use the service's own copy under `%ProgramFiles%\RootMind Service\`. Switching MCP over HTTP runs that copy.
+- `service install` exit code 10: it refuses to copy the program from a folder that accounts other than administrators can change, such as a download folder. Unzip the release build into a folder under `%ProgramFiles%` before running it on a server.
 - Code signing policy ([CODE_SIGNING.md](CODE_SIGNING.md)) with team roles and a privacy policy, linked from the READMEs and the release notes, in preparation for signed releases.
+
+### Changed
+
+- The installer always installs to `%ProgramFiles%\RootMind`, with an uninstall entry for the whole computer (winget scope `machine`); another folder (`/D=`) is refused with exit code 10. It stops without changes when an administrator approves it for another signed-in account (exit code 8). A service set up for another account is not taken over: uninstall RootMind, then install it from the new account.
+- MCP over HTTP is on by default: `service install` turns it on for a new install unless `--no-mcp-http` is given; an update keeps the current setting.
+- Updates keep the service's ports, tokens, settings and data; the installer updates the service in place. Uninstalling removes the services and keeps `%ProgramData%\RootMind` unless **Delete the application data** is ticked; a silent uninstall never deletes data.
+- The desktop app is a client of the RootMind service. When the service is missing, stopped or set up for another account, the app explains what to do; Settings → Advanced still connects to a backend at another address. Development builds ask for a backend address.
+- For MCP clients, use MCP over HTTP of the service. `rootmind-backend.exe mcp` from the app's folder does not serve the service's index.
+
+### Removed
+
+- The built-in backend (a child process of the app) and the Settings switch between it and the background service.
+- `rootmind api --exit-with-parent`, `rootmind api --import-config`, the startup line `ROOTMIND_LISTENING {"port":N}` and `service install --import-config`.
 
 ## [1.3.0] - 2026-10-13
 

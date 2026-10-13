@@ -21,7 +21,7 @@ export interface ConnectorInfo {
   exists?: boolean;
   /** false for a folder the backend could not use (see `error`). */
   available?: boolean;
-  /** Why the folder could not be used, e.g. refused by the background service. */
+  /** Why the folder could not be used, e.g. refused by the RootMind service. */
   error?: string;
 }
 

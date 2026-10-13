@@ -9,8 +9,12 @@ marked "RootMind:" in the file:
   instead, without questions, the way Tauri's updater does: the installed
   version's uninstaller never runs, app data and shortcuts stay, and the
   installer hooks (installer/hooks.nsh) replace the bundled backend folder.
-- The folder page is skipped when the app is installed, so an update cannot
-  go to another folder and leave the installed version behind.
+- No folder page. RootMind installs per machine into
+  ``%ProgramFiles%\\RootMind`` only: the installer sets up a LocalSystem
+  service from the backend in that folder, which must therefore be admin-only.
+  NSIS_HOOK_PREINSTALL refuses any other folder (``/D=``, a changed registry
+  value), and ``service install`` refuses a program folder that
+  non-administrators can change.
 - A header that names the source and the versions.
 
 The template belongs to the tauri-bundler that the locked Tauri CLI uses, so
@@ -70,10 +74,16 @@ REINSTALL_PAGE = "; 4. Custom page to ask user if he wants to reinstall/uninstal
 DIRECTORY_PAGE = "; 5. Choose install directory page"
 DIRECTORY_PRE = "!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive"
 DIRECTORY_MACRO = "!insertmacro MUI_PAGE_DIRECTORY"
-SKIP_IF_PASSIVE = "Function SkipIfPassive"
 
-# What the patched template must not contain: the reinstall page and its state.
-FORBIDDEN = ("Page custom", "PageReinstall", "PageLeaveReinstall", "ReinstallPageCheck")
+# What the patched template must not contain: the reinstall page and its
+# state, and the folder page.
+FORBIDDEN = (
+    "Page custom",
+    "PageReinstall",
+    "PageLeaveReinstall",
+    "ReinstallPageCheck",
+    "MUI_PAGE_DIRECTORY",
+)
 # What it must keep: the installer hooks.
 REQUIRED = (
     "{{#if installer_hooks}}",
@@ -100,21 +110,12 @@ NO_REINSTALL_PAGE = """\
 ;    files are left; the main binary and uninstall.exe are overwritten.
 """
 
-DIRECTORY_PRE_PATCHED = """\
-; RootMind: not shown when the app is installed (see SkipIfPassiveOrInstalled).
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrInstalled
-"""
-
-SKIP_IF_PASSIVE_OR_INSTALLED = """\
-; RootMind: skips the page like SkipIfPassive, and also when the app is
-; installed: an update goes to the installed folder
-; (RestorePreviousInstallLocation), and another folder would leave the
-; installed version behind.
-Function SkipIfPassiveOrInstalled
-  ${IfThen} $PassiveMode = 1 ${|} Abort ${|}
-  ReadRegStr $0 SHCTX "${UNINSTKEY}" "UninstallString"
-  ${IfThen} $0 != "" ${|} Abort ${|}
-FunctionEnd
+NO_DIRECTORY_PAGE = """\
+; 5. RootMind: no install directory page. RootMind installs per machine into
+;    $PROGRAMFILES64\\RootMind only: the installer sets up a Windows service
+;    that runs as LocalSystem from the backend in that folder, so the folder
+;    must be one that only administrators can change. NSIS_HOOK_PREINSTALL
+;    (installer/hooks.nsh) refuses any other $INSTDIR, such as one from /D=.
 """
 
 
@@ -177,15 +178,11 @@ def render(upstream: str, *, cli: str, bundler: str) -> str:
         raise TemplateError("the reinstall page of the upstream template has changed")
     lines[start:end] = [*NO_REINSTALL_PAGE.splitlines(), ""]
 
-    # 2. The directory page.
+    # 2. The directory page: its comment, the skip function and the page.
     directory = _index(lines, DIRECTORY_PAGE)
     if lines[directory + 1 : directory + 3] != [DIRECTORY_PRE, DIRECTORY_MACRO]:
         raise TemplateError("the directory page of the upstream template has changed")
-    lines[directory + 1 : directory + 2] = DIRECTORY_PRE_PATCHED.splitlines()
-
-    # 3. The function that skips it.
-    skip = _index(lines, SKIP_IF_PASSIVE)
-    lines[skip:skip] = SKIP_IF_PASSIVE_OR_INSTALLED.splitlines()
+    lines[directory : directory + 3] = NO_DIRECTORY_PAGE.splitlines()
 
     header = HEADER.format(bundler=bundler, cli=cli, path=UPSTREAM_TEMPLATE)
     text = header + "\n" + "\n".join(lines)

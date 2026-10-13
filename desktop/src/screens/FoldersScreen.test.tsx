@@ -56,7 +56,7 @@ beforeEach(() => {
   vi.mocked(rlm.saveConfig).mockResolvedValue({ ok: true, reloaded: true, restart_required: false });
   vi.mocked(rlm.getConnectors).mockResolvedValue({ connectors: [] });
   vi.spyOn(navigator, "userAgent", "get").mockReturnValue(WINDOWS_UA);
-  useStore.setState({ kind: "builtin", baseUrl: URL_A, token: null, conn: "online" });
+  useStore.setState({ kind: "custom", baseUrl: URL_A, token: null, conn: "online" });
 });
 
 afterEach(() => {

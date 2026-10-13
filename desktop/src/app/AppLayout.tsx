@@ -20,8 +20,8 @@ export function AppLayout() {
   // Mobile nav drawer (hidden on desktop via CSS). Closed on every navigation.
   const [navOpen, setNavOpen] = useState(false);
 
-  // Starting, switching and a built-in or service backend that answered 401
-  // (it gets a fresh token on the next check) do not open the dialog.
+  // A service change in progress and a service that answered 401 (it gets a
+  // fresh token on the next check) do not open the dialog.
   const showBackendModal = conn === "offline" || (conn === "unauthorized" && kind === "custom");
 
   return (

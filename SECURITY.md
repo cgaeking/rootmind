@@ -16,9 +16,9 @@ RootMind is designed for **one person on their own computer**: the backend,
 the desktop app and the indexed folders all belong to the same user. The REST
 API and the MCP HTTP server listen on `127.0.0.1` by default.
 
-The desktop app's built-in backend and the background service require a token
-on every request, so other accounts on the same computer and web pages cannot
-use them. RootMind does not protect against malware that runs under your own
+The desktop app uses the RootMind Windows service, which requires a token on
+every request, so other accounts on the same computer and web pages cannot use
+it. RootMind does not protect against malware that runs under your own
 account, against local administrators, or against exposing its ports to a
 network. These are out of scope (see the end of this document).
 
@@ -39,19 +39,19 @@ allows network requests to `localhost` and `127.0.0.1`.
 
 The backend keeps its files in its home folder (`RLM_HOME`):
 
-- built-in backend of the desktop app: `%LOCALAPPDATA%\io.github.cgaeking.rootmind\backend`;
-- background service: `%ProgramData%\RootMind`;
+- the RootMind service, which the desktop app uses: `%ProgramData%\RootMind`;
 - command line: `RLM_HOME`, or the working directory when it is unset.
 
 | Data | Location | Notes |
 |---|---|---|
-| API keys saved through the desktop app | `config.yaml` and its backup `config.yaml.bak` in the home folder | **Plain text.** Written atomically and owner-only (0600) on Linux and macOS; on Windows the folder's permissions apply. Turning the background service on or off copies the settings, keys included, between the two home folders. Prefer environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`) |
-| Index | `data\index.db` (service: `data\db\index.db`), plus `-wal`/`-shm` | Contains the **full extracted text** of every indexed file |
-| REST token | Built-in backend: memory only. Service and `--require-token`: `data\rest_token.txt` | See [REST API](#rest-api) |
-| MCP HTTP token | `data\api_token.txt`, unless `MCP_API_TOKEN` is set | Created with mode 0600 on Linux and macOS; on Windows it inherits the folder's permissions |
-| Logs | Built-in backend: `logs\backend.log`. Service: `logs\backend\`, `logs\mcp-http\` and `logs\install.log`. Command line: the console | Contain file paths, questions and tool arguments. RootMind never logs API keys or tokens, only a short fingerprint of a token; provider error messages are logged as the provider sends them |
+| API keys saved through the desktop app | `config.yaml` and its backup `config.yaml.bak` in the home folder | **Plain text.** Written atomically and owner-only (0600) on Linux and macOS; on Windows the folder's permissions apply. In the service's folder the installing account, SYSTEM, administrators and, while MCP over HTTP is on, the MCP service account can read them (see [Background service](#background-service)). From the command line, prefer environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`); the service sees only machine-wide variables, which every process on the computer can read |
+| Index | Service: `data\db\index.db`; command line: `data\index.db`; plus `-wal`/`-shm` | Contains the **full extracted text** of every indexed file. In the service's folder the installing account can read it |
+| REST token | `data\rest_token.txt` (service, and `--require-token`), or `RLM_API_TOKEN` | See [REST API](#rest-api) |
+| MCP HTTP token | `data\api_token.txt`, unless `MCP_API_TOKEN` is set | In the service's folder readable by the installing account, SYSTEM, administrators and the MCP service account (see [MCP over HTTP](#mcp-over-http-bearer-token)). Created with mode 0600 on Linux and macOS; elsewhere on Windows it inherits the folder's permissions |
+| Logs | Service: `logs\backend\`, `logs\mcp-http\` and `logs\install.log`. Command line: the console | Contain file paths, questions and tool arguments. RootMind never logs API keys or tokens, only a short fingerprint of a token; provider error messages are logged as the provider sends them |
 | Chat history | `%APPDATA%\io.github.cgaeking.rootmind\conversations` | Questions, answers and source paths in plain JSON |
 | Custom backend address and token | The desktop app's local storage | Only when you connect to a backend under Settings → Advanced |
+| Data of the RootMind 1.x built-in backend | `%LOCALAPPDATA%\io.github.cgaeking.rootmind\backend` | Left in place by the upgrade to 2.0 and no longer used: its `config.yaml` (with API keys saved in 1.x), index and logs. Delete the folder, or tick **Delete the application data** when uninstalling, which removes it with the chats |
 
 RootMind never indexes its own data: the `data` folder, the database's folder
 and, when `RLM_HOME` is set, all of `RLM_HOME` are skipped even inside an
@@ -66,8 +66,7 @@ token depends on how it runs:
 
 | Mode | Token | Where the token lives |
 |---|---|---|
-| Built-in backend (the app's default) | Always. A new random token (32 bytes) for every start of the backend, including restarts after a crash | Only in the memory of the app and in the environment of the backend process it starts; never on disk and never in the app's own environment |
-| Background service | Always | `%ProgramData%\RootMind\data\rest_token.txt`, readable by SYSTEM, Administrators and the installing account; not by the MCP service account or other accounts. Never in the service's registry entries |
+| RootMind service (the desktop app's backend) | Always | `%ProgramData%\RootMind\data\rest_token.txt`, readable by SYSTEM, Administrators and the installing account; not by the MCP service account or other accounts. Never in the service's registry entries. The app reads it only after the listener check (see [Background service](#background-service)) and never stores it |
 | Custom backend (Settings → Advanced) | Optional, entered by you | The app's local storage |
 | `rootmind api` from the command line | Off, unless `RLM_API_TOKEN` is set or `--require-token` is given | The variable, or `<RLM_HOME>/data/rest_token.txt` (created if missing) |
 
@@ -111,7 +110,7 @@ Remaining risks:
   folders are indexed. Use `--require-token` when other people or programs
   you do not trust use the same computer.
 - **A token does not stop programs that run under your own account.** They
-  can read the service's token file or the memory of the app and its backend.
+  can read the service's token file or the memory of the app.
 - A web page can still send blind requests to a backend without a token (it
   cannot read the answers). Two endpoints accept an empty body:
   `POST /index/refresh` starts an incremental index sync, and
@@ -122,19 +121,27 @@ use the MCP HTTP server.
 
 ### Background service
 
-The background service (`RootMind-Backend`) runs the REST API and the indexer
-as **LocalSystem**, so it can index while no one is logged in and read the
-user's folders without changing their permissions. It can be turned on in the
-desktop app (Settings → Background service) or with
-`rootmind-backend.exe service install` from an elevated prompt.
+The RootMind service (`RootMind-Backend`) is the desktop app's backend. It
+runs the REST API and the indexer as **LocalSystem**, so it can index while
+no one is logged in and read the user's folders without changing their
+permissions. The installer sets it up with `rootmind-backend.exe service
+install`; on a machine without the app, the same command from the release zip
+in an elevated prompt does it.
 
-**Who can turn it on.** The app offers the service to local administrator
-accounts only, and `service install` needs an elevated prompt. The account
-that approves the prompt must be the account that uses RootMind: if it is
-another account, or if the service belongs to another account, the command
-stops with exit code 8 and changes nothing. A standard account cannot get the
-service, because its REST API and its document parsers run as SYSTEM: a parser
-bug would then lift a standard account to SYSTEM.
+**Who can install it.** Installing RootMind needs one administrator approval
+(UAC), and the account signed in to Windows must be the account that
+approves it. Before anything is copied, the installer compares the account it
+runs as with the user of its Windows session. If they differ, for example
+when an administrator approves the prompt while a standard account is signed
+in ("over the shoulder"), it stops with exit code 8 and changes nothing.
+Without a signed-in session (a deployment tool in session 0, SSH) there is
+nothing to compare, and the service is set up for the account the installer
+runs as. `service install` checks on its own that the approving account is
+the account it sets the service up for, and it never takes over a service
+that belongs to another account (exit code 8): to move RootMind to another
+account, uninstall it and install it from that account. A standard account
+cannot get the service, because its REST API and its document parsers run as
+SYSTEM: a parser bug would then lift a standard account to SYSTEM.
 
 **Reads are confined to the account's unelevated rights.** The service reads
 only what the installing account can read **without administrator rights**
@@ -184,25 +191,34 @@ shared only with groups that a context built from the SID does not contain
 account groups), and folders with "Read" but without "Read & execute"
 (traverse) permission.
 
-**MCP over HTTP runs as its own account.** The optional service
-`RootMind-MCP-HTTP` runs as the virtual account `NT SERVICE\RootMind-MCP-HTTP`
+**MCP over HTTP runs as its own account.** The service `RootMind-MCP-HTTP`,
+on by default, runs as the virtual account `NT SERVICE\RootMind-MCP-HTTP`
 with only `SeChangeNotifyPrivilege`. It serves from the index and never reads
 the indexed folders. It can read `config.yaml` and `data\api_token.txt`, write
 the database folder and its own logs, and nothing else in the data folder; in
 particular it cannot read the REST token. `config.yaml` also holds the LLM API
 keys saved through the app, so the MCP service account can read them, although
-it never uses them. If that matters to you, keep the keys in environment
-variables instead (see [Data at rest](#data-at-rest)).
+it never uses them. Turning MCP over HTTP off (Settings → RootMind service)
+removes the service and the account's entries from the data folder. What the
+token gives access to is described under
+[MCP over HTTP](#mcp-over-http-bearer-token).
 
 **Program files.** `service install` copies the program into a new folder,
 `%ProgramFiles%\RootMind Service\<version>-<id>\`, for every install and
 update: file by file, refusing links and checking the hash of each written
 file. The folder is writable by SYSTEM and Administrators only, and older
 version folders are deleted afterwards (files in use at the next restart). The
-services always run from there, never from the per-user installation, and
-their registered command lines are quoted. Elevated code takes these paths
-from the Windows known-folder API, never from environment variables, which an
-elevated process inherits from the user. The service host ignores
+services always run from there, never from the app's install folder
+([ARCHITECTURE.md](ARCHITECTURE.md#background-service) has the reasons). The
+source of that copy is checked too: the installer installs only into
+`%ProgramFiles%\RootMind` and refuses any other folder (`/D=`, or a changed
+install location) with exit code 10 before anything changes, and
+`service install` refuses with exit code 10 to copy from a folder that
+accounts other than administrators can change, such as a download folder: no
+such account may write there, or move, replace or re-permission anything in
+it or in the folders above it. Their registered command lines are quoted. Elevated code takes these
+paths from the Windows known-folder API, never from environment variables,
+which an elevated process inherits from the user. The service host ignores
 `RLM_API_TOKEN`, `MCP_API_TOKEN`, `CONFIG_PATH`, `RLM_DEV`, `RLM_HOST` and
 `RLM_PORT`, refuses a database outside its `data` folder, and gives the
 backend service a temporary folder that only SYSTEM and Administrators can
@@ -227,24 +243,26 @@ RootMind\              owner BA, protected: SY full, BA full, U read, M read (th
 ```
 
 A missing folder is created with these permissions in one step. An existing
-one, for example one kept by `service uninstall` without `--purge`, is reused
-only when every item in it is owned by SYSTEM or Administrators, grants write
-access to no other account (except M on its two folders), and contains no
-reparse points or hard-linked files. An update stops both services before it
-checks the folder, and the permissions are written through a handle of each
-item, never through a link that replaced it. Files that `service install`
-creates are owned by Administrators, also for an administrator with User
-Account Control turned off. Otherwise `service install` exits with 6:
-"%ProgramData%\RootMind exists but is not protected. Remove or rename it from
-an elevated prompt, then try again." A folder created by hand inherits "Users:
-create" from ProgramData and is refused.
+one, for example one kept by an uninstall without **Delete the application
+data**, is reused only when every item in it is owned by SYSTEM or
+Administrators, grants write access to no other account (except M on its two
+folders), and contains no reparse points or hard-linked files. An update stops
+both services before it checks the folder, and the permissions are written
+through a handle of each item, never through a link that replaced it. Files
+that `service install` creates are owned by Administrators, also for an
+administrator with User Account Control turned off. Otherwise `service
+install` exits with 6: "%ProgramData%\RootMind exists but is not protected.
+Remove or rename it from an elevated prompt, then try again." A folder
+created by hand inherits "Users: create" from ProgramData and is refused.
 
 **Elevated commands from the app.** The webview can call only a fixed set of
-commands; the Rust side builds every program path and argument. Turning the
-service on and updating it elevate the backend of the per-user app
-installation; turning it off and switching MCP over HTTP on or off elevate the
-program under `%ProgramFiles%\RootMind Service\`, after checking that the
-registered path lies there.
+commands; the Rust side builds every program path and argument. Repair and
+"Update service" elevate `service install` with the backend installed with the
+app, `%ProgramFiles%\RootMind\backend\`; only when that is missing do they use the
+service's registered copy under `%ProgramFiles%\RootMind Service\`. Switching MCP
+over HTTP on or off elevates the registered copy, after checking that the
+registered path lies under `%ProgramFiles%\RootMind Service\`. Installing
+and removing the service is the installer's job.
 
 **Token handoff.** Before the app reads the service's token, it checks that
 the process that listens on the service's port is the service itself: the
@@ -258,35 +276,60 @@ the next check, requests made in that window can still carry the token.
 REST and MCP tokens: if another program listens on the port, it stops with
 exit code 7 and sends no token.
 
-**UAC is not a security boundary here.** The turn-on and update prompts run
-the backend of the per-user installation, which your account can change.
-Malware running as your account can replace it before you approve, and the
-unsigned prompt looks the same. Approve the prompt only when you started the
-action yourself.
+**Approving the prompts.** Every program the app or the installer runs as
+administrator lies in a folder that only administrators can change: the
+app's backend in `%ProgramFiles%\RootMind\backend\` (the installer accepts no
+other folder) or the service's copy under `%ProgramFiles%\RootMind Service\`.
+Malware running as your account therefore cannot replace it before you
+approve, and `service install` refuses to copy from a folder that other
+accounts can change (exit 10). The prompts show an unsigned
+program, so approve one only when you started the action yourself.
 
 **Document parsers run as SYSTEM** in the service, on files the account can
 read. A malicious file that exploits a parser bug would run code as SYSTEM.
 Index only folders whose content you would open yourself.
 
-**What uninstall leaves.** `service uninstall` stops and deletes both
+**Uninstall and purge.** Uninstalling RootMind (Windows Settings → Apps) runs
+`service uninstall` with the service's own copy: it stops and deletes both
 services, deletes the program folders (files in use at the next restart) and
 `data\rest_token.txt`. It deletes anything in the data folder only when the
 folder passes the same check as for a reinstall; otherwise it leaves the
-folder untouched and says so. The data folder stays: `config.yaml` (with saved API
-keys), the index, the logs and the MCP token, so MCP clients keep working
-after a reinstall. `service uninstall --purge`, or "Also delete the service's
-data" in the app, deletes it. Uninstalling the app asks whether to remove the
-service; a silent uninstall leaves it running, and `service status` then warns
-that the app is no longer installed. To rotate a token, delete its file from
-an elevated prompt and run `service install` again.
+folder untouched and says so. Without **Delete the application data**, and
+always for a silent uninstall (`/S`), the data folder stays: `config.yaml`
+(with saved API keys), the index, the logs and the MCP token, so MCP clients
+keep working after a reinstall. With the box ticked, `service uninstall
+--purge` deletes `%ProgramData%\RootMind`, and the uninstaller also deletes
+the app data (chats) of the account that runs it. To delete the data later,
+remove `%ProgramData%\RootMind` from an elevated prompt. An uninstall that is
+part of an update (`/UPDATE`) keeps the service. If the services cannot be
+removed, the uninstaller names the command to run from an elevated prompt,
+and `service status` warns while RootMind is no longer installed. To rotate a
+token, delete its file from an elevated prompt and run `service install`
+again.
 
 ### MCP over stdio
 
 The MCP client starts `rootmind-mcp` (or `rootmind-backend.exe mcp`) as a
 child process with the client's user rights. There is no authentication
-because there is no listening socket. All five tools are read-only.
+because there is no listening socket. All five tools are read-only. The
+stdio server serves the database its own `config.yaml` names (a source or uv
+setup); it cannot open the service's index, whose folder the account can only
+read.
 
 ### MCP over HTTP (bearer token)
+
+The RootMind service serves MCP over HTTP **by default**: the service
+`RootMind-MCP-HTTP` listens on `127.0.0.1`, port 3000 or one from
+18400–18499. Its token is in `%ProgramData%\RootMind\data\api_token.txt`,
+which the installing account, SYSTEM, Administrators and the MCP service
+account can read. So every program that runs as the installing account, and
+every administrator, can read the token and through it every indexed
+document. That is the same group that can already read the REST token and the
+index file itself. Other accounts can connect to the port, but without the
+token they get 401. The token stays the same across updates and across an
+uninstall that keeps the data, and copies of it live in the MCP clients you
+set up (for example n8n credentials or the Claude Code configuration). If you
+do not use MCP, turn it off under Settings → RootMind service.
 
 - Every MCP endpoint requires `Authorization: Bearer <token>`. Only
   `/health` is open; there are no `/docs`, `/redoc` or `/openapi.json` pages.
@@ -296,8 +339,8 @@ because there is no listening socket. All five tools are read-only.
 - The token comes from `MCP_API_TOKEN` or `data/api_token.txt`. If neither
   exists, the server generates 32 random bytes (`secrets.token_urlsafe`) and
   writes them to that file. If the variable or the file is present but empty,
-  the server refuses to start (fail closed). The background service never
-  generates it: `service install` writes it.
+  the server refuses to start (fail closed). The service never generates it:
+  `service install` writes it, or takes it from `--mcp-token-from FILE`.
 - Tokens are compared in constant time (`secrets.compare_digest`). The server
   never logs or prints the token, only its source and an 8-character SHA-256
   fingerprint. Tests assert that the token never appears in log output.
@@ -310,7 +353,7 @@ because there is no listening socket. All five tools are read-only.
 Limits: there is one shared token, without scopes, expiry or rate limiting.
 Anyone with the token can read every indexed document. To rotate it, delete
 `data/api_token.txt` (or change `MCP_API_TOKEN`) and restart the server; for
-the background service, see above.
+the RootMind service, see [Background service](#background-service).
 
 ### Prompt injection from indexed documents
 
@@ -375,8 +418,7 @@ parser is parsed: PDFs with `pypdf`, Office files with `python-docx`,
 `openpyxl` and `python-pptx`, and text formats (TXT, CSV, Markdown, JSON,
 XML, HTML, reStructuredText) as text. Other extensions are not indexed.
 A malicious file that exploits a parser bug runs code with the backend's
-rights: your own in the built-in backend and on the command line, LocalSystem
-in the background service. Mitigations are limited to `max_file_size_mb`
+rights: your own on the command line, LocalSystem in the RootMind service. Mitigations are limited to `max_file_size_mb`
 (default 50 MB) and keeping dependencies up to date. Index only folders whose
 content you would open yourself.
 
@@ -390,18 +432,20 @@ content you would open yourself.
 - Capabilities: no `core:default` set. The window may set its theme, open a
   folder picker, open web and mail links in the default apps (the Markdown
   renderer only passes `http`, `https` and `mailto`), reveal a file in
-  Explorer, and open files of the indexed types. The shell plugin, which
-  starts the built-in backend, is used from Rust only; the webview has no
-  shell permission. The developer tools toggle exists only in debug builds.
+  Explorer, and open files of the indexed types. The app has no shell
+  plugin, and the webview has no permission to start processes. The
+  developer tools toggle exists only in debug builds.
 - Rust commands: chat history (save, load, list, delete; every command that
   takes a conversation id validates it, so it cannot escape the history
-  folder), the built-in backend (start, restart, status, log folder), and the
-  background service (state, connect, turn on or off, MCP on or off, update,
-  MCP token, details). No command takes a program path, arguments or
-  environment variables from the webview.
-- The built-in backend binds a free port on `127.0.0.1` and gets its token
-  through its environment only. It stops when the app exits, and also when
-  the app crashes, because its standard input closes.
+  folder) and the RootMind service (state, connect, repair or update, MCP
+  over HTTP on or off, MCP token, details). No command takes a program path,
+  arguments or environment variables from the webview. The app starts the
+  backend program from its install folder only for `service status --json`
+  (not elevated) and for the elevated `service install` of Repair and
+  "Update service"; switching MCP over HTTP runs the service's registered
+  copy.
+- The app starts no backend of its own. A debug build never connects to the
+  installed service on its own; it asks for a backend address.
 
 ### Build and supply chain
 
@@ -433,7 +477,7 @@ content you would open yourself.
 
 ## Out of scope
 
-- Several users sharing one backend. The background service belongs to the
+- Several users sharing one backend. The RootMind service belongs to the
   account that installed it.
 - Exposing the REST API to a network, or the MCP HTTP server without TLS.
 - Malware running under your own account, attackers with administrator

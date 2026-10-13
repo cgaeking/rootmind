@@ -1,11 +1,11 @@
 import { create } from "zustand";
-import type { AppMode, ServiceConnectFailure, SidecarStatus } from "../api/backend";
+import type { AppMode } from "../api/backend";
+import type { ServiceProblem } from "./service";
 
 /**
  * Connectivity to the backend the UI uses.
- * - `starting`: the built-in backend is starting.
- * - `switching`: a background service change is running (the backend may be
- *   down on purpose for a while).
+ * - `switching`: a service repair or MCP change is running (the service may
+ *   be down on purpose for a while).
  * - `unauthorized`: the backend answered 401.
  * Only `offline` (and `unauthorized` for a custom backend) opens the backend
  * dialog.
@@ -13,7 +13,6 @@ import type { AppMode, ServiceConnectFailure, SidecarStatus } from "../api/backe
 export type ConnState =
   | "unknown"
   | "checking"
-  | "starting"
   | "switching"
   | "online"
   | "offline"
@@ -21,11 +20,12 @@ export type ConnState =
 export type ThemePref = "system" | "light" | "dark";
 
 /**
- * Which backend the UI uses: the one the app starts itself (`builtin`), the
- * Windows background service (`service`), or a URL the user entered (`custom`).
+ * Which backend the UI uses: the RootMind service the installer set up
+ * (`service`), or a backend at an address the user entered under Settings ›
+ * Advanced (`custom`).
  */
-export type BackendKind = "builtin" | "service" | "custom";
-/** The stored choice: `auto` picks the service or the built-in backend at start. */
+export type BackendKind = "service" | "custom";
+/** The stored choice: `auto` is the RootMind service (the value predates the service-only app). */
 export type BackendMode = "auto" | "custom";
 
 export interface BackendTarget {
@@ -76,9 +76,9 @@ export function readStoredBackend(): StoredBackend {
 }
 
 /**
- * Persist the backend choice. For the built-in backend and the service only
- * the mode is stored (their port and token change, and the token must never
- * be written to disk); the URL and token are stored for a custom backend only.
+ * Persist the backend choice. For the service only the mode is stored (Rust
+ * hands out its URL and token on every check, and the token must never be
+ * written to disk); the URL and token are stored for a custom backend only.
  */
 export function persistBackend(target: BackendTarget) {
   if (target.kind === "custom") {
@@ -97,16 +97,13 @@ export function normalizeUrl(url: string): string {
   return url.trim().replace(/\/+$/, "");
 }
 
-/**
- * The connection state after switching to `next`. A different backend (URL or
- * kind) has to be checked first; the built-in one reports "starting".
- */
+/** The connection state after switching to `next`: a different backend (URL or kind) is checked first. */
 export function connAfterSwitch(
   prev: { kind: BackendKind | null; baseUrl: string; conn: ConnState },
   next: BackendTarget,
 ): ConnState {
   if (prev.kind === next.kind && prev.baseUrl === next.url) return prev.conn;
-  return next.kind === "builtin" ? "starting" : "checking";
+  return "checking";
 }
 
 // Match the native window title bar (Windows) to the chosen theme. Only works
@@ -147,8 +144,7 @@ interface AppState {
   token: string | null;
   /**
    * Switch to another backend. A different URL or kind sets `conn` to
-   * "checking" ("starting" for the built-in backend). Persists the choice
-   * unless `persist` is false.
+   * "checking". Persists the choice unless `persist` is false.
    */
   setBackend: (target: BackendTarget, opts?: { persist?: boolean }) => void;
 
@@ -166,13 +162,9 @@ interface AppState {
   appMode: AppMode | null;
   setAppMode: (mode: AppMode | null) => void;
 
-  /** Last built-in backend status, read while it was not reachable. */
-  sidecar: SidecarStatus | null;
-  setSidecar: (status: SidecarStatus | null) => void;
-
-  /** Why the last connection to the background service failed. */
-  serviceIssue: ServiceConnectFailure | null;
-  setServiceIssue: (issue: ServiceConnectFailure | null) => void;
+  /** Why the RootMind service cannot be used right now; null while it works (or is not in use). */
+  serviceProblem: ServiceProblem | null;
+  setServiceProblem: (problem: ServiceProblem | null) => void;
 
   /**
    * True while a long-running question is in flight. The heartbeat pauses
@@ -218,11 +210,9 @@ export const useStore = create<AppState>()((set) => ({
   appMode: null,
   setAppMode: (appMode) => set({ appMode }),
 
-  sidecar: null,
-  setSidecar: (sidecar) => set({ sidecar }),
-
-  serviceIssue: null,
-  setServiceIssue: (serviceIssue) => set({ serviceIssue }),
+  serviceProblem: null,
+  setServiceProblem: (serviceProblem) =>
+    set((s) => (s.serviceProblem === serviceProblem ? s : { serviceProblem })),
 
   busy: false,
   setBusy: (busy) => set({ busy }),

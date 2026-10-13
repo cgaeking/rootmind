@@ -1,11 +1,11 @@
-"""The ``rootmind`` command line: bind resolution, dispatch, ready line, lifeline, import."""
+"""The ``rootmind`` command line: bind resolution, dispatch and the API process."""
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import queue
+import re
 import socket
 import subprocess
 import sys
@@ -17,13 +17,13 @@ from pathlib import Path
 import httpx
 import pytest
 import yaml
-from helpers import TEST_API_KEY, capture_serving
+from helpers import capture_serving
 
 import rootmind
 from rootmind import config as config_module
 from rootmind import main as main_module
 from rootmind.config import AppConfig
-from rootmind.main import READY_PREFIX, main, ready_line, resolve_bind
+from rootmind.main import main, resolve_bind
 
 CHILD_TOKEN = "child-test-token"  # pragma: allowlist secret
 
@@ -58,8 +58,21 @@ def test_api_help_lists_the_options(capsys):
     with pytest.raises(SystemExit):
         main(["api", "--help"])
     out = capsys.readouterr().out
-    for option in ("--host", "--port", "--require-token", "--exit-with-parent", "--import-config"):
+    for option in ("--host", "--port", "--require-token"):
         assert option in out
+    # The desktop app's built-in backend is gone, and with it these options.
+    for option in ("--exit-with-parent", "--import-config"):
+        assert option not in out
+
+
+@pytest.mark.parametrize("option", [["--exit-with-parent"], ["--import-config", "x.yaml"]])
+def test_removed_api_options_are_refused(monkeypatch, option, capsys):
+    seen = capture_serving(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["api", *option])
+    assert exc.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+    assert "bind" not in seen
 
 
 # --- bind resolution (bug a) ---------------------------------------------------------------
@@ -72,7 +85,6 @@ def test_config_port_is_used(monkeypatch):
     main(["api"])
 
     assert seen["bind"] == ("127.0.0.1", 18123)
-    assert seen["exit_with_parent"] is False
 
 
 def test_config_host_is_used(monkeypatch):
@@ -140,12 +152,6 @@ def test_invalid_port_flag_exits_2(monkeypatch, value, capsys):
     assert "--port" in capsys.readouterr().err
 
 
-def test_exit_with_parent_is_passed_on(monkeypatch):
-    seen = capture_serving(monkeypatch)
-    main(["api", "--port", "0", "--exit-with-parent"])
-    assert seen["exit_with_parent"] is True
-
-
 def test_busy_port_exits_1(monkeypatch, caplog):
     def busy(host, port):
         raise OSError("address in use")
@@ -157,12 +163,7 @@ def test_busy_port_exits_1(monkeypatch, caplog):
     assert "Cannot listen on 127.0.0.1:18123" in caplog.text
 
 
-# --- socket and ready line ---------------------------------------------------------------
-
-
-def test_ready_line_format():
-    assert ready_line(53123) == 'ROOTMIND_LISTENING {"port":53123}'
-    assert ready_line(1).isascii()
+# --- socket ------------------------------------------------------------------------------
 
 
 def test_bind_socket_port_0_is_exclusive():
@@ -178,30 +179,6 @@ def test_bind_socket_port_0_is_exclusive():
                 main_module.bind_socket("127.0.0.1", port)
     finally:
         sock.close()
-
-
-class _FakeServer:
-    should_exit = False
-
-
-@pytest.mark.parametrize(
-    "stdin_bytes", [b"", b"hello\n", b"noise\nshutdown\nignored\n", b"  shutdown  \r\n"]
-)
-def test_parent_watch_stops_on_eof_or_shutdown(monkeypatch, stdin_bytes):
-    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(stdin_bytes)))
-    server = _FakeServer()
-
-    thread = main_module.watch_parent(server)
-
-    thread.join(timeout=5)
-    assert not thread.is_alive()
-    assert server.should_exit is True
-
-
-def test_parent_watch_without_stdin(monkeypatch, caplog):
-    monkeypatch.setattr(sys, "stdin", None)
-    assert main_module.watch_parent(_FakeServer()) is None
-    assert "no stdin" in caplog.text
 
 
 # --- dispatch of mcp, mcp-http and service ------------------------------------------------
@@ -295,59 +272,6 @@ def test_service_missing_from_the_installation(monkeypatch, no_setup, capsys):
     assert "not part of this installation" in capsys.readouterr().err
 
 
-# --- --import-config ----------------------------------------------------------------------
-
-
-def test_import_config_before_serving(monkeypatch, tmp_path, tiny_corpus):
-    _write_config({"connectors": []})
-    source = tmp_path / "from-service.yaml"
-    source.write_text(
-        yaml.safe_dump(
-            {
-                "llm": {"provider": "anthropic", "api_keys": {"anthropic": TEST_API_KEY}},
-                "connectors": [{"name": "docs", "type": "local", "path": str(tiny_corpus)}],
-                "database": {"path": "C:/ProgramData/RootMind/data/db/index.db"},
-            }
-        ),
-        encoding="utf-8",
-    )
-    seen = capture_serving(monkeypatch)
-
-    main(["api", "--port", "0", "--import-config", str(source)])
-
-    home = config_module.app_home()
-    written = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
-    assert written["database"] == {"path": "./data/index.db"}
-    assert [c["name"] for c in written["connectors"]] == ["docs"]
-    assert (home / "config.yaml.bak").exists()
-    current = config_module.get_config()
-    assert [c.name for c in current.connectors] == ["docs"]
-    assert Path(current.database.path) == home / "data" / "index.db"
-    assert seen["bind"] == ("127.0.0.1", 0)
-
-
-def test_failed_import_keeps_the_config_and_serves(monkeypatch, tmp_path, caplog):
-    _write_config({"api": {"port": 18123}})
-    seen = capture_serving(monkeypatch)
-
-    main(["api", "--import-config", str(tmp_path / "missing.yaml")])
-
-    assert "Could not import the config" in caplog.text
-    assert seen["bind"] == ("127.0.0.1", 18123)
-    written = yaml.safe_load((config_module.app_home() / "config.yaml").read_text("utf-8"))
-    assert written == {"api": {"port": 18123}}
-
-
-def test_import_config_refuses_another_config_file(monkeypatch, tmp_path):
-    seen = capture_serving(monkeypatch)
-    source = tmp_path / "source.yaml"
-    source.write_text("connectors: []\n", encoding="utf-8")
-    with pytest.raises(SystemExit) as exc:
-        main(["--config", "other.yaml", "api", "--import-config", str(source)])
-    assert exc.value.code == 2
-    assert "bind" not in seen
-
-
 # --- the real process ----------------------------------------------------------------------
 
 
@@ -436,50 +360,46 @@ def child_home(tmp_path) -> Path:
     return home
 
 
-def _ready_port(line: str) -> int:
-    prefix, _, payload = line.partition(" ")
-    assert prefix == READY_PREFIX
-    data = json.loads(payload)
-    assert list(data) == ["port"]
-    assert 0 < data["port"] < 65536
-    return data["port"]
+_LISTENING = re.compile(r"RootMind API listening on http://127\.0\.0\.1:(\d+)$")
 
 
-def test_ready_line_health_and_stdin_eof(child_home):
-    child = Child(
-        ["api", "--port", "0", "--exit-with-parent"],
-        child_home,
-        env={"RLM_API_TOKEN": CHILD_TOKEN},
-    )
+def _listening_port(child: Child) -> int:
+    """The port from the API's log line (``--port 0`` lets the system choose it)."""
+    line = child.wait_for(lambda text: _LISTENING.search(text) is not None)
+    port = int(_LISTENING.search(line)[1])
+    assert 0 < port < 65536
+    return port
+
+
+def _wait_healthy(base: str, client: httpx.Client, timeout: float = 30) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if client.get(f"{base}/health").status_code == 200:
+                return
+        except httpx.TransportError:
+            pass
+        assert time.monotonic() < deadline, f"{base} did not become healthy"
+        time.sleep(0.1)
+
+
+def test_api_on_a_free_port_with_a_token(child_home):
+    child = Child(["api", "--port", "0"], child_home, env={"RLM_API_TOKEN": CHILD_TOKEN})
     try:
-        port = _ready_port(child.wait_for(lambda line: line.startswith(READY_PREFIX)))
+        port = _listening_port(child)
         base = f"http://127.0.0.1:{port}"
         with httpx.Client(trust_env=False, timeout=10) as client:
+            _wait_healthy(base, client)
             assert client.get(f"{base}/health").json() == {"status": "healthy"}
             assert client.get(f"{base}/").json()["auth"] == "bearer"
             assert client.get(f"{base}/status").status_code == 401
             authorized = {"Authorization": f"Bearer {CHILD_TOKEN}"}
             assert client.get(f"{base}/status", headers=authorized).status_code == 200
-
-        started = time.monotonic()
-        child.process.stdin.close()
-        assert child.process.wait(timeout=10) == 0
-        assert time.monotonic() - started < 10
-
-        stdout = child.rest_of_stdout()
-        assert [line for line in stdout if READY_PREFIX in line] == [ready_line(port)]
-        assert CHILD_TOKEN not in "\n".join(stdout) + child.stderr_text()
-    finally:
         child.close()
-
-
-def test_shutdown_line_stops_the_backend(child_home):
-    child = Child(["api", "--port", "0", "--exit-with-parent"], child_home)
-    try:
-        _ready_port(child.wait_for(lambda line: line.startswith(READY_PREFIX)))
-        child.process.stdin.write(b"shutdown\n")
-        child.process.stdin.flush()
-        assert child.process.wait(timeout=10) == 0
+        stdout = child.rest_of_stdout()
+        # There is no ready line any more (it was for the desktop app's built-in backend).
+        assert not any("ROOTMIND_LISTENING" in line for line in stdout)
+        assert CHILD_TOKEN not in "\n".join(stdout) + child.stderr_text()
     finally:
         child.close()
 
@@ -525,17 +445,16 @@ def test_mcp_dispatch_keeps_stdout_json_only(child_home):
 
 def test_no_token_in_logs_for_require_token(child_home):
     """The generated REST token is written to its file, never to stdout or stderr."""
-    child = Child(["api", "--port", "0", "--exit-with-parent", "--require-token"], child_home)
+    child = Child(["api", "--port", "0", "--require-token"], child_home)
     try:
-        port = _ready_port(child.wait_for(lambda line: line.startswith(READY_PREFIX)))
+        port = _listening_port(child)
         token = (child_home / "data" / "rest_token.txt").read_text(encoding="utf-8")
+        base = f"http://127.0.0.1:{port}"
         with httpx.Client(trust_env=False, timeout=10) as client:
-            response = client.get(
-                f"http://127.0.0.1:{port}/status", headers={"Authorization": f"Bearer {token}"}
-            )
+            _wait_healthy(base, client)
+            response = client.get(f"{base}/status", headers={"Authorization": f"Bearer {token}"})
             assert response.status_code == 200
-        child.process.stdin.close()
-        assert child.process.wait(timeout=10) == 0
+        child.close()
         output = "\n".join(child.rest_of_stdout()) + child.stderr_text()
         assert token not in output
         assert "fingerprint sha256:" in output

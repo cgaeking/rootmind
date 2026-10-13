@@ -73,7 +73,7 @@ export function FoldersScreen() {
   // The folders as saved in the backend.
   const [entries, setEntries] = useState<Entry[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
-  // Background service: folder name → why the service cannot use it.
+  // RootMind service: folder name → why the service cannot use it.
   const [refused, setRefused] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -112,7 +112,7 @@ export function FoldersScreen() {
     };
   }, [live]);
 
-  // The background service reads only what this account may read: mark the
+  // The RootMind service reads only what this account may read: mark the
   // folders it refused (GET /connectors lists them with available: false).
   useEffect(() => {
     setRefused({});
@@ -137,7 +137,7 @@ export function FoldersScreen() {
 
   /**
    * Save the folder list right away. If the backend refuses it (for example a
-   * folder the background service may not read), the list goes back to what
+   * folder the RootMind service may not read), the list goes back to what
    * it was and `failure` turns the reason into the message to show.
    */
   async function persist(next: Entry[], failure: (reason: string) => Failure) {

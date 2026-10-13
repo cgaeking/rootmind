@@ -125,13 +125,13 @@ mod tests {
         let joined = join_args(&[
             "service",
             "install",
-            "--import-config",
-            r"C:\Users\Jane Doe\AppData\Local\io.github.cgaeking.rootmind\backend\config.yaml",
+            "--mcp-token-from",
+            r"C:\Users\Jane Doe\Documents\api_token.txt",
         ])
         .unwrap();
         assert_eq!(
             joined,
-            r#"service install --import-config "C:\Users\Jane Doe\AppData\Local\io.github.cgaeking.rootmind\backend\config.yaml""#
+            r#"service install --mcp-token-from "C:\Users\Jane Doe\Documents\api_token.txt""#
         );
     }
 

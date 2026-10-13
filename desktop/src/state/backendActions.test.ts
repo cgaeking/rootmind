@@ -1,47 +1,42 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useStore } from "./store";
 import { jsonResponse, resetStore, serviceInfoFixture } from "../test/helpers";
-import type { ServiceResult, SidecarStatus } from "../api/backend";
+import type { ServiceResult } from "../api/backend";
 
 vi.mock("../api/backend", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api/backend")>()),
+  inTauri: () => true,
   serviceConnect: vi.fn(),
   serviceInfo: vi.fn(),
-  sidecarStart: vi.fn(),
-  sidecarRestart: vi.fn(),
-  sidecarStatus: vi.fn(),
 }));
 
 const backend = await import("../api/backend");
 const actions = await import("./backendActions");
 const { recheck } = await import("../hooks/useBackend");
 
-const SIDECAR = "http://127.0.0.1:50001";
 const SERVICE = "http://127.0.0.1:8000";
-
-function sidecar(over: Partial<SidecarStatus> = {}): SidecarStatus {
-  return { state: "running", url: SIDECAR, token: "s", exitCode: null, error: null, logTail: [], ...over };
-}
+const ours = serviceInfoFixture({
+  installed: true,
+  ours: true,
+  state: "running",
+  port: 8000,
+  url: SERVICE,
+  tokenReadable: true,
+});
 
 const fetchMock = vi.fn<typeof fetch>();
 
 beforeEach(() => {
   resetStore();
-  for (const fn of [
-    backend.serviceConnect,
-    backend.serviceInfo,
-    backend.sidecarStart,
-    backend.sidecarRestart,
-    backend.sidecarStatus,
-  ]) {
-    vi.mocked(fn).mockReset();
-  }
-  vi.mocked(backend.serviceInfo).mockResolvedValue(serviceInfoFixture());
+  vi.mocked(backend.serviceConnect).mockReset();
+  vi.mocked(backend.serviceInfo).mockReset();
+  vi.mocked(backend.serviceInfo).mockResolvedValue(ours);
+  vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: true, url: SERVICE, token: "v" });
   // Every backend answers; the tests look at which one is chosen.
   fetchMock.mockReset();
   fetchMock.mockImplementation(async (input) =>
     String(input).endsWith("/")
-      ? jsonResponse({ name: "RootMind API", version: "1.2.0", auth: "bearer" })
+      ? jsonResponse({ name: "RootMind API", version: "1.3.0", auth: "bearer" })
       : jsonResponse({ status: "healthy", is_running: false }),
   );
   vi.stubGlobal("fetch", fetchMock);
@@ -53,112 +48,46 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe("startBuiltin", () => {
-  it("uses the started backend and stores the auto mode", async () => {
-    vi.mocked(backend.sidecarStart).mockResolvedValue({ url: SIDECAR, token: "s" });
-    expect(await actions.startBuiltin()).toBe(true);
-    const s = useStore.getState();
-    expect(s.kind).toBe("builtin");
-    expect(s.baseUrl).toBe(SIDECAR);
-    expect(s.token).toBe("s");
-    expect(localStorage.getItem("rlm.backendMode")).toBe("auto");
-  });
+describe("connectService", () => {
+  it("connects with the URL and token from Rust and stores only the auto mode", async () => {
+    localStorage.setItem("rlm.backendMode", "custom");
+    localStorage.setItem("rlm.baseUrl", "http://a");
+    localStorage.setItem("rlm.token", "t");
+    useStore.setState({ kind: "custom", baseUrl: "http://a", token: "t", conn: "online" });
 
-  it("shows the error of a failed start", async () => {
-    vi.mocked(backend.sidecarStart).mockRejectedValue("Windows security blocked the RootMind backend.");
-    vi.mocked(backend.sidecarStatus).mockResolvedValue(
-      sidecar({ state: "failed", url: null, token: null, error: "blocked" }),
-    );
-    expect(await actions.startBuiltin()).toBe(false);
-    const s = useStore.getState();
-    expect(s.kind).toBe("builtin");
-    expect(s.conn).toBe("offline");
-    expect(s.sidecar?.error).toBe("blocked");
-  });
-});
-
-describe("runServiceChange", () => {
-  const kinds = { successKind: "service" as const, fallbackKind: "builtin" as const };
-
-  it("switches to the service after turning it on", async () => {
-    vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: true, url: SERVICE, token: "v" });
-    useStore.setState({ kind: "builtin", baseUrl: SIDECAR, token: "s", conn: "online" });
-    const op = vi.fn(
-      async (): Promise<ServiceResult> => ({ ok: true, backend: { url: SERVICE, token: "v" } }),
-    );
-    const seen: string[] = [];
-    const unsub = useStore.subscribe((s) => seen.push(s.conn));
-    const out = await actions.runServiceChange(op, { ...kinds, switching: true });
-    unsub();
-    expect(out).toMatchObject({ kind: "result", result: { ok: true } });
-    expect(seen[0]).toBe("switching");
+    expect(await actions.connectService()).toBe(true);
     const s = useStore.getState();
     expect(s.kind).toBe("service");
     expect(s.baseUrl).toBe(SERVICE);
     expect(s.token).toBe("v");
+    expect(s.serviceProblem).toBeNull();
+    expect(localStorage.getItem("rlm.backendMode")).toBe("auto");
+    expect(localStorage.getItem("rlm.baseUrl")).toBeNull();
+    expect(localStorage.getItem("rlm.token")).toBeNull();
   });
 
-  it("keeps the built-in backend Rust restarted after a cancel", async () => {
-    vi.mocked(backend.sidecarStatus).mockResolvedValue(sidecar({ url: "http://127.0.0.1:50009" }));
-    useStore.setState({ kind: "builtin", baseUrl: SIDECAR, token: "s", conn: "online" });
-    const out = await actions.runServiceChange(
-      async () => ({
-        ok: false,
-        cancelled: true,
-        code: 1223,
-        backend: { url: "http://127.0.0.1:50009", token: "s" },
-      }),
-      { ...kinds, switching: true },
-    );
-    expect(out).toMatchObject({ kind: "result", result: { ok: false, cancelled: true } });
+  it("reports a stopped service as a problem", async () => {
+    vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: false, reason: "not_running" });
+    vi.mocked(backend.serviceInfo).mockResolvedValue({ ...ours, state: "stopped" });
+    expect(await actions.connectService()).toBe(false);
     const s = useStore.getState();
-    expect(s.kind).toBe("builtin");
-    expect(s.baseUrl).toBe("http://127.0.0.1:50009");
-    expect(s.conn).not.toBe("switching");
+    expect(s.conn).toBe("offline");
+    expect(s.serviceProblem).toBe("notRunning");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
+});
 
-  it("keeps the service when a change failed but the service still answers", async () => {
-    vi.mocked(backend.sidecarStatus).mockResolvedValue(sidecar({ state: "stopped", url: null, token: null }));
-    vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: true, url: SERVICE, token: "v" });
-    useStore.setState({ kind: "service", baseUrl: SERVICE, token: "v", conn: "online" });
-    await actions.runServiceChange(
-      async () => ({ ok: false, cancelled: false, code: 4, backend: { url: SERVICE, token: "v" } }),
-      { successKind: "service", fallbackKind: "service", switching: true },
-    );
-    expect(useStore.getState().kind).toBe("service");
-    expect(useStore.getState().conn).not.toBe("switching");
-  });
-
-  it("shows the fallback kind as unreachable when no backend runs", async () => {
-    vi.mocked(backend.sidecarStatus).mockResolvedValue(
-      sidecar({ state: "failed", url: null, token: null, error: "exited", exitCode: 1 }),
-    );
-    useStore.setState({ kind: "builtin", baseUrl: SIDECAR, token: "s", conn: "online" });
-    await actions.runServiceChange(
-      async () => ({ ok: false, cancelled: false, code: 7, backend: null }),
-      { ...kinds, switching: true },
-    );
-    // Let the follow-up check finish.
-    await vi.waitFor(() => expect(useStore.getState().conn).toBe("offline"));
-    expect(useStore.getState().kind).toBe("builtin");
-    expect(useStore.getState().baseUrl).toBe("");
-  });
-
-  it("falls back to the built-in backend when turning off removed the service but its start failed", async () => {
-    vi.mocked(backend.serviceInfo).mockResolvedValue(serviceInfoFixture({ installed: false }));
-    vi.mocked(backend.sidecarStatus).mockResolvedValue(
-      sidecar({ state: "failed", url: null, token: null, error: "timeout" }),
-    );
-    useStore.setState({ kind: "service", baseUrl: SERVICE, token: "v", conn: "online" });
-    const out = await actions.runServiceChange(
-      async () => {
-        throw "The background service was removed, but the built-in backend did not start: timeout";
-      },
-      { successKind: "builtin", fallbackKind: "service", switching: true },
-    );
-    expect(out.kind).toBe("error");
-    await vi.waitFor(() => expect(useStore.getState().conn).toBe("offline"));
-    expect(useStore.getState().kind).toBe("builtin");
+describe("connectCustom", () => {
+  it("uses and remembers the address and token, and clears a service problem", async () => {
+    useStore.setState({ kind: "service", conn: "offline", serviceProblem: "notInstalled" });
+    await actions.connectCustom(" http://10.0.0.5:8000/ ", " tok ");
+    const s = useStore.getState();
+    expect(s.kind).toBe("custom");
+    expect(s.baseUrl).toBe("http://10.0.0.5:8000");
+    expect(s.token).toBe("tok");
+    expect(s.serviceProblem).toBeNull();
+    expect(localStorage.getItem("rlm.baseUrl")).toBe("http://10.0.0.5:8000");
+    expect(backend.serviceConnect).not.toHaveBeenCalled();
   });
 });
 
@@ -172,43 +101,74 @@ describe("applyDecision", () => {
     expect(s.baseUrl).toBe("");
     expect(s.conn).toBe("offline");
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(backend.serviceConnect).not.toHaveBeenCalled();
     // Nothing persisted: the dialog stores the address the user connects to.
     expect(localStorage.getItem("rlm.backendMode")).toBeNull();
   });
+
+  it("connects to the service", async () => {
+    await actions.applyDecision({ action: "service" });
+    expect(useStore.getState().kind).toBe("service");
+    expect(useStore.getState().conn).toBe("online");
+  });
 });
 
-describe("switchToDefaultBackend", () => {
-  it("forgets a custom backend and uses the service when it is ours", async () => {
-    localStorage.setItem("rlm.backendMode", "custom");
-    localStorage.setItem("rlm.baseUrl", "http://a");
-    localStorage.setItem("rlm.token", "t");
-    useStore.setState({
-      kind: "custom",
-      baseUrl: "http://a",
-      conn: "online",
-      appMode: { version: "1.2.0", dev: false, builtinAvailable: true },
+describe("runServiceChange", () => {
+  it("is 'switching' while the service changes and takes over the URL and token Rust returns", async () => {
+    useStore.setState({ kind: "service", baseUrl: SERVICE, token: "v", conn: "online" });
+    vi.mocked(backend.serviceConnect).mockResolvedValue({
+      ok: true,
+      url: "http://127.0.0.1:8001",
+      token: "w",
     });
-    vi.mocked(backend.serviceInfo).mockResolvedValue(
-      serviceInfoFixture({ installed: true, ours: true, tokenReadable: true, url: SERVICE }),
+    const op = vi.fn(
+      async (): Promise<ServiceResult> => ({
+        ok: true,
+        backend: { url: "http://127.0.0.1:8001", token: "w" },
+      }),
     );
-    vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: true, url: SERVICE, token: "v" });
-    await actions.switchToDefaultBackend();
-    expect(useStore.getState().kind).toBe("service");
-    expect(localStorage.getItem("rlm.backendMode")).toBe("auto");
-    expect(localStorage.getItem("rlm.baseUrl")).toBeNull();
-    expect(localStorage.getItem("rlm.token")).toBeNull();
+    const seen: string[] = [];
+    const unsub = useStore.subscribe((s) => seen.push(s.conn));
+    const out = await actions.runServiceChange(op);
+    unsub();
+    expect(out).toMatchObject({ kind: "result", result: { ok: true } });
+    expect(seen[0]).toBe("switching");
+    const s = useStore.getState();
+    expect(s.kind).toBe("service");
+    expect(s.baseUrl).toBe("http://127.0.0.1:8001");
+    expect(s.token).toBe("w");
+    expect(s.conn).not.toBe("switching");
   });
 
-  it("starts the built-in backend without a service", async () => {
-    useStore.setState({
-      kind: "custom",
-      baseUrl: "http://a",
-      conn: "offline",
-      appMode: { version: "1.2.0", dev: false, builtinAvailable: true },
+  it("keeps the connection state with switching: false (the backend dialog's repair)", async () => {
+    useStore.setState({ kind: "service", baseUrl: "", token: null, conn: "offline" });
+    const seen: string[] = [];
+    const unsub = useStore.subscribe((s) => seen.push(s.conn));
+    await actions.runServiceChange(
+      async () => ({ ok: false, cancelled: true, code: 1223, backend: null }),
+      { switching: false },
+    );
+    unsub();
+    expect(seen).not.toContain("switching");
+  });
+
+  it("leaves a custom backend in use", async () => {
+    useStore.setState({ kind: "custom", baseUrl: "http://a", token: null, conn: "online" });
+    const seen: string[] = [];
+    const unsub = useStore.subscribe((s) => seen.push(s.conn));
+    await actions.runServiceChange(async () => ({ ok: true, backend: { url: SERVICE, token: "v" } }));
+    unsub();
+    expect(seen).not.toContain("switching");
+    expect(useStore.getState().kind).toBe("custom");
+    expect(useStore.getState().baseUrl).toBe("http://a");
+  });
+
+  it("returns the message of a failed command and leaves 'switching'", async () => {
+    useStore.setState({ kind: "service", baseUrl: SERVICE, token: "v", conn: "online" });
+    const out = await actions.runServiceChange(async () => {
+      throw "Could not start the elevated process";
     });
-    vi.mocked(backend.sidecarStart).mockResolvedValue({ url: SIDECAR, token: "s" });
-    await actions.switchToDefaultBackend();
-    expect(useStore.getState().kind).toBe("builtin");
-    expect(useStore.getState().baseUrl).toBe(SIDECAR);
+    expect(out).toEqual({ kind: "error", message: "Could not start the elevated process" });
+    expect(useStore.getState().conn).not.toBe("switching");
   });
 });

@@ -29,8 +29,9 @@ Das Repository hat zwei Teile:
 - **Backend** (Python, FastAPI): Indexer, Volltextsuche, die Agenten-Schleife,
   eine REST-API auf localhost und MCP-Server über stdio und HTTP.
 - **Desktop-App** (Tauri 2 mit React und TypeScript, dazu eine Rust-Shell):
-  eine Chat- und Suchoberfläche für Windows, auf Deutsch und Englisch, die das
-  Backend mitbringt und startet.
+  eine Chat- und Suchoberfläche für Windows, auf Deutsch und Englisch. Ihr
+  Installer richtet das Backend als Windows-Dienst ein, und die App spricht
+  mit diesem Dienst.
 
 > **Status:** Dies ist ein persönliches Projekt. Es wird nicht kommerziell
 > gepflegt, und es gibt keine Support-Zusage. Issues und Pull Requests sind
@@ -42,34 +43,55 @@ Jedes [Release](https://github.com/cgaeking/rootmind/releases/latest) enthält
 zwei Downloads für Windows (x64):
 
 - **[RootMind-Setup-x64.exe](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-Setup-x64.exe)**,
-  für die meisten, unter Windows 10 oder 11: die Desktop-App mit ihrem
-  Backend. Starte die Datei; sie installiert RootMind für dein Konto, ohne
-  Administratorrechte und ohne Python, und die App startet und beendet ihr
-  Backend selbst.
+  für die meisten, unter Windows 10 oder 11: die Desktop-App und ihr
+  Windows-Dienst. Starte die Datei und bestätige die Administrator-Abfrage
+  einmal; Python ist nicht nötig. Sie installiert die App nach
+  `%ProgramFiles%\RootMind` und richtet den
+  [RootMind-Dienst](#der-rootmind-dienst) für das Konto ein, das bei Windows
+  angemeldet ist.
 - **[rootmind-backend-windows-x64.zip](https://github.com/cgaeking/rootmind/releases/latest/download/rootmind-backend-windows-x64.zip)**,
   für die Kommandozeile und Server: das Backend allein, ohne die App (siehe
   [Installation für Entwicklung und Server](#installation-für-entwicklung-und-server)).
 
+Zur Installation brauchst du ein Administratorkonto. Der Dienst gehört dem
+Konto, das RootMind installiert, deshalb läuft der Installer nur als das bei
+Windows angemeldete Konto: Bestätigt ein Administrator die Abfrage, während
+ein Standardkonto angemeldet ist, bricht der Installer ab, ohne etwas zu
+ändern. Der Installationsordner ist immer `%ProgramFiles%\RootMind`, ein
+Ordner, den nur Administratoren ändern können; einen anderen (etwa mit `/D=`)
+lehnt der Installer mit Exit-Code 10 ab.
+
 Der Installer ist noch nicht codesigniert. Windows SmartScreen zeigt eventuell
 „Der Computer wurde durch Windows geschützt“: Wähle **Weitere Informationen**
 und dann **Trotzdem ausführen**. Ist Smart App Control aktiv, blockiert es den
-Installer oder das Backend der App eventuell ohne diese Wahl; ein blockiertes
-Backend meldet die App. Smart App Control kennt keine Ausnahme für eine
-einzelne App; signierte Releases, die geplant sind, vermeiden das (siehe
-[Code-Signing-Richtlinie](CODE_SIGNING.md)).
+Installer oder das Programm des RootMind-Dienstes eventuell ohne diese Wahl.
+Smart App Control kennt keine Ausnahme für eine einzelne App; signierte
+Releases, die geplant sind, vermeiden das (siehe die
+[Code-Signing-Richtlinie](CODE_SIGNING.md), englisch).
 
-Füge danach unter **Ordner** einen Ordner hinzu. Die Indizierung beginnt
-innerhalb etwa einer Minute, und die Suche funktioniert ohne API-Key, sobald
-der Ordner indiziert ist. Um Fragen zu stellen, trage unter **Einstellungen**
-einen API-Key für Anthropic, OpenAI oder xAI ein und speichere ihn. Optional
-hält Einstellungen → **Hintergrunddienst** den Index aktuell, während die App
-geschlossen ist (siehe [Hintergrunddienst](#hintergrunddienst)).
+Starte danach RootMind und füge unter **Ordner** einen Ordner hinzu. Die
+Indizierung beginnt innerhalb etwa einer Minute, und die Suche funktioniert
+ohne API-Key, sobald der Ordner indiziert ist. Um Fragen zu stellen, trage
+unter **Einstellungen** einen API-Key für Anthropic, OpenAI oder xAI ein und
+speichere ihn. Der Dienst hält den Index aktuell, auch während die App
+geschlossen ist.
 
 Die App folgt der Anzeigesprache von Windows (Deutsch oder Englisch);
 Einstellungen → **Darstellung** → **Sprache** stellt sie um. Die Namen aus der
 Oberfläche stehen in dieser README so, wie die deutsche Oberfläche sie zeigt.
 Einstellungen → **Über RootMind** zeigt die Versionen von App und Backend und
 verlinkt Releases und Issues.
+
+### Umstieg von 1.x
+
+RootMind 1.x wurde pro Konto installiert und betrieb sein Backend in der App,
+solange der Hintergrunddienst nicht eingeschaltet war. Der Installer von 2.0
+entfernt eine 1.x-Installation deines Kontos von selbst. Ordner,
+Einstellungen, API-Keys und Index des eingebauten Backends von 1.x werden
+nicht übernommen: Füge deine Ordner und deinen API-Key erneut hinzu. War in
+1.x der Hintergrunddienst eingeschaltet, wird er aktualisiert und behält
+seine Ordner, Einstellungen und seinen Index. Die Chats bleiben in beiden
+Fällen erhalten.
 
 ### Downloads prüfen
 
@@ -89,106 +111,66 @@ gh attestation verify RootMind-Setup-x64.exe --repo cgaeking/rootmind
 
 ### Aktualisieren und deinstallieren
 
-Zum Aktualisieren startest du den Installer der neuen Version. Er ersetzt die
-installierte Version an Ort und Stelle, im selben Ordner und ohne Rückfragen,
-und behält deine Einstellungen, den Index und die Chats; läuft die App, bittet
-er darum, sie vorher zu schließen. Ist der Hintergrunddienst eingeschaltet,
-läuft er weiter, und die Einstellungen bieten dann **Dienst aktualisieren**
-an (eine Bestätigung als Administrator).
-MCP-Clients, die das eingebaute Backend über stdio nutzen (siehe
-[MCP-Clients verbinden](#mcp-clients-verbinden)), werden ebenfalls beendet,
-weil ihr Programm ersetzt wird; starte sie nach dem Update neu.
+Zum Aktualisieren startest du den Installer der neuen Version und bestätigst
+die Abfrage. Er ersetzt die installierte Version an Ort und Stelle, ohne
+weitere Rückfragen, und aktualisiert den Dienst; Ports, Tokens,
+Einstellungen, Index und Chats bleiben erhalten. Läuft die App, bittet der
+Installer darum, sie vorher zu schließen.
 
-Deinstalliere RootMind über Windows-Einstellungen → Apps. Die Option **Lösche
-die Anwendungsdaten** (englisch: **Delete the application data**) entfernt
-auch deine Chats sowie Einstellungen, Index und Logs des eingebauten Backends.
-Ist der Hintergrunddienst installiert, fragt der Deinstaller, ob er ihn
-ebenfalls entfernen soll. Eine stille Deinstallation (`/S`, wie
-Paketmanager sie ausführen) lässt den Dienst bestehen. Um ihn danach zu
-entfernen, nutze eine PowerShell als Administrator:
+Deinstalliere RootMind über Windows-Einstellungen → Apps. Dabei werden die
+RootMind-Dienste entfernt. Ihre Daten (Einstellungen, API-Keys, Index, Tokens
+und Logs) bleiben in `%ProgramData%\RootMind`, außer du setzt den Haken bei
+**Lösche die Anwendungsdaten** (englisch: **Delete the application data**);
+dann werden sie und deine Chats ebenfalls gelöscht. Eine stille
+Deinstallation (`/S`, wie Paketmanager sie ausführen) entfernt die Dienste
+ebenfalls, löscht aber nie Daten. Um die Daten später zu löschen, entferne
+`%ProgramData%\RootMind` in einer Eingabeaufforderung als Administrator.
 
-```powershell
-sc.exe qc RootMind-Backend      # BINARY_PATH_NAME ist das Programm des Dienstes
-& "C:\Program Files\RootMind Service\<version>-<id>\rootmind-backend.exe" service uninstall
-```
+### Der RootMind-Dienst
 
-Die Daten des Dienstes bleiben in `%ProgramData%\RootMind` (ohne sein
-REST-Token). Mit `--purge` werden sie ebenfalls gelöscht.
+Das Backend von RootMind läuft als Windows-Dienst `RootMind-Backend`. Er hält
+den Index aktuell, während die App geschlossen ist, und startet mit Windows;
+die App ist ein Client dieses Dienstes. Einstellungen → **RootMind-Dienst**
+zeigt seinen Zustand, seine Adresse und Version und bietet **Reparieren** an,
+wenn er gestoppt ist oder nicht antwortet (eine Bestätigung als
+Administrator). Läuft der Dienst in einer älteren Version als die App,
+bringt **Dienst aktualisieren** ihn auf die Version der App. Beides startet
+das mit der App installierte Backend in `%ProgramFiles%\RootMind\backend`,
+das nur Administratoren ändern können.
 
-### Hintergrunddienst
-
-Standardmäßig läuft das Backend nur, solange die App geöffnet ist.
-Einstellungen → **Hintergrunddienst** macht daraus den Windows-Dienst
-`RootMind-Backend`: Er
-hält den Index aktuell, während die App geschlossen ist, und startet mit
-Windows.
-
-- Er wird Administratorkonten angeboten und braucht eine Bestätigung als
-  Administrator. Beim Einschalten werden deine Ordner und Einstellungen
-  übernommen; der Index wird für den Dienst neu aufgebaut.
-- Der Dienst läuft als LocalSystem, liest aber **nur Ordner und Dateien, die
-  dein Konto ohne Administratorrechte öffnen kann**. Netzlaufwerke und
-  Freigaben, Systemordner und die Profile anderer Benutzer stehen ihm nicht
-  zur Verfügung, und die Ansicht **Ordner** markiert einen Ordner, den er
-  nicht lesen kann.
+- Der Dienst gehört dem Konto, das RootMind installiert hat. Andere Konten
+  auf demselben Computer können ihn nicht nutzen; um RootMind auf ein anderes
+  Konto umzuziehen, deinstalliere es und installiere es von diesem Konto aus
+  neu.
+- Er läuft als LocalSystem, liest aber **nur Ordner und Dateien, die dein
+  Konto ohne Administratorrechte öffnen kann**. Netzlaufwerke und Freigaben,
+  Systemordner und die Profile anderer Benutzer stehen ihm nicht zur
+  Verfügung, und die Ansicht **Ordner** markiert einen Ordner, den er nicht
+  lesen kann.
 - Seine REST-API verlangt ein Token. Das Token liegt in
   `%ProgramData%\RootMind\data\rest_token.txt`, das nur dein Konto, SYSTEM und
   Administratoren lesen können. Die App nutzt es erst, nachdem sie geprüft
   hat, dass der Prozess des Dienstes selbst auf dem Port lauscht.
-- Die Option **MCP zusätzlich über HTTP anbieten** fügt einen zweiten Dienst
-  hinzu, `RootMind-MCP-HTTP`, für n8n
-  und andere entfernte Agenten (siehe unten).
+- Ein zweiter Dienst, `RootMind-MCP-HTTP`, stellt MCP über HTTP auf 127.0.0.1
+  mit einem eigenen Bearer-Token bereit (siehe
+  [MCP-Clients verbinden](#mcp-clients-verbinden)). Er ist standardmäßig
+  eingeschaltet; der Haken bei **MCP über HTTP anbieten** schaltet ihn aus und
+  wieder ein (eine Bestätigung als Administrator).
+- Die Dienste laufen aus einer eigenen Kopie des Programms unter
+  `%ProgramFiles%\RootMind Service\`, die nur Administratoren ändern können,
+  und halten ihre Daten in `%ProgramData%\RootMind`.
 
-Beim Ausschalten des Dienstes gehen deine Einstellungen zurück an das
-eingebaute Backend. [SECURITY.md](SECURITY.md#background-service) (englisch)
-beschreibt das Sicherheitsmodell.
+Einstellungen → **Erweitert** verbindet die App stattdessen mit einem
+RootMind-Backend unter einer anderen Adresse.
+[SECURITY.md](SECURITY.md#background-service) (englisch) beschreibt das
+Sicherheitsmodell.
 
 ## MCP-Clients verbinden
 
 MCP-Clients bekommen dieselben lesenden Tools wie der Agent der App und nutzen
-ihr eigenes Modell.
-
-**Eingebautes Backend (stdio).** Der MCP-Client startet das mitgelieferte
-Backend mit `mcp` und verweist es auf den Datenordner der App. Ersetze `<you>`
-durch deinen Windows-Benutzernamen (die Pfade sind die Standardwerte des
-Installers). Claude Desktop (`claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "rootmind": {
-      "command": "C:\\Users\\<you>\\AppData\\Local\\RootMind\\backend\\rootmind-backend.exe",
-      "args": ["mcp"],
-      "env": {
-        "RLM_HOME": "C:\\Users\\<you>\\AppData\\Local\\io.github.cgaeking.rootmind\\backend"
-      }
-    }
-  }
-}
-```
-
-Claude Code (eine Zeile; Schrägstriche funktionieren in jeder Shell):
-
-```bash
-claude mcp add --transport stdio rootmind --env RLM_HOME=C:/Users/<you>/AppData/Local/io.github.cgaeking.rootmind/backend -- C:/Users/<you>/AppData/Local/RootMind/backend/rootmind-backend.exe mcp
-```
-
-Der stdio-Server stellt nur bereit; der Index wird aktualisiert, solange die
-App läuft. Er liest die Ordnerliste beim Start, also starte den MCP-Client
-neu, nachdem du Ordner hinzugefügt oder entfernt hast.
-
-MCP-Clients, die als MSIX-App verpackt sind, etwa Claude Desktop aus dem
-Microsoft Store, führen ihre Server in einem App-Container aus: Windows legt
-neue Dateien, die diese Prozesse unter AppData anlegen, in einer privaten
-Kopie ab. Die gemeinsam genutzten Indexdateien von SQLite gehören dazu, daher
-sieht ein solcher Client Index-Aktualisierungen eventuell nicht zuverlässig,
-besonders wenn er den Server startet, während die App geschlossen ist. Mit
-eingeschaltetem Hintergrunddienst umgeht MCP über HTTP (unten) das.
-
-**Hintergrunddienst (HTTP).** Im Dienst-Modus nutzt du MCP über HTTP: Setze
-unter Einstellungen → Hintergrunddienst den Haken bei **MCP über HTTP
-anbieten**. Die Einstellungen zeigen dann den Endpunkt und das Token, jeweils
-mit Kopier-Schaltfläche:
+ihr eigenes Modell. Verbinde sie mit MCP über HTTP des Dienstes:
+Einstellungen → RootMind-Dienst zeigt den **MCP-Endpunkt** und kopiert ihn
+und das Token (**Token kopieren**). Claude Code:
 
 ```bash
 claude mcp add --transport http rootmind http://127.0.0.1:<port>/mcp \
@@ -196,13 +178,23 @@ claude mcp add --transport http rootmind http://127.0.0.1:<port>/mcp \
 ```
 
 Der Port ist 3000, wenn er frei ist, sonst einer aus 18400–18499. Das Token
-bleibt über Updates hinweg erhalten, und der HTTP-Server übernimmt geänderte
+bleibt über Updates hinweg erhalten, und der Server übernimmt geänderte
 Ordner ohne Neustart.
+
+Claude Desktop startet aus `claude_desktop_config.json` nur lokale
+(stdio-)MCP-Server. Um den HTTP-Endpunkt von dort zu erreichen, braucht es
+eine Brücke von stdio zu HTTP, die RootMind nicht mitbringt. Das Programm im
+Ordner der App (`rootmind-backend.exe mcp`) kann für die installierte App
+nicht als stdio-Server dienen: Es kann den Index des Dienstes nicht öffnen.
+Der stdio-Server ist für eine Installation aus dem Quellcode oder mit uv und
+eigener `config.yaml` gedacht (siehe
+[3. Die Tools aus einem MCP-Client nutzen](#3-die-tools-aus-einem-mcp-client-nutzen)).
 
 ### MCP von n8n aus erreichen
 
-Nutze in n8n den Knoten **MCP Client Tool** mit den Werten, die Einstellungen →
-Hintergrunddienst anzeigt und kopiert:
+Nutze in n8n den Knoten **MCP Client Tool** mit den Werten, die
+Einstellungen → RootMind-Dienst anzeigt; **Kopieren** unter **n8n (MCP Client
+Tool)** kopiert sie mitsamt Token:
 
 | Feld | Wert |
 |---|---|
@@ -287,10 +279,10 @@ flowchart LR
    (`POST /query`), Chat-Titel und die Modell-Liste in den Einstellungen rufen
    den Anbieter auf.
 
-Die Desktop-App betreibt das Backend auf eine von drei Arten: das
-**eingebaute** Backend (ein Kindprozess der App, der Standard), der
-**Hintergrunddienst** oder ein **eigenes** Backend unter einer Adresse, die du
-unter Einstellungen → **Erweitert** einträgst.
+Die Desktop-App spricht mit dem **RootMind-Dienst** auf demselben Computer
+oder mit einem **eigenen** Backend unter einer Adresse, die du unter
+Einstellungen → **Erweitert** einträgst. Entwicklungs-Builds nutzen den Dienst
+nicht und fragen nach einer Backend-Adresse.
 [ARCHITECTURE.md](ARCHITECTURE.md#deployment-modes) (englisch) beschreibt die
 Details.
 
@@ -325,7 +317,7 @@ c09 (die Synonym-Falle) hält diese Schwäche sichtbar.
 es bei Bedarf):
 
 ```bash
-uv tool install "git+https://github.com/cgaeking/rootmind@v1.2.0#subdirectory=backend"
+uv tool install "git+https://github.com/cgaeking/rootmind@v2.0.0#subdirectory=backend"
 rootmind --help        # api, index, rebuild-trigrams, mcp, mcp-http, service
 ```
 
@@ -350,35 +342,43 @@ $line = Select-String -Path SHA256SUMS.txt -SimpleMatch "rootmind-backend-window
 $expected = ($line.Line -split '\s+')[0]
 $actual = (Get-FileHash rootmind-backend-windows-x64.zip -Algorithm SHA256).Hash.ToLower()
 if ($actual -ne $expected) { throw "Checksum mismatch: $actual" }
-Expand-Archive rootmind-backend-windows-x64.zip -DestinationPath .
 ```
 
-Dann, aus einer PowerShell als Administrator des Kontos, dessen Ordner
-RootMind indizieren soll (es muss ein lokaler Administrator sein), in dem
-Ordner, in den du entpackt hast:
+Entpacke es dann, aus einer PowerShell als Administrator des Kontos, dessen
+Ordner RootMind indizieren soll (es muss ein lokaler Administrator sein), in
+einen Ordner, den nur Administratoren ändern können, und installiere den
+Dienst von dort. `service install` lehnt ein Programm in einem Ordner, den
+andere Konten ändern können, etwa einem Download-Ordner, mit Exit-Code 10 ab:
 
 ```powershell
-Set-Location <download folder>   # der Ordner, der rootmind-backend enthält
+$dir = Join-Path $env:ProgramFiles "RootMind Backend"
+Expand-Archive rootmind-backend-windows-x64.zip -DestinationPath $dir -Force
+$exe = Join-Path $dir "rootmind-backend\rootmind-backend.exe"
 # installieren oder einen installierten Dienst aktualisieren
-.\rootmind-backend\rootmind-backend.exe service install --import-config C:\path\to\config.yaml
+& $exe service install
 # Zustand, Port, Version und Token-Dateien (funktioniert ohne Administratorrechte)
-.\rootmind-backend\rootmind-backend.exe service status
+& $exe service status
 # den Dienst entfernen; --purge löscht auch seine Daten
-.\rootmind-backend\rootmind-backend.exe service uninstall
+& $exe service uninstall
 ```
 
 `service install` kopiert das Programm nach
 `%ProgramFiles%\RootMind Service\<version>-<id>\`, der entpackte Ordner wird
-danach also nicht mehr gebraucht. Der Dienst nutzt Port 8000 und mit
-`--mcp-http` Port 3000 für MCP; `--port auto` und `--mcp-port auto` weichen
-auf 18300–18399 und 18400–18499 aus, wenn diese belegt sind.
-`--import-config` übernimmt die Ordner und Einstellungen aus einer
-`config.yaml` wie
-[`backend/config.example.yaml`](backend/config.example.yaml). Ein erneutes
-`service install` aktualisiert den Dienst und behält seine Ports, Tokens und
-Daten; `service install --help` listet alle Optionen. Das REST-Token liegt in
-`%ProgramData%\RootMind\data\rest_token.txt` und das MCP-Token in
-`%ProgramData%\RootMind\data\api_token.txt`.
+danach also nicht mehr gebraucht. Der Dienst nutzt Port 8000 und für MCP über
+HTTP Port 3000; `--port auto` und `--mcp-port auto` weichen auf 18300–18399
+und 18400–18499 aus, wenn diese belegt sind. MCP über HTTP ist bei einer
+Neuinstallation eingeschaltet; `--no-mcp-http` lässt es weg. Ein erneutes
+`service install` aktualisiert den Dienst und behält seine Ports, die
+MCP-Einstellung, Tokens und Daten; `service install --help` listet alle
+Optionen. Das REST-Token liegt in `%ProgramData%\RootMind\data\rest_token.txt`
+und das MCP-Token in `%ProgramData%\RootMind\data\api_token.txt`.
+
+Ein neu installierter Dienst startet ohne Ordner. Trage sie unter
+`connectors` in `%ProgramData%\RootMind\config.yaml` ein (wie in
+[`backend/config.example.yaml`](backend/config.example.yaml); die Datei lässt
+sich nur in einer Eingabeaufforderung als Administrator ändern) und starte den
+Dienst mit `Restart-Service RootMind-Backend` neu, oder schicke sie mit
+`POST /config` und dem REST-Token an die REST-API des Dienstes.
 
 Das Zip läuft auch ohne Dienst, zum Beispiel
 `rootmind-backend.exe api --require-token` oder
@@ -513,7 +513,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-Ein Entwicklungs-Build hat kein mitgeliefertes Backend, daher fragt die App
+Ein Entwicklungs-Build nutzt den RootMind-Dienst nicht, daher fragt die App
 nach einer Backend-Adresse: Bestätige `http://127.0.0.1:8000`. Mehr dazu in
 [desktop/README.md](desktop/README.md) (englisch).
 
@@ -565,8 +565,8 @@ backend/
   deploy/windows/          run-backend.bat: die REST-API aus dem Quellcode in einem Konsolenfenster
 desktop/
   src/                     React- und TypeScript-Oberfläche
-  src-tauri/               Rust-Shell: eingebautes Backend, Dienst-Befehle, Chat-Verlauf;
-                           installer/ mit NSIS-Vorlage und Hooks
+  src-tauri/               Rust-Shell: Verbindung zum Dienst, Dienst-Befehle, Chat-Verlauf;
+                           installer/ mit NSIS-Vorlage und den Dienst-Hooks
   scripts/                 Smoke-Test des Installers
 packaging/winget/          Vorlagen für winget-Manifeste
 scripts/                   Versionsprüfung, Release Notes, Backend-Vorbereitung, winget-Rendering,
@@ -630,7 +630,7 @@ Secrets. Nur der Release-Job darf in das Repository schreiben:
 | [`backend.yml`](.github/workflows/backend.yml) | ruff check und Format-Prüfung; die Versionsprüfung über Backend und Desktop; die Tests der Release-Skripte unter Ubuntu und Windows; pytest mit Coverage unter Ubuntu (Python 3.12 und 3.14) und Windows (Python 3.12); den Such-Regressionstest im Dry-Modus |
 | [`backend-exe.yml`](.github/workflows/backend-exe.yml) | Den PyInstaller-onedir-Build unter Windows, einen Smoke-Test der Programmdatei (REST, MCP über HTTP und stdio, Indizierung jedes Dateityps) und ihren Tree-Hash; danach einen End-to-End-Test des Windows-Dienstes auf dem Runner mit Administratorrechten: Installation, Berechtigungen, Tokens, Lese-Beschränkung, Update und Deinstallation. Bei Pull Requests läuft der Dienst-Test nur, wenn sich dienstbezogener Code geändert hat |
 | [`desktop.yml`](.github/workflows/desktop.yml) | ESLint, TypeScript-Typprüfung, vitest, Vite-Build, `cargo fmt`, `cargo clippy`, `cargo check`, `cargo test` unter Windows |
-| [`release.yml`](.github/workflows/release.yml) | Für einen Versions-Tag `v*`: das Backend über `backend-exe.yml`; den Installer mit diesem Backend, eine Prüfung, dass er eine installierte Version ohne Neuinstallations-Seite an Ort und Stelle aktualisiert, und einen Smoke-Test für Installation, Update und Deinstallation; die winget-Manifeste, gegen ihre Schemas geprüft; dann ein GitHub-Release mit Installer, Backend-Zip, `SHA256SUMS.txt` und Attestierungen. Manuelle Läufe und Pull Requests, die das Packaging ändern, sind Probeläufe, die nichts veröffentlichen |
+| [`release.yml`](.github/workflows/release.yml) | Für einen Versions-Tag `v*`: das Backend über `backend-exe.yml`; den Installer für alle Benutzer mit diesem Backend, eine Prüfung, dass er eine installierte Version ohne Neuinstallations-Seite an Ort und Stelle aktualisiert, und einen Smoke-Test auf dem Runner mit Administratorrechten, der RootMind mit seinen Windows-Diensten installiert, aktualisiert, neu installiert und deinstalliert; die winget-Manifeste, gegen ihre Schemas geprüft; dann ein GitHub-Release mit Installer, Backend-Zip, `SHA256SUMS.txt` und Attestierungen. Manuelle Läufe und Pull Requests, die das Packaging ändern, sind Probeläufe, die nichts veröffentlichen |
 | [`secrets.yml`](.github/workflows/secrets.yml) | detect-secrets über alle versionierten Dateien, gegen die geprüfte Baseline `.secrets.baseline` |
 
 Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) schlägt
@@ -642,14 +642,14 @@ monatlich Abhängigkeits-Updates für alle vier Ökosysteme vor.
   bindet an 127.0.0.1, lehnt Verbindungen von anderen Rechnern ab, weist
   fremde `Host`-Header zurück und erlaubt Cross-Origin-Anfragen nur von der
   Desktop-App.
-- Das eingebaute Backend der App und der Hintergrunddienst verlangen auf der
-  REST-API ein Bearer-Token. `rootmind api` aus dem Quellcode läuft ohne
-  Token, solange du keines verlangst; ohne Token kann jeder lokale Prozess sie
-  aufrufen.
-- Der Hintergrunddienst läuft als LocalSystem, liest aber nur, was das
-  installierende Konto ohne Administratorrechte lesen kann. Er wird nur
-  Administratorkonten angeboten.
-- Der MCP-HTTP-Server verlangt ein Bearer-Token und bindet an 127.0.0.1.
+- Der RootMind-Dienst verlangt auf seiner REST-API ein Bearer-Token.
+  `rootmind api` aus dem Quellcode läuft ohne Token, solange du keines
+  verlangst; ohne Token kann jeder lokale Prozess sie aufrufen.
+- Der Dienst läuft als LocalSystem, liest aber nur, was das installierende
+  Konto ohne Administratorrechte lesen kann. Installieren und Reparieren
+  brauchen eine Bestätigung als Administrator.
+- Der MCP-HTTP-Server ist standardmäßig eingeschaltet; er verlangt ein
+  Bearer-Token und bindet an 127.0.0.1.
 - Die Indizierung bleibt auf deinem Rechner. Beim Beantworten einer Frage
   gehen die Frage, Such-Snippets und Dokumentauszüge an den konfigurierten
   LLM-Anbieter.
@@ -662,7 +662,7 @@ Das vollständige Bedrohungsmodell steht in [SECURITY.md](SECURITY.md)
 
 ## Einschränkungen
 
-- Die Desktop-App, ihren Installer und den Hintergrunddienst gibt es nur für
+- Die Desktop-App, ihren Installer und den RootMind-Dienst gibt es nur für
   Windows. Das Backend ist plattformunabhängiges Python; die CI führt seine
   Tests unter Ubuntu und Windows aus.
 - Die Release-Binärdateien sind noch nicht codesigniert (siehe
@@ -676,10 +676,9 @@ Das vollständige Bedrohungsmodell steht in [SECURITY.md](SECURITY.md)
 - Kein Streaming: Die Desktop-App wartet auf die vollständige Antwort.
 - Die Volltextsuche kennt keine Synonyme und keinen sprachübergreifenden
   Abgleich (siehe die Tabelle der Abwägungen oben).
-- Das eingebaute Backend und der Hintergrunddienst haben jeweils einen eigenen
-  Index. Der Dienst baut seinen Index von Grund auf neu, und Quellen in
-  älteren Chats öffnen sich eventuell erst, wenn er aufgeholt hat.
-- Der Hintergrunddienst kann keine Netzlaufwerke oder Freigaben indizieren.
+- Die Installation braucht ein Administratorkonto, und der Dienst bedient ein
+  Konto pro Computer: das, das RootMind installiert hat.
+- Der RootMind-Dienst kann keine Netzlaufwerke oder Freigaben indizieren.
 - Pro Datenbank sollte nur ein Prozess indizieren. Die MCP-Server stellen
   standardmäßig nur bereit; setze `RLM_DISABLE_SCHEDULER=1` bei jeder
   weiteren REST-API, die dieselbe Datenbank nutzt.

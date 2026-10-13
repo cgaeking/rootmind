@@ -1,25 +1,12 @@
-// Typed wrappers for the app's own Tauri commands that manage the backend
-// (src-tauri/src/backend.rs and service.rs). Field names are camelCase over
-// IPC. Unexpected failures reject with a user-facing string.
+// Typed wrappers for the app's own Tauri commands that reach the RootMind
+// service (src-tauri/src/service.rs). The installer always sets the service
+// up; the app is a client of it. Field names are camelCase over IPC.
+// Unexpected failures reject with a user-facing string.
 
 /** A backend the UI can talk to. */
 export interface BackendInfo {
   url: string;
   token: string;
-}
-
-export type SidecarState = "stopped" | "starting" | "running" | "restarting" | "failed";
-export type SidecarError = "missing" | "blocked" | "access_denied" | "exited" | "timeout";
-
-export interface SidecarStatus {
-  state: SidecarState;
-  /** Set only while `state === "running"`. */
-  url: string | null;
-  /** Set only while `state === "running"`. */
-  token: string | null;
-  exitCode: number | null;
-  error: SidecarError | null;
-  logTail: string[];
 }
 
 export type SvcState = "stopped" | "start_pending" | "stop_pending" | "running" | "other";
@@ -64,9 +51,10 @@ export type ServiceResult =
   | { ok: false; cancelled: boolean; code: number; backend: BackendInfo | null };
 
 export interface AppMode {
+  /** The app's version. */
   version: string;
+  /** A debug build. */
   dev: boolean;
-  builtinAvailable: boolean;
 }
 
 /** True inside the Tauri app; false in the plain browser preview (`pnpm dev`). */
@@ -81,16 +69,8 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 
 export const appMode = () => call<AppMode>("app_mode");
 
-export const sidecarStart = () => call<BackendInfo>("sidecar_start");
-export const sidecarStatus = () => call<SidecarStatus>("sidecar_status");
-export const sidecarRestart = () => call<BackendInfo>("sidecar_restart");
-export const backendLogDir = () => call<string>("backend_log_dir");
-
 export const serviceInfo = () => call<ServiceInfo>("service_info");
 export const serviceConnect = () => call<ServiceConnect>("service_connect");
-export const serviceEnable = (mcp: boolean) => call<ServiceResult>("service_enable", { mcp });
-export const serviceDisable = (purge: boolean) =>
-  call<ServiceResult>("service_disable", { purge });
 export const serviceSetMcp = (enabled: boolean) =>
   call<ServiceResult>("service_set_mcp", { enabled });
 export const serviceUpdate = () => call<ServiceResult>("service_update");

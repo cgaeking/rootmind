@@ -12,6 +12,27 @@
   margin: 0;
 }
 
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.facts dt {
+  color: var(--text-muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.problemTitle {
+  font-weight: 600;
+}
+
 .pre {
   margin: 0;
   max-height: 240px;

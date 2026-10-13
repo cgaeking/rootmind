@@ -85,7 +85,7 @@ def test_installer_size(tmp_path, capsys):
         capsys, "v1.2.0", "--changelog", str(CHANGELOG), "--installer", str(installer)
     )
     assert code == 0
-    assert "built-in backend (31.4 MB)" in out
+    assert "with its background service (31.4 MB)" in out
 
 
 def test_malformed_tag_and_missing_files(tmp_path, capsys):

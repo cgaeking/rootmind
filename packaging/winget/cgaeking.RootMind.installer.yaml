@@ -4,7 +4,8 @@ PackageIdentifier: cgaeking.RootMind
 PackageVersion: ${VERSION}
 InstallerLocale: en-US
 InstallerType: nullsoft
-Scope: user
+Scope: machine
+ElevationRequirement: elevatesSelf
 InstallModes:
 - interactive
 - silent
@@ -17,7 +18,7 @@ AppsAndFeaturesEntries:
   Publisher: ${PUBLISHER}
   ProductCode: RootMind
 InstallationMetadata:
-  DefaultInstallLocation: '%LocalAppData%\RootMind'
+  DefaultInstallLocation: '%ProgramFiles%\RootMind'
 Installers:
 - Architecture: x64
   InstallerUrl: https://github.com/cgaeking/rootmind/releases/download/v${VERSION}/RootMind-Setup-x64.exe

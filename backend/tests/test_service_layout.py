@@ -431,6 +431,58 @@ def test_check_admin_only(tmp_path, me):
     assert problems == ["rootmind-backend.exe: S-1-5-11 may change it"]
 
 
+@windows
+def test_program_source_problems(tmp_path, me):
+    folder = tmp_path / "RootMind" / "backend"
+    (folder / "_internal").mkdir(parents=True)
+    (folder / "rootmind-backend.exe").write_bytes(b"MZ")
+    (folder / "_internal" / "python3.dll").write_bytes(b"MZ")
+    set_dacl(
+        folder,
+        "D:"
+        + full_control("SY")
+        + full_control("BA")
+        + full_control(me)
+        + "(A;OICI;0x1200a9;;;BU)",
+        protected=True,
+    )
+    parent = folder.parent
+    set_dacl(parent, "D:" + full_control(me), protected=True)
+    allowed = layout.ADMIN_SIDS | {me}
+
+    def problems(**kwargs):
+        # Only what lies in tmp_path: the folders above it are the test
+        # account's profile. Problems inside the program folder are relative.
+        found = layout.program_source_problems(folder, **kwargs)
+        return [p for p in found if p[1:3] != ":\\" or p.startswith(str(tmp_path) + "\\")]
+
+    assert problems(owners=allowed, writers=allowed) == []
+    # The account is not an administrator SID: its own folder is refused.
+    assert problems()
+
+    # A file inside that Authenticated Users may change.
+    set_dacl(folder / "_internal" / "python3.dll", "D:(A;;0x116;;;AU)", protected=False)
+    assert problems(owners=allowed, writers=allowed) == [
+        "_internal/python3.dll: S-1-5-11 may change it"
+    ]
+    set_dacl(folder / "_internal" / "python3.dll", "D:", protected=False)
+
+    # A folder above it in which Users may delete (and so replace) the program folder.
+    set_dacl(parent, "D:" + full_control(me) + "(A;;0x40;;;BU)", protected=True)
+    assert problems(owners=allowed, writers=allowed) == [
+        f"{parent}: S-1-5-32-545 may move or replace what it holds"
+    ]
+    # Inherit-only entries grant nothing on the folder itself.
+    set_dacl(parent, "D:" + full_control(me) + "(A;OICIIO;0x40;;;BU)", protected=True)
+    assert problems(owners=allowed, writers=allowed) == []
+
+
+@windows
+def test_program_source_problems_for_a_missing_folder(tmp_path):
+    problems = layout.program_source_problems(tmp_path / "missing")
+    assert len(problems) == 1 and "cannot be checked" in problems[0]
+
+
 # --- program folder (every platform, with the Windows calls replaced) ----------------------------
 
 

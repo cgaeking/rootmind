@@ -57,24 +57,22 @@ def test_template_has_no_reinstall_page():
     text = template_text()
     for marker in nsis_template.FORBIDDEN:
         assert marker not in text
-    # Nothing else reads the installed version's uninstaller to run it: the
-    # install writes the value, and the folder page only checks for it.
+    # Nothing reads the installed version's uninstaller to run it; the
+    # install only writes the value.
     uses = [line.strip() for line in lines() if "UninstallString" in line]
     assert uses == [
         'WriteRegStr SHCTX "${UNINSTKEY}" "UninstallString" "$\\"$INSTDIR\\uninstall.exe$\\""',
-        'ReadRegStr $0 SHCTX "${UNINSTKEY}" "UninstallString"',
     ]
     assert "_?=" not in text
 
 
-def test_an_update_skips_the_folder_page():
-    found = lines()
-    directory = found.index("!insertmacro MUI_PAGE_DIRECTORY")
-    assert found[directory - 1] == "!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrInstalled"
-    start = found.index("Function SkipIfPassiveOrInstalled")
-    body = found[start : found.index("FunctionEnd", start)]
-    assert "  ${IfThen} $PassiveMode = 1 ${|} Abort ${|}" in body
-    assert '  ReadRegStr $0 SHCTX "${UNINSTKEY}" "UninstallString"' in body
+def test_there_is_no_folder_page():
+    text = template_text()
+    assert "MUI_PAGE_DIRECTORY" not in text
+    assert "SkipIfPassiveOrInstalled" not in text
+    assert "; 5. RootMind: no install directory page." in text
+    # The default folder of a per-machine install, which the hooks require.
+    assert 'StrCpy $INSTDIR "$PROGRAMFILES64\\${PRODUCTNAME}"' in text
 
 
 def test_template_keeps_the_hooks():
@@ -93,14 +91,58 @@ def test_tauri_conf_uses_the_template_and_the_hooks():
     assert nsis.get("allowDowngrades", True) is True
 
 
+def _macro(text: str, name: str) -> str:
+    return text.split(f"!macro {name}\r\n", 1)[1].split("!macroend", 1)[0]
+
+
 def test_hooks_replace_the_backend_and_keep_the_service_on_update():
     text = HOOKS.read_bytes().decode("ascii")
-    preinstall = text.split("!macro NSIS_HOOK_PREINSTALL", 1)[1].split("!macroend", 1)[0]
+    preinstall = _macro(text, "NSIS_HOOK_PREINSTALL")
     assert "!insertmacro ROOTMIND_REMOVE_BACKEND" in preinstall
     assert 'RMDir /r "$INSTDIR\\backend"' in text
-    preuninstall = text.split("!macro NSIS_HOOK_PREUNINSTALL", 1)[1].split("!macroend", 1)[0]
+    preuninstall = _macro(text, "NSIS_HOOK_PREUNINSTALL")
     assert "${If} $UpdateMode <> 1" in preuninstall
     assert "$EXEDIR" not in preuninstall
+
+
+def test_conf_installs_per_machine():
+    conf = json.loads((TAURI_DIR / "tauri.conf.json").read_text(encoding="utf-8"))
+    assert conf["bundle"]["windows"]["nsis"]["installMode"] == "perMachine"
+
+
+def test_hooks_check_the_account_before_anything_changes():
+    text = HOOKS.read_bytes().decode("ascii")
+    preinstall = _macro(text, "NSIS_HOOK_PREINSTALL").strip().splitlines()
+    assert preinstall[0].strip() == "!insertmacro ROOTMIND_REQUIRE_SIGNED_IN_ACCOUNT"
+    check = _macro(text, "ROOTMIND_REQUIRE_SIGNED_IN_ACCOUNT")
+    assert "SetErrorLevel 8" in check and "Abort" in check
+    # Then the install folder: only Program Files (the service runs as SYSTEM from it).
+    assert preinstall[1].strip() == "!insertmacro ROOTMIND_REQUIRE_PROGRAM_FILES"
+    folder = _macro(text, "ROOTMIND_REQUIRE_PROGRAM_FILES")
+    assert '${If} $0 != "$PROGRAMFILES64\\${PRODUCTNAME}"' in folder
+    assert "SetErrorLevel 10" in folder and "Abort" in folder
+
+
+def test_hooks_install_and_remove_the_service():
+    text = HOOKS.read_bytes().decode("ascii")
+    assert "!insertmacro ROOTMIND_INSTALL_SERVICE" in _macro(text, "NSIS_HOOK_POSTINSTALL")
+    install = _macro(text, "ROOTMIND_INSTALL_SERVICE")
+    assert (
+        "StrCpy $R0 '\"$INSTDIR\\backend\\rootmind-backend.exe\" service install "
+        "--port auto --mcp-port auto'"
+    ) in install
+    # MCP over HTTP is the backend's default for a new install and sticky for updates.
+    assert "--mcp-http" not in install and "--no-mcp-http" not in install
+    assert 'StrCpy $R0 "$R0 --user-sid $R7"' in install
+    assert "nsExec::ExecToLog $R0" in install and "SetErrorLevel" in install
+    assert "!insertmacro ROOTMIND_REMOVE_SERVICE" in _macro(text, "NSIS_HOOK_PREUNINSTALL")
+    remove = _macro(text, "ROOTMIND_REMOVE_SERVICE")
+    assert 'StrCpy $R1 "service uninstall --purge"' in remove
+    assert "$DeleteAppDataCheckboxState = 1" in remove
+    # The per-user 1.x uninstaller never runs elevated.
+    v1 = _macro(text, "ROOTMIND_REMOVE_V1")
+    assert 'nsis_tauri_utils::RunAsUser "$R1" "/S"' in v1
+    assert "Exec" not in v1
 
 
 # --- the patch ----------------------------------------------------------------------------------
@@ -155,12 +197,8 @@ def test_render_applies_the_changes():
     for marker in nsis_template.FORBIDDEN:
         assert marker not in text
     assert "ExecWait" not in text
-    assert (
-        "; RootMind: not shown when the app is installed (see SkipIfPassiveOrInstalled).\n"
-        "!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrInstalled\n"
-        "!insertmacro MUI_PAGE_DIRECTORY\n"
-    ) in text
-    assert nsis_template.SKIP_IF_PASSIVE_OR_INSTALLED + "Function SkipIfPassive\n" in text
+    assert "MUI_PAGE_DIRECTORY" not in text
+    assert nsis_template.NO_DIRECTORY_PAGE + "\nSection Install\n" in text
     # Everything else is kept as it is.
     assert text.endswith(
         "Function un.SkipIfPassive\n  ${IfThen} $PassiveMode = 1  ${|} Abort ${|}\nFunctionEnd\n"
@@ -180,7 +218,6 @@ def test_render_accepts_crlf_input():
         # an anchor is gone
         ("; 4. Custom page to ask user if he wants to reinstall/uninstall\n", ""),
         ("; 5. Choose install directory page\n", ""),
-        ("Function SkipIfPassive\n", "Function SkipIfPassiveMode\n"),
         # an anchor is no longer unique
         ("Section Install\n", "; 5. Choose install directory page\nSection Install\n"),
         # the page or the directory page changed shape
@@ -343,10 +380,10 @@ def test_write_then_check(repo, capsys):
     (repo / nsis_template.TEMPLATE).write_bytes(written.replace(b"\r\n", b"\n"))
     assert nsis_template.main(["--check"], root=repo, get=get) == 0
     (repo / nsis_template.TEMPLATE).write_bytes(
-        written.replace(b"SkipIfPassiveOrInstalled", b"SkipIfPassive")
+        written.replace(b"; 5. RootMind: no install directory page.", b"; 5. Choose a folder.")
     )
     assert nsis_template.main(["--check"], root=repo, get=get) == 1
-    assert "-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive" in capsys.readouterr().err
+    assert "-; 5. Choose a folder." in capsys.readouterr().err
 
 
 def test_errors_exit_2(repo, capsys):

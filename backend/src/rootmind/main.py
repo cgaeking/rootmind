@@ -3,7 +3,7 @@
 ::
 
     rootmind [--config C] [--debug] [--version]
-      api [--host H] [--port P] [--require-token] [--exit-with-parent] [--import-config FILE]
+      api [--host H] [--port P] [--require-token]
       index [--full] [--connector N]
       rebuild-trigrams
       mcp ...          MCP over stdio (rootmind.mcp_stdio)
@@ -11,7 +11,9 @@
       service ...      Windows background service (rootmind.service.cli)
 
 Without a command it runs ``api``. The packaged executable
-(``rootmind-backend.exe``) runs the same entry point.
+(``rootmind-backend.exe``) runs the same entry point. The desktop app does not
+start ``api``: it talks to the Windows service (``service run backend``, see
+:mod:`rootmind.service.host`). ``api`` is for development and other setups.
 
 ``mcp``, ``mcp-http`` and ``service`` are handed to their own entry points
 before logging or the config is set up, with the rest of the command line
@@ -21,12 +23,10 @@ unchanged. A ``--config`` given before them is passed on to ``mcp`` and
 
 import argparse
 import importlib
-import json
 import logging
 import os
 import socket
 import sys
-import threading
 from typing import Any
 
 from . import __version__
@@ -35,17 +35,6 @@ from .config import AppConfig, get_config, init_config
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 DEFAULT_CONFIG_FILE = "config.yaml"
-
-# Database path written by --import-config (the default of DatabaseConfig).
-API_DATABASE_PATH = "./data/index.db"
-
-# Printed once on stdout when the API accepts connections, followed by one
-# space and compact JSON, e.g. ROOTMIND_LISTENING {"port":53123}.
-READY_PREFIX = "ROOTMIND_LISTENING"
-
-# With --exit-with-parent, how long the shutdown waits for open requests. The
-# desktop app ends the process after 5 seconds.
-EXIT_WITH_PARENT_GRACE_SECONDS = 3
 
 # Commands handed to their own entry points (see the module docstring).
 FORWARDED_COMMANDS = ("mcp", "mcp-http", "service")
@@ -182,116 +171,19 @@ def bind_socket(host: str, port: int) -> socket.socket:
     return sock
 
 
-def ready_line(port: int) -> str:
-    """The line announcing that the API accepts connections on ``port``."""
-    return f"{READY_PREFIX} {json.dumps({'port': port}, separators=(',', ':'))}"
-
-
-def _announce_ready(port: int) -> None:
-    stream = sys.stdout
-    if stream is None:
-        return
-    # One write, so a log line from another thread cannot split the line.
-    stream.write(ready_line(port) + "\n")
-    stream.flush()
-
-
-def _make_server(config: Any) -> Any:
-    """A uvicorn server that prints the ready line once startup has completed."""
-    import uvicorn
-
-    class ReadyServer(uvicorn.Server):
-        announced = False
-
-        async def startup(self, sockets=None) -> None:
-            await super().startup(sockets=sockets)
-            if self.started and sockets and not self.announced:
-                self.announced = True
-                host, port = sockets[0].getsockname()[:2]
-                shown = f"[{host}]" if ":" in host else host
-                logger.info("RootMind API listening on http://%s:%d", shown, port)
-                _announce_ready(port)
-
-    return ReadyServer(config)
-
-
-def watch_parent(server: Any) -> threading.Thread | None:
-    """Stop ``server`` when stdin reaches EOF or receives a line ``shutdown``.
-
-    The desktop app holds the other end of the pipe. When the app exits, or
-    crashes, the pipe closes and the backend shuts down cleanly.
-    """
-    stream = sys.stdin
-    if stream is None:
-        logger.warning("--exit-with-parent: there is no stdin to watch")
-        return None
-    reader = getattr(stream, "buffer", stream)
-
-    def run() -> None:
-        reason = "the parent process closed stdin"
-        try:
-            while True:
-                line = reader.readline()
-                if not line:
-                    break
-                if line.strip() in (b"shutdown", "shutdown"):
-                    reason = "the parent process asked for a shutdown"
-                    break
-        except (OSError, ValueError) as e:
-            reason = f"stdin failed ({e})"
-        logger.info("Shutting down: %s", reason)
-        server.should_exit = True
-
-    thread = threading.Thread(target=run, name="rootmind-parent-watch", daemon=True)
-    thread.start()
-    return thread
-
-
-def serve(app: Any, sock: socket.socket, *, exit_with_parent: bool = False) -> None:
-    """Serve ``app`` on the bound socket until stopped; prints the ready line."""
+def serve(app: Any, sock: socket.socket) -> None:
+    """Serve ``app`` on the bound socket until stopped."""
     import uvicorn
 
     host, port = sock.getsockname()[:2]
-    config = uvicorn.Config(
-        app,
-        host=host,
-        port=port,
-        timeout_graceful_shutdown=EXIT_WITH_PARENT_GRACE_SECONDS if exit_with_parent else None,
-    )
-    server = _make_server(config)
-    if exit_with_parent:
-        watch_parent(server)
+    shown = f"[{host}]" if ":" in host else host
+    # The socket is bound already, so this is the real port (also for --port 0).
+    logger.info("RootMind API listening on http://%s:%d", shown, port)
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port))
     try:
         server.run(sockets=[sock])
     finally:
         sock.close()
-
-
-def _import_config(source: str) -> AppConfig:
-    """Run ``--import-config``: replace ``<home>/config.yaml`` with ``source``.
-
-    A file that cannot be imported is logged, and the current config is kept,
-    so the API still starts.
-    """
-    from .config import active_config_path, app_home, config_file_path, import_config
-
-    home = app_home()
-    target = home / DEFAULT_CONFIG_FILE
-    if os.path.normcase(os.path.abspath(config_file_path())) != os.path.normcase(
-        os.path.abspath(target)
-    ):
-        raise UsageError(
-            f"--import-config writes {target}; it cannot be combined with another --config file"
-        )
-    try:
-        import_config(source, home, database_path=API_DATABASE_PATH)
-    except (OSError, ValueError) as e:
-        logger.error(
-            "Could not import the config from %s; keeping the current config: %s", source, e
-        )
-        return get_config()
-    logger.info("Imported the config from %s into %s", source, target)
-    return init_config(active_config_path())
 
 
 def run_api(
@@ -300,17 +192,13 @@ def run_api(
     host: str | None = None,
     port: int | None = None,
     require_token: bool = False,
-    exit_with_parent: bool = False,
-    import_config_from: str | None = None,
 ) -> None:
     """Run the REST API server.
 
     1. Resolve the token (``RLM_API_TOKEN``, or ``--require-token``) and
        remove ``RLM_API_TOKEN`` from the environment.
-    2. With ``--import-config``, import that config first.
-    3. Resolve the bind address (:func:`resolve_bind`), bind the socket,
-       and serve. Once the API accepts connections, the ready line
-       ``ROOTMIND_LISTENING {"port":N}`` is printed on stdout.
+    2. Resolve the bind address (:func:`resolve_bind`), bind the socket,
+       and serve.
 
     Raises:
         UsageError: invalid token or port settings.
@@ -318,8 +206,6 @@ def run_api(
     from .api.app import create_app
 
     token = resolve_api_token(require_token)
-    if import_config_from is not None:
-        config = _import_config(import_config_from)
     host, port = resolve_bind(host, port, config)
 
     if host not in _LOOPBACK_HOSTS:
@@ -335,7 +221,7 @@ def run_api(
     except OSError as e:
         logger.error("Cannot listen on %s:%d: %s", host, port, e)
         sys.exit(1)
-    serve(app, sock, exit_with_parent=exit_with_parent)
+    serve(app, sock)
 
 
 # --- command line ------------------------------------------------------------------
@@ -363,9 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug", "-d", action="store_true", help="Enable debug logging")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     # Used when no command is given (the API with default options).
-    parser.set_defaults(
-        host=None, port=None, require_token=False, exit_with_parent=False, import_config=None
-    )
+    parser.set_defaults(host=None, port=None, require_token=False)
 
     subparsers = parser.add_subparsers(
         dest="command", metavar="COMMAND", help="Command to run (default: api)"
@@ -382,8 +266,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=_port_argument,
         default=None,
         help=(
-            "Port to bind to; 0 picks a free port (default: RLM_PORT, then api.port in the "
-            "config, then 8000)"
+            "Port to bind to; 0 picks a free port, which the log names (default: RLM_PORT, "
+            "then api.port in the config, then 8000)"
         ),
     )
     api_parser.add_argument(
@@ -392,20 +276,6 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Require a bearer token on every request except / and /health: RLM_API_TOKEN, "
             "or <RLM_HOME>/data/rest_token.txt (created if missing)"
-        ),
-    )
-    api_parser.add_argument(
-        "--exit-with-parent",
-        action="store_true",
-        help="Shut down when stdin closes or receives the line 'shutdown'",
-    )
-    api_parser.add_argument(
-        "--import-config",
-        metavar="FILE",
-        default=None,
-        help=(
-            f"Replace config.yaml with FILE before starting, with database.path set to "
-            f"{API_DATABASE_PATH}. If FILE cannot be imported, the current config is kept."
         ),
     )
 
@@ -516,8 +386,6 @@ def main(argv: list[str] | None = None):
                 host=args.host,
                 port=args.port,
                 require_token=args.require_token,
-                exit_with_parent=args.exit_with_parent,
-                import_config_from=args.import_config,
             )
     except UsageError as e:
         logger.error("%s", e)

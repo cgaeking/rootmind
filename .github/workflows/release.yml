@@ -6,8 +6,10 @@ name: release
 #   meta       versions agree (and match the tag); the tag has release notes;
 #              the NSIS template is the one for the locked Tauri CLI
 #   backend    backend-exe.yml: onedir build, smoke test, service end-to-end test
-#   installer  the NSIS installer with exactly that backend, a check that it
-#              updates an installed version in place, installer smoke test
+#   installer  the per-machine NSIS installer with exactly that backend, a
+#              check that it updates an installed version in place, and the
+#              installer smoke test (install with the Windows services,
+#              update, reinstall, uninstall) on the elevated runner
 #   winget     the winget manifests, rendered and validated against the schemas
 #   publish    tags only: backend zip, checksums, attestations, GitHub Release
 #
@@ -193,28 +195,31 @@ jobs:
 
       # The script Tauri rendered from installer/installer.nsi. An installed
       # version must be updated in place without questions: no reinstall page
-      # ("already installed, uninstall it first?"), and the folder page is
-      # skipped when the app is installed. /S never shows pages, so the smoke
-      # test below cannot see a page; this check can.
+      # ("already installed, uninstall it first?"). There is no folder page:
+      # the installer is per machine, always installs into Program Files and
+      # sets up the Windows service from there (the hooks refuse another
+      # folder). /S never shows pages, so the smoke test below cannot see a
+      # page; this check can.
       - name: Check the installer script
         run: |
           $nsi = "desktop/src-tauri/target/release/nsis/x64/installer.nsi"
           if (-not (Test-Path -LiteralPath $nsi -PathType Leaf)) { throw "$nsi not found" }
-          $page = @(Select-String -LiteralPath $nsi -Pattern 'PageReinstall|Page custom|ReinstallPageCheck')
+          $page = @(Select-String -LiteralPath $nsi -Pattern 'PageReinstall|Page custom|ReinstallPageCheck|MUI_PAGE_DIRECTORY')
           if ($page.Count) {
             $page | ForEach-Object { "::error::installer.nsi line $($_.LineNumber): $($_.Line.Trim())" }
-            throw "the installer has a reinstall page"
+            throw "the installer has a reinstall page or a folder page"
           }
           $required = @(
-            '^!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrInstalled$',
-            '^Function SkipIfPassiveOrInstalled$',
+            '^!define INSTALLMODE "perMachine"$',
             '^!include ".*\\installer\\hooks\.nsh"$'
           )
           foreach ($pattern in $required) {
             if (-not (Select-String -LiteralPath $nsi -Pattern $pattern -Quiet)) { throw "installer.nsi has no line matching $pattern" }
           }
-          "Installer script: no reinstall page; the folder page is skipped for an update" >> $env:GITHUB_STEP_SUMMARY
+          "Installer script: per machine, no reinstall page, no folder page" >> $env:GITHUB_STEP_SUMMARY
 
+      # GitHub's Windows runners are elevated and set CI=true, which the
+      # script requires: it installs RootMind and its Windows services.
       - name: Installer smoke test
         env:
           VERSION: ${{ needs.meta.outputs.version }}
@@ -226,7 +231,7 @@ jobs:
           $conf = Get-Content desktop/src-tauri/tauri.conf.json -Raw -Encoding utf8 | ConvertFrom-Json
           ./desktop/scripts/installer-smoke.ps1 -Setup $setup[0].FullName -Version $env:VERSION `
             -BackendVersion $env:BACKEND_VERSION -BackendTreeSha256 $env:TREE_SHA256 `
-            -Publisher $conf.bundle.publisher -Identifier $conf.identifier -Port 18770 `
+            -Publisher $conf.bundle.publisher -Identifier $conf.identifier `
             -WorkDir (Join-Path $env:RUNNER_TEMP "installer-smoke")
 
       - name: Release asset

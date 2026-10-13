@@ -1,101 +1,71 @@
 import { useEffect } from "react";
 import { ApiError } from "../api/client";
 import { checkAuth, getHealth, getRoot } from "../api/rlm";
-import { serviceConnect, sidecarStatus } from "../api/backend";
-import type { ServiceConnect, SidecarStatus } from "../api/backend";
+import { inTauri, serviceConnect, serviceInfo } from "../api/backend";
+import type { ServiceConnect, ServiceInfo } from "../api/backend";
 import type { RootInfo } from "../types/api";
+import { serviceProblem } from "../state/service";
 import { useStore } from "../state/store";
 import type { BackendKind, ConnState } from "../state/store";
 
 /** How often the heartbeat re-checks the backend. */
 export const HEARTBEAT_MS = 5_000;
 
-// Number of built-in backend starts in flight (sidecar_start can take up to
-// 90 s). While one runs, the check leaves the "starting" state alone.
-let builtinStarts = 0;
-
-/** Run a start of the built-in backend; the connectivity check waits for it. */
-export async function whileStartingBuiltin<T>(start: () => Promise<T>): Promise<T> {
-  builtinStarts++;
+async function readServiceInfo(): Promise<ServiceInfo | null> {
   try {
-    return await start();
-  } finally {
-    builtinStarts--;
-  }
-}
-
-/**
- * Read the built-in backend's state after it did not answer (or answered 401).
- * A new URL or token after a crash restart is taken over; otherwise `fallback`
- * becomes the connection state.
- */
-async function syncBuiltin(fallback: "offline" | "unauthorized") {
-  let st: SidecarStatus | null = null;
-  try {
-    st = await sidecarStatus();
+    return await serviceInfo();
   } catch {
-    /* outside Tauri: nothing to ask */
+    return null;
   }
-  const s = useStore.getState();
-  if (s.kind !== "builtin" || s.conn === "switching" || builtinStarts > 0) return;
-  s.setSidecar(st);
-  if (st?.state === "running" && st.url && st.token) {
-    if (st.url !== s.baseUrl || st.token !== s.token) {
-      s.setBackend({ kind: "builtin", url: st.url, token: st.token });
-    } else {
-      s.setConn(fallback);
-    }
-    return;
-  }
-  if (st?.state === "starting" || st?.state === "restarting") {
-    s.setConn("starting");
-    return;
-  }
-  s.setConn("offline");
 }
 
 /**
- * Ask Rust for the background service's URL and token. Rust hands out the
- * token only after checking that the service's own process listens on the
- * port. On any failure the URL and token are cleared.
+ * Ask Rust for the RootMind service's URL and token. Rust hands out the token
+ * only after checking that the service's own process listens on the port. On
+ * a failure the URL and token are cleared and the problem is recorded (with
+ * service_info for the cases service_connect cannot tell apart).
  * Returns true when the service is connected.
  */
 async function syncService(): Promise<boolean> {
+  if (!inTauri()) {
+    // The browser preview (`pnpm dev`) has no service to reach.
+    const s = useStore.getState();
+    if (s.kind !== "service" || s.conn === "switching") return false;
+    s.setServiceProblem("unsupported");
+    s.setConn("offline");
+    return false;
+  }
   let r: ServiceConnect;
   try {
     r = await serviceConnect();
   } catch {
     r = { ok: false, reason: "not_running" };
   }
+  const info = r.ok ? null : await readServiceInfo();
   const s = useStore.getState();
   if (s.kind !== "service" || s.conn === "switching") return false;
   if (r.ok) {
-    s.setServiceIssue(null);
     if (r.url !== s.baseUrl || r.token !== s.token) {
       s.setBackend({ kind: "service", url: r.url, token: r.token });
     }
     return true;
   }
-  s.setServiceIssue(r.reason);
+  s.setServiceProblem(serviceProblem(r.reason, info));
   if (s.baseUrl || s.token) s.setBackend({ kind: "service", url: "", token: null });
   s.setConn("offline");
   return false;
 }
 
-async function onUnreachable(kind: BackendKind) {
-  if (kind === "builtin") await syncBuiltin("offline");
-  else useStore.getState().setConn("offline");
-}
-
-async function onUnauthorized(kind: BackendKind) {
-  if (kind === "builtin") await syncBuiltin("unauthorized");
-  else useStore.getState().setConn("unauthorized");
+function onUnreachable(kind: BackendKind) {
+  const s = useStore.getState();
+  // The service runs and its port is its own, but the REST API does not answer.
+  if (kind === "service") s.setServiceProblem("noAnswer");
+  s.setConn("offline");
 }
 
 async function checkOnce() {
   let s = useStore.getState();
   if (!s.kind || s.conn === "switching") return;
-  if (s.kind === "builtin" && builtinStarts > 0) return;
   // Service mode: confirm the listener (and fetch the token) on every check.
   if (s.kind === "service" && !(await syncService())) return;
 
@@ -109,14 +79,14 @@ async function checkOnce() {
   };
 
   if (!baseUrl) {
-    await onUnreachable(kind);
+    onUnreachable(kind);
     return;
   }
 
   try {
     await getHealth();
   } catch {
-    if (current()) await onUnreachable(kind);
+    if (current()) onUnreachable(kind);
     return;
   }
   if (!current()) return;
@@ -136,20 +106,20 @@ async function checkOnce() {
     } catch (e) {
       if (!current()) return;
       if (e instanceof ApiError && e.status === 401) {
-        await onUnauthorized(kind);
+        useStore.getState().setConn("unauthorized");
         return;
       }
       // /health answered, so a slow /status is not a lost connection.
     }
   } else if (root?.auth === "bearer") {
     // The backend needs a token and we have none.
-    await onUnauthorized(kind);
+    useStore.getState().setConn("unauthorized");
     return;
   }
   if (!current()) return;
   const now = useStore.getState();
   now.setVersion(root?.version ?? null);
-  if (kind === "builtin") now.setSidecar(null);
+  now.setServiceProblem(null);
   now.setConn("online");
 }
 

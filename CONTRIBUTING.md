@@ -42,7 +42,7 @@ pnpm build
 cd src-tauri
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test         # includes lifecycle tests that start a fake backend process
+cargo test         # unit tests and the opener scope test
 ```
 
 CI runs the same commands (`.github/workflows/backend.yml` and
@@ -50,10 +50,11 @@ CI runs the same commands (`.github/workflows/backend.yml` and
 
 ### Running the desktop app during development
 
-A development build (`pnpm tauri dev`) has no bundled backend. It contacts
-no backend on its own: the app shows the backend dialog, which suggests
-`http://127.0.0.1:8000`. Start a backend from source with the Vite dev origin
-allowed, then confirm its address there:
+A development build (`pnpm tauri dev`) never connects to the RootMind service,
+which holds your real index and settings, and contacts no backend on its own:
+the app shows the backend dialog, which suggests `http://127.0.0.1:8000`. Start
+a backend from source with the Vite dev origin allowed, then confirm its
+address there:
 
 ```bash
 cd backend
@@ -61,26 +62,26 @@ RLM_DEV=1 uv run rootmind api                 # PowerShell: $env:RLM_DEV=1; uv r
 RLM_DEV=1 uv run rootmind api --port 18000    # if 8000 is taken; enter http://127.0.0.1:18000
 ```
 
-The address you connect to is stored as a custom backend; **Use default
-backend** under Settings → Advanced removes it again. `pnpm dev` in a plain
+The address you connect to is stored as a custom backend; **Use the RootMind
+service** under Settings → Advanced removes it again. `pnpm dev` in a plain
 browser behaves the same way.
 
-To try the bundled backend in a development build, build it (see
-[Build the installer yourself](README.md#build-the-installer-yourself)), run
-`python scripts/prepare_backend.py`, and start
-`pnpm tauri dev --config src-tauri/tauri.release.conf.json` with `RLM_HOME`
-set to the absolute path of a scratch folder. Debug builds use that folder as
-the built-in backend's home instead of the app's data folder.
+The connection to the service, **Repair** and the MCP over HTTP switch only
+work in a release build installed by the installer (see
+[Build the installer yourself](README.md#build-the-installer-yourself)). Try
+them in a virtual machine or Windows Sandbox, not on a machine where you use
+RootMind.
 
 ### Ports for local testing
 
 - Unit tests use FastAPI's `TestClient` or port 0; they never need a free
   port.
-- The smoke test of a backend build uses 18765 and 18766 by default, the
-  installer smoke test 18770, and the service end-to-end test in CI 18080 and
-  18081. The service itself falls back to 18300–18399 and 18400–18499.
+- The smoke test of a backend build uses 18765 and 18766 by default, and the
+  service end-to-end test in CI 18080 and 18081. The installer smoke test
+  lets the installer choose the ports, as it does for users: 8000 and 3000
+  when free, otherwise 18300–18399 and 18400–18499.
 - Do not point tests or a development build at a port where a RootMind
-  backend you use every day is listening, such as the background service on
+  backend you use every day is listening, such as the RootMind service on
   8000.
 
 ### Packaged backend, service and installer
@@ -97,16 +98,26 @@ The smoke test works with Windows PowerShell 5.1 and PowerShell 7 and writes
 only below `-WorkDir`.
 
 Installing the Windows services, the approval prompts and the installer are
-tested in CI on GitHub's Windows runners, which run elevated:
+tested in CI on GitHub's Windows runners, which run elevated. Both scripts
+change the machine and need an elevated process:
 
-- `backend/tests/e2e/service_e2e.ps1` refuses to run unless the process is
-  elevated and `CI=true` is set (or `-Force` is given, for throwaway
-  machines), and unless no RootMind service or data folder exists.
-- `desktop/scripts/installer-smoke.ps1` refuses unless `CI=true` or `-Force`,
-  and whenever RootMind is installed for the current account or one of its
-  folders exists (`%LOCALAPPDATA%\RootMind`, or the app data folder
+- `backend/tests/e2e/service_e2e.ps1` installs, updates and removes the
+  services with a backend build, including the refusals, the folder
+  permissions, the tokens and switching MCP over HTTP off and on. It refuses
+  to run unless the process is elevated and `CI=true` is set (or `-Force` is
+  given, for throwaway machines), and unless no RootMind service or data
+  folder exists.
+- `desktop/scripts/installer-smoke.ps1` installs the per-machine installer
+  silently, checks the services it sets up, updates and reinstalls over it
+  and uninstalls it. It refuses unless `CI=true` or `-Force` and an elevated
+  process, and whenever RootMind is installed (per machine, or 1.x for the
+  current account), a RootMind service exists, or one of these folders
+  exists: `%ProgramFiles%\RootMind`, `%ProgramFiles%\RootMind Service`,
+  `%ProgramData%\RootMind`, or the app data folder
   `%LOCALAPPDATA%\<identifier>` named by `-Identifier`, which release.yml
-  takes from `tauri.conf.json`).
+  takes from `tauri.conf.json`. It does not cover the refusal of an installer
+  approved by another account than the signed-in one (the runner has a
+  single account).
 
 On your own machine, `rootmind service status` and an unelevated
 `rootmind service install` (which stops before it changes anything) are safe
@@ -243,24 +254,36 @@ verify them.
    `rootmind-backend-windows-x64` and `winget-manifests`.
 5. **Manual checks** in Windows Sandbox or a throwaway virtual machine, with
    the installer from the dry run:
-   - first start from the installer, including the SmartScreen warning;
-   - turning the background service on with and without MCP over HTTP,
-     including cancelling the approval prompt;
-   - turning it off with and without deleting its data;
-   - the **Update service** banner after installing a newer build;
+   - a first install by double-click, including the SmartScreen warning and
+     the administrator prompt, and cancelling that prompt; afterwards the app
+     connects to the service and Settings → **RootMind service** shows it
+     running;
+   - a standard account signed in and an administrator approving the prompt:
+     the installer stops with a message and changes nothing;
+   - an upgrade over RootMind 1.x installed for the same account, once with
+     and once without the 1.x background service: the 1.x installation is
+     gone, chats stay, and a 1.x service keeps its folders and index;
    - running the installer by double-click over an older build, and over the
      same build: Welcome, Installing, Finish, with no "Already Installed" page
-     and no folder page; chats, settings and shortcuts stay, and the
-     background service keeps running;
-   - turning the service on from an administrator account with User Account
-     Control turned off;
-   - uninstalling the app while the service is installed, interactively and
-     with `/S`;
-   - Claude Desktop from the Microsoft Store with the built-in stdio
-     configuration from the README, once with the app running and once with
-     it closed: search results follow a change in an indexed folder;
-   - **Delete the application data** removes the built-in backend's
-     `config.yaml` and index.
+     and no folder page; chats, settings and shortcuts stay, and the service
+     is updated and keeps its ports and tokens;
+   - **Repair** after `Stop-Service RootMind-Backend` (the approval prompt
+     names `%ProgramFiles%\RootMind\backend\rootmind-backend.exe`), and
+     **Update service** when the service runs an older version than the app:
+     afterwards it runs the app's version;
+   - the installer with `/D=C:\RootMind`: it stops with exit code 10 and
+     changes nothing;
+   - **Serve MCP over HTTP** off and on again, including cancelling the
+     approval prompt;
+   - installing from an administrator account with User Account Control
+     turned off;
+   - Claude Code and n8n with the **MCP endpoint** and token from Settings,
+     once with the app running and once with it closed: search results
+     follow a change in an indexed folder;
+   - uninstalling from Windows Settings → Apps, interactively with and
+     without **Delete the application data**, and with `/S`: the services are
+     removed, and `%ProgramData%\RootMind` is deleted only when the box was
+     ticked.
 6. **Tag** the merged release commit on `main` and push the tag:
 
    ```bash

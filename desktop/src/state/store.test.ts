@@ -12,19 +12,13 @@ beforeEach(resetStore);
 
 describe("setBackend", () => {
   it("checks a new custom or service backend first", () => {
-    useStore.setState({ kind: "builtin", baseUrl: "http://127.0.0.1:50001", conn: "online" });
+    useStore.setState({ kind: "service", baseUrl: "http://127.0.0.1:8000", conn: "online" });
     useStore.getState().setBackend({ kind: "custom", url: "http://a", token: null });
     expect(useStore.getState().conn).toBe("checking");
 
     useStore.getState().setConn("online");
     useStore.getState().setBackend({ kind: "service", url: "http://127.0.0.1:8000", token: "t" });
     expect(useStore.getState().conn).toBe("checking");
-  });
-
-  it("reports a new built-in backend as starting", () => {
-    useStore.setState({ kind: "custom", baseUrl: "http://a", conn: "online" });
-    useStore.getState().setBackend({ kind: "builtin", url: "http://127.0.0.1:50001", token: "t" });
-    expect(useStore.getState().conn).toBe("starting");
   });
 
   it("keeps the state when the backend stays the same", () => {
@@ -51,15 +45,11 @@ describe("setBackend", () => {
     expect(useStore.getState().baseUrl).toBe("http://a:9000");
   });
 
-  it("stores only the auto mode for the built-in backend and the service", () => {
+  it("stores only the auto mode for the service, never its URL or token", () => {
     useStore.getState().setBackend({ kind: "custom", url: "http://a", token: "secret" });
-    useStore.getState().setBackend({ kind: "builtin", url: "http://127.0.0.1:50001", token: "t1" });
-    expect(localStorage.getItem(STORAGE_KEYS.mode)).toBe("auto");
-    expect(localStorage.getItem(STORAGE_KEYS.baseUrl)).toBeNull();
-    expect(localStorage.getItem(STORAGE_KEYS.token)).toBeNull();
-
     useStore.getState().setBackend({ kind: "service", url: "http://127.0.0.1:8000", token: "t2" });
     expect(localStorage.getItem(STORAGE_KEYS.mode)).toBe("auto");
+    expect(localStorage.getItem(STORAGE_KEYS.baseUrl)).toBeNull();
     expect(localStorage.getItem(STORAGE_KEYS.token)).toBeNull();
   });
 
@@ -102,6 +92,6 @@ describe("helpers", () => {
     const prev = { kind: "custom" as const, baseUrl: "http://a", conn: "offline" as const };
     expect(connAfterSwitch(prev, { kind: "custom", url: "http://a", token: null })).toBe("offline");
     expect(connAfterSwitch(prev, { kind: "custom", url: "http://b", token: null })).toBe("checking");
-    expect(connAfterSwitch(prev, { kind: "builtin", url: "", token: null })).toBe("starting");
+    expect(connAfterSwitch(prev, { kind: "service", url: "", token: null })).toBe("checking");
   });
 });
