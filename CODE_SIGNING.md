@@ -51,8 +51,9 @@ In detail:
   [Anthropic](https://www.anthropic.com/legal/privacy),
   [OpenAI](https://openai.com/policies/privacy-policy/),
   [xAI](https://x.ai/legal/privacy-policy).
-- MCP over HTTP is off unless you turn it on; it then serves search results and
-  document text to clients that present its token.
+- MCP over HTTP is on by default and listens on 127.0.0.1 only; it serves
+  search results and document text to clients that present its token. Settings
+  → RootMind service turns it off.
 - RootMind has no telemetry and no update check.
 
 [SECURITY.md](SECURITY.md#what-leaves-the-machine) lists every request in detail.

@@ -80,94 +80,55 @@ flowchart TB
 | MCP servers | `mcp_stdio.py`, `mcp_http.py` | The same tools for external MCP clients |
 | CLI | `main.py` | One command tree: `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service`; bind and token resolution |
 | Windows service | `service/` | `service install`, `uninstall` and `status`, and the service host that the Service Control Manager starts |
-| Desktop app | `desktop/` | Tauri 2 UI; starts and stops its built-in backend, manages the background service, and talks to the backend over REST |
+| Desktop app | `desktop/` | Tauri 2 UI; a client of the Windows service over REST: reads its state, connects with its token, repairs it and switches MCP over HTTP |
+| Installer | `desktop/src-tauri/installer/` | Per-machine NSIS installer; sets up the Windows service for the signed-in account and removes it on uninstall |
 
 ## Deployment modes
 
 | Mode | Started by | Home (`RLM_HOME`) | Address | REST token | MCP |
 |---|---|---|---|---|---|
-| **Built-in** (the app's default) | The desktop app, as a child process | `%LOCALAPPDATA%\io.github.cgaeking.rootmind\backend` | `127.0.0.1` on a free port | New for every start of the backend (crash restarts included), passed only in the child's environment (`RLM_API_TOKEN`) | stdio: `rootmind-backend.exe mcp` with the same `RLM_HOME` |
-| **Background service** | The Service Control Manager, at boot | `%ProgramData%\RootMind` | `127.0.0.1:8000`, or a port from 18300–18399 when 8000 is taken | `data\rest_token.txt` | Optional service `RootMind-MCP-HTTP` on 3000 or 18400–18499, token in `data\api_token.txt` |
+| **RootMind service** (the app's backend) | The Service Control Manager, at boot; the installer sets it up | `%ProgramData%\RootMind` | `127.0.0.1:8000`, or a port from 18300–18399 when 8000 is taken | `data\rest_token.txt` | Service `RootMind-MCP-HTTP` (on by default) on 3000 or 18400–18499, token in `data\api_token.txt` |
 | **Custom** (Settings → Advanced) | You | Whatever that backend uses | The address you enter (loopback only, because of the app's CSP) | Optional, entered by you | Not managed by the app |
-| **Command line** | You (`rootmind api`, `uv run ...`, `rootmind-backend.exe api`) | `RLM_HOME`, or the working directory | `--host`/`--port`, then `RLM_HOST`/`RLM_PORT`, then `api.*` in `config.yaml`, then `127.0.0.1:8000` | Off unless `RLM_API_TOKEN` or `--require-token` | `rootmind mcp` / `rootmind-mcp`, `rootmind mcp-http` / `rootmind-mcp-http` |
+| **Command line** (development, other setups) | You (`rootmind api`, `uv run ...`, `rootmind-backend.exe api`) | `RLM_HOME`, or the working directory | `--host`/`--port`, then `RLM_HOST`/`RLM_PORT`, then `api.*` in `config.yaml`, then `127.0.0.1:8000` | Off unless `RLM_API_TOKEN` or `--require-token` | `rootmind mcp` / `rootmind-mcp`, `rootmind mcp-http` / `rootmind-mcp-http` |
+
+Since 2.0 the desktop app has no backend of its own. The installer always
+sets up the RootMind service (see [Packaging](#packaging)), and the app is a
+client of it. A backend at another address, such as `rootmind api` from a
+source checkout or a uv install, is for development and other setups.
 
 ```
-RootMind.exe  (per user, %LOCALAPPDATA%\RootMind\)
-  |-- backend\rootmind-backend.exe + backend\_internal\     (onedir build, Tauri resources)
-  |-- built-in: runs backend\rootmind-backend.exe api --host 127.0.0.1 --port 0 --exit-with-parent
-  |             env RLM_HOME=<app local data>\backend, RLM_API_TOKEN=<random>   (child only)
-  |-- service:  reads SCM state and PID, the ImagePath (port), the TCP table (listener PID)
-  |             and data\rest_token.txt; elevates `service ...` commands
-  '-- custom:   your URL and optional token
+%ProgramFiles%\RootMind\                          the app, per machine (the folder can be changed in the installer)
+  |-- RootMind.exe                                the desktop app, a client of the service
+  '-- backend\rootmind-backend.exe + _internal\   onedir build (Tauri resources): `service install`
+                                                  (installer, Repair) and `service status --json`
+%ProgramFiles%\RootMind Service\<version>-<id>\   rootmind-backend.exe, _internal\   (admin-only; the services run this copy)
+%ProgramData%\RootMind\                           config.yaml, data\, logs\, tmp\
 
-%ProgramFiles%\RootMind Service\<version>-<id>\   rootmind-backend.exe, _internal\   (admin-only)
-%ProgramData%\RootMind\                          config.yaml, data\, logs\, tmp\
+RootMind.exe
+  |-- service: reads SCM state and PID, the ImagePath (port), the TCP table (listener PID)
+  |            and data\rest_token.txt; elevates `service install` for Repair and MCP on or off
+  '-- custom:  your URL and optional token
 ```
 
 **Choosing the backend.** When the app starts, `decideBackend()` in
 `desktop/src/state/bootstrap.ts` (a pure, unit-tested function) picks the
-backend from the stored mode, the build type and the service state:
+backend from the stored choice and the build type:
 
 1. A stored custom backend (`rlm.backendMode` = `custom`) wins.
-2. A debug build uses the bundled backend if it has one, otherwise the backend
-   dialog asks for an address and nothing is contacted until you connect. It
-   never picks the service on its own.
-3. A release build uses the background service when it is installed, belongs
-   to this app and its token is readable. If it belongs to another account,
-   the app uses the built-in backend and Settings says so.
-4. Otherwise, the built-in backend.
+2. A debug build (and the browser preview) never connects to the installed
+   service on its own, because the service holds the user's real index and
+   settings. The backend dialog asks for an address (the stored one, else
+   `http://127.0.0.1:8000` for `rootmind api` from source), and nothing is
+   contacted until you connect.
+3. Otherwise, the first start included, the RootMind service. Whether it can
+   be used is found out by the connectivity check, which names the problem
+   (see [Desktop app](#desktop-app)).
 
-`localStorage` holds `rlm.backendMode` (`auto` or `custom`), and `rlm.baseUrl`
-and `rlm.token` only for a custom backend. "Use default backend" under
-Settings → Advanced, and "Use built-in backend" in the dialogs of a custom
-backend, return to `auto`.
-
-**Built-in backend lifecycle** (`desktop/src-tauri/src/backend.rs`). The app
-starts `<resource folder>\backend\rootmind-backend.exe` through
-`tauri-plugin-shell` from Rust, in its own process group, with
-`api --host 127.0.0.1 --port 0 --exit-with-parent`, `RLM_HOME` and the working
-directory set to the backend home, and a fresh 32-byte token in
-`RLM_API_TOKEN` for every start. `CONFIG_PATH` is set to `config.yaml` and
-`RLM_DISABLE_SCHEDULER` to empty, so the user's environment cannot point the
-backend at another config or turn indexing off. Debug builds also set
-`RLM_DEV=1` and pass an absolute `RLM_HOME` from their own environment
-through, for scratch folders.
-
-- The backend binds the port itself and prints one ready line,
-  `ROOTMIND_LISTENING {"port":N}`. The app waits up to 90 seconds for it; the
-  UI says that the first start can take longer while Windows checks the app.
-- stdout and stderr go to `<home>\logs\backend.log` (rotated above 5 MB, one
-  old file kept); the last 200 lines stay in memory for the error dialog.
-- On exit the app writes `shutdown` to the backend's stdin, waits 5 seconds,
-  then ends the process group. If the app crashes, stdin closes and the
-  backend stops on its own.
-- After a crash the backend is restarted after 1, 2 and 4 seconds. Three
-  failures within 2 minutes give up; 5 minutes of healthy running reset the
-  count. The port and the token change, and the UI picks up both through
-  `sidecar_status`; a token sent to the old port is worthless. A start that
-  fails before the process exists (for example its log folder cannot be
-  created) is recorded as failed, so nothing waits for it.
-- Start errors are reported by kind: the file is missing, Windows security
-  blocked it (Smart App Control, WDAC or antivirus: Windows error codes 225,
-  226, 1260 and 4550–4599, or an early exit whose last lines say an
-  Application Control policy blocked a file), access was denied, it exited
-  early, or it never printed the ready line.
-- A second app launch focuses the running window (`tauri-plugin-single-instance`),
-  so two backends never share one data folder.
-
-**Switching between built-in and service.** The configuration follows the
-user; the index does not. Turning the service on passes the built-in
-`config.yaml`, when there is one, to `service install --import-config`.
-Turning it off copies the service's `config.yaml` to
-`<built-in home>\config.from-service.yaml`, and the app starts its built-in
-backend with `--import-config` on that file.
-`config.import_config()` reads the file directly (no API keys from the
-environment or a `.env` file are merged in), refuses links and files over
-1 MB, keeps the previous file as `config.yaml.bak`, and always resets
-`database.path` (`./data/index.db` for the built-in backend,
-`./data/db/index.db` for the service). The service builds its own index from
-scratch; after it is turned off, the built-in backend reuses its earlier index
-and brings it up to date.
+`localStorage` holds `rlm.backendMode` (`auto` for the service, a value kept
+from 1.x, or `custom`), and `rlm.baseUrl` and `rlm.token` only for a custom
+backend; the service's token is never stored. "Use the RootMind service"
+under Settings → Advanced and in the dialog of a custom backend returns to
+`auto`.
 
 **MCP servers.** The stdio server is started by the MCP client as a child
 process. The HTTP server is a separate process on `127.0.0.1:3000`, or the
@@ -178,26 +139,33 @@ missing from its own copy of the config. SQLite runs in WAL mode, so they can
 read while another process writes. The HTTP server re-reads the folder list
 on the next tool call after `config.yaml` changed (size and modification
 time); the stdio server reads it at startup. With `--index` the in-process
-indexer keeps the folders it started with until a restart. In service mode, use MCP over
-HTTP: the service's database lives in a folder that your account can only
-read, and SQLite readers in WAL mode need to write.
+indexer keeps the folders it started with until a restart.
+
+For the installed app, use MCP over HTTP. The service's database lives in a
+folder that your account can only read, and SQLite readers in WAL mode need
+to write, so `rootmind-backend.exe mcp` from the app's folder cannot open it.
+Claude Desktop starts only stdio servers from `claude_desktop_config.json`
+and needs a stdio-to-HTTP bridge to reach the endpoint, which RootMind does
+not include. The stdio server is meant for a source checkout or a uv install
+with its own `config.yaml`.
 
 ## Interfaces between the parts
 
-These contracts are shared by the backend, the desktop app and the CI scripts.
+These contracts are shared by the backend, the desktop app, the installer and
+the CI scripts.
 
 **Backend executable**
 
 | Item | Value |
 |---|---|
 | Build output | `backend/dist/rootmind-backend/` with `rootmind-backend.exe` and `_internal\` |
-| In the installer | `$INSTDIR\backend\rootmind-backend.exe` (resource map from `desktop/src-tauri/binaries/rootmind-backend/`) |
+| In the installer | `$INSTDIR\backend\rootmind-backend.exe`, always `%ProgramFiles%\RootMind\backend\` (resource map from `desktop/src-tauri/binaries/rootmind-backend/`) |
 | Release assets | `RootMind-Setup-x64.exe`; `rootmind-backend-windows-x64.zip` with the folder `rootmind-backend/`; `SHA256SUMS.txt` |
 | `--version` | `rootmind-backend <version>` (`rootmind <version>` from a Python install); the last word is the version in PEP 440 normal form |
 | Commands | `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service install\|uninstall\|status`, and `service run backend\|mcp-http` (started by the Service Control Manager, not listed in the help) |
-| `api` options | `--host`, `--port` (0 = a free port), `--require-token`, `--exit-with-parent`, `--import-config FILE` |
-| Ready line | Once on stdout, flushed: `ROOTMIND_LISTENING {"port":N}` |
-| Lifeline | With `--exit-with-parent`, the backend shuts down on stdin EOF or a `shutdown` line |
+| `api` options | `--host`, `--port` (0 = a free port, which the log names), `--require-token`. The options of the removed built-in backend, `--exit-with-parent` and `--import-config`, are refused (exit 2) |
+| `service install` options | `--port N\|auto`, `--mcp-http` / `--no-mcp-http`, `--mcp-port N\|auto`, `--mcp-token-from FILE`, `--user-sid SID`, `--no-start` |
+| Installer | Installs with `service install --port auto --mcp-port auto --user-sid <signed-in account>`; uninstalls with `service uninstall`, `--purge` when the app data is to be deleted |
 | Token files | `<RLM_HOME>/data/rest_token.txt` (REST), `<RLM_HOME>/data/api_token.txt` (MCP) |
 | Open routes with a token | `GET`/`HEAD` on `/` (with `"auth": "bearer"` or `"none"`) and `/health`; everything else 401 |
 | Service names | `RootMind-Backend`, `RootMind-MCP-HTTP` |
@@ -211,18 +179,17 @@ line unchanged, so `mcp` keeps stdout clean for JSON-RPC. Without a command,
 
 | Command | Returns | What it does |
 |---|---|---|
-| `app_mode` | `{version, dev, builtinAvailable}` | Build information |
-| `sidecar_start`, `sidecar_restart` | `{url, token}` | Start (idempotent) or restart the built-in backend |
-| `sidecar_status` | `{state, url, token, exitCode, error, logTail}` | State of the built-in backend; `url` and `token` only while it runs |
-| `backend_log_dir` | path | The log folder of the backend in use |
-| `service_info` | `ServiceInfo` | Installed, ours, state, port, whether the token is readable, whether this account can turn it on and why not; the same for MCP. Starts no process |
+| `app_mode` | `{version, dev}` | Build information |
+| `service_info` | `ServiceInfo` | Installed, ours, state, port and URL, whether the token is readable and the service belongs to this account, whether this account can approve an elevation (`canElevate`), and why the service cannot be used (`blockedReason`); the same for MCP, with its endpoint. Starts no process |
 | `service_connect` | `{ok, url, token}` or `{ok: false, reason}` | Checks the listener (below) and only then reads the token |
-| `service_enable({mcp})`, `service_disable({purge})`, `service_set_mcp({enabled})`, `service_update` | `{ok: true, backend}` or `{ok: false, cancelled, code, backend}` | Elevated `service install` or `service uninstall`; `code` is the service exit code, or 1223 when the approval was cancelled |
-| `service_mcp_token` | string | Reads `data\api_token.txt` |
-| `service_details` | string | `service status --json` (not elevated) and the end of `logs\install.log` |
+| `service_update` | `{ok: true, backend}` or `{ok: false, cancelled, code, backend}` | Repair and "Update service": elevated `service install --port auto --mcp-port auto --user-sid <SID>`, run with the backend installed with the app, `%ProgramFiles%\RootMind\backend\` (the app's version); only when that is missing, with the service's registered copy under `%ProgramFiles%\RootMind Service\` (the backend's, else the MCP service's); with neither, the error "Reinstall RootMind" |
+| `service_set_mcp({enabled})` | same as `service_update` | Elevated `service install --mcp-http --mcp-port auto` or `service install --no-mcp-http`, run with the program in the ImagePath under `%ProgramFiles%\RootMind Service\` |
+| `service_mcp_token` | string | Reads `data\api_token.txt` while the MCP service is ours |
+| `service_details` | string | `service status --json` (not elevated, from the app's backend folder, stopped after 30 seconds) and the last 60 lines of `logs\install.log` |
 
-The webview cannot reach any other command that starts a process.
-`capabilities/default.json` grants the shell plugin nothing; the app's own
+In the results, `code` is the service exit code, or 1223 when the approval
+was cancelled. Only one change runs at a time. The webview cannot reach any
+other command that starts a process: the app has no shell plugin, and its own
 commands need no capability entry.
 
 ## Background service
@@ -232,7 +199,7 @@ commands need no capability entry.
 | Service | Account | Runs |
 |---|---|---|
 | `RootMind-Backend` | LocalSystem, start automatic | REST API and indexer, with the folder access policy of the installing account |
-| `RootMind-MCP-HTTP` (optional) | `NT SERVICE\RootMind-MCP-HTTP` (virtual account, unrestricted service SID, only `SeChangeNotifyPrivilege`), start automatic | MCP over HTTP from the same index, without the scheduler |
+| `RootMind-MCP-HTTP` (on by default) | `NT SERVICE\RootMind-MCP-HTTP` (virtual account, unrestricted service SID, only `SeChangeNotifyPrivilege`), start automatic | MCP over HTTP from the same index, without the scheduler |
 
 Both restart after 5, 30 and 60 seconds on failure (reset after one day). A
 stop because of a config, token or access error reports service-specific
@@ -240,14 +207,46 @@ code 2 and is not restarted. The registered command lines (ImagePath) are
 quoted and carry no secrets:
 
 ```
-"C:\Program Files\RootMind Service\1.2.0-0a1b2c3d\rootmind-backend.exe" service run backend --port 8000 --user-sid S-1-5-21-1-2-3-1001
-"C:\Program Files\RootMind Service\1.2.0-0a1b2c3d\rootmind-backend.exe" service run mcp-http --port 3000
+"C:\Program Files\RootMind Service\2.0.0-0a1b2c3d\rootmind-backend.exe" service run backend --port 8000 --user-sid S-1-5-21-1-2-3-1001
+"C:\Program Files\RootMind Service\2.0.0-0a1b2c3d\rootmind-backend.exe" service run mcp-http --port 3000
 ```
 
 A service counts as "ours" when its program lies under
 `%ProgramFiles%\RootMind Service\`. The Python package (`service/imagepath.py`)
 and the desktop app (`desktop/src-tauri/src/imagepath.rs`) parse these lines
 with the same rules and the same test strings.
+
+**Who sets it up.** The installer runs `service install` for the account that
+is signed in to Windows, and the uninstaller runs `service uninstall` (see
+[Packaging](#packaging)). The app runs `service install` again for Repair and
+to switch MCP over HTTP. On a machine without the app, `service install` from
+the release zip sets the service up with a default config without folders;
+folders are then added through `POST /config` with the REST token, in
+`config.yaml` from an elevated prompt, or with the app.
+
+**Why the services run from their own copy.** The installer places the
+backend in `%ProgramFiles%\RootMind\backend\`, but the services run from a copy
+in `%ProgramFiles%\RootMind Service\<version>-<id>\` (`service/install.py`).
+That costs a second copy of the program (about 85 MB) and keeps three
+properties that the app's folder cannot give:
+
+- The copy is always admin-only and checked. A LocalSystem service must never
+  run a program that a non-administrator can replace.
+  `layout.install_program` creates the copy with its own protected access
+  list and verifies it after copying. The source is checked as well: the
+  installer accepts no other folder than `%ProgramFiles%\RootMind` (exit 10),
+  and `service install` refuses to copy from a folder that accounts other
+  than administrators can change (exit 10).
+- Updates are atomic for the service. The installer replaces the app's files
+  while the old service keeps running from its copy; `service install` stops
+  it only once the new copy is complete, and a failure before the services
+  are registered restarts the old version. Running from the app's folder
+  would mean stopping the services before the installer extracts anything,
+  and an interrupted extraction would leave an automatic-start LocalSystem
+  service pointing at a half-written program.
+- The installer closes programs that run from the app's folder, matched by
+  path (Restart Manager). A service process there would be terminated, and
+  its failure actions would restart it in the middle of the extraction.
 
 **Service host** (`service/host.py`). `service run <role>` hosts one service
 through pywin32's `ServiceFramework`. It sets `RLM_HOME` and the working
@@ -271,12 +270,21 @@ and the database.
 1. Checks: Windows and the onedir release build (else exit 2 with the
    download address of the release zip), elevated (5), `--user-sid` equal to
    the approving account (8), and an access context for that account (9).
+   When the program will be copied (step 6), the folder it comes from and
+   every folder above it must be safe from accounts other than
+   administrators: no other account may write there, or move, replace or
+   re-permission what it holds (10). With User Account Control off, the
+   approving administrator account counts like Administrators, since files it
+   creates are owned by it.
 2. A service with our name that is not ours: exit 3, with the `sc.exe`
    commands to remove it; it is never changed. Our own services switch to
    update mode: port, MCP setting and MCP port come from the ImagePath, and
-   another account's service is refused (8).
+   another account's service is refused (8). MCP over HTTP is on for a new
+   install unless `--no-mcp-http` is given; an update keeps the current
+   setting unless `--mcp-http` or `--no-mcp-http` is given.
 3. Ports: no flag means 8000 and 3000 strictly (busy: exit 4); `auto` falls
-   back to 18300–18399 and 18400–18499. Updates keep the ports.
+   back to 18300–18399 and 18400–18499. The installer passes `auto` for both.
+   Updates keep the ports.
 4. In update mode, stops the services and waits for their processes, so
    nothing writes into the data folder while it is checked.
 5. Creates or validates the data folder (exit 6 when an existing folder is not
@@ -284,9 +292,10 @@ and the database.
    follow a reparse point. New files are owned by Administrators, also when
    User Account Control is off.
 6. Copies the program into a new version folder, unless it already runs from
-   the registered one (MCP on or off).
-7. Imports `--import-config`, or writes a default config; a database outside
-   `data\db\` is moved there (the index is rebuilt).
+   the registered one (switching MCP on or off from the app).
+7. Writes a default config (only `database.path`) when there is none. A
+   database outside `data\db\`, in a config edited by hand, is moved there
+   with `config.import_config()`, and the index is rebuilt.
 8. Creates missing tokens; `--mcp-token-from FILE` sets the MCP token. Existing
    tokens are kept.
 9. Registers or updates the services; `--no-mcp-http` removes the MCP service.
@@ -305,8 +314,8 @@ only when it passes the same check as for a reinstall. `service status [--json]`
 needs no elevation:
 
 ```json
-{"installed": true, "ours": true, "state": "running", "port": 8000, "version": "1.2.0",
- "binary": "C:\\Program Files\\RootMind Service\\1.2.0-0a1b2c3d\\rootmind-backend.exe",
+{"installed": true, "ours": true, "state": "running", "port": 8000, "version": "2.0.0",
+ "binary": "C:\\Program Files\\RootMind Service\\2.0.0-0a1b2c3d\\rootmind-backend.exe",
  "user_sid": "S-1-5-21-...", "token_file": "C:\\ProgramData\\RootMind\\data\\rest_token.txt",
  "token_readable": true,
  "mcp_http": {"installed": true, "state": "running", "port": 3000,
@@ -315,9 +324,9 @@ needs no elevation:
 ```
 
 Warnings: "service is not ours", "service is stopped", "token not readable for
-this account", "MCP service is not ours", "MCP service is stopped", and a hint
-with the uninstall command when the app is no longer installed for the
-service's account.
+this account", "MCP service is not ours", "MCP service is stopped", and, for
+the service's own account, a hint with the uninstall command when RootMind is
+no longer installed (no uninstall entry in HKLM, and no 1.x entry in HKCU).
 
 **Exit codes** of `service install`, `uninstall` and `status`:
 
@@ -331,9 +340,13 @@ service's account.
 | 5 | Not elevated |
 | 6 | Data folder refused |
 | 7 | The services did not pass the health check |
-| 8 | Account mismatch: the approving account is not the app's account, or the service belongs to another account |
+| 8 | Account mismatch: the approving account is not the account in `--user-sid`, or the service belongs to another account |
 | 9 | The access context for the account could not be built |
+| 10 | The folder the program would be copied from can be changed by accounts other than administrators |
 
+The installer exits with the code of `service install` when that step fails,
+with 8 on its own when it runs as another account than the signed-in one, and
+with 10 on its own when its install folder is not `%ProgramFiles%\RootMind`.
 The app shows 1223 when the approval prompt was cancelled. Program and data
 locations and their permissions are described in
 [SECURITY.md](SECURITY.md#background-service).
@@ -345,9 +358,31 @@ service's process ID with the owner of the listening socket on its port
 (`GetExtendedTcpTable`); a mismatch returns `listener_mismatch` and no token.
 Elevated commands run through `ShellExecuteExW` with the `runas` verb, the
 arguments are built and quoted in Rust, and the app waits up to 10 minutes
-for the result. Turning the service on or updating it elevates the per-user
-backend; turning it off and MCP on or off elevate the program under
-`%ProgramFiles%\RootMind Service\`.
+for the result. Repair and "Update service" elevate the backend installed
+with the app in `%ProgramFiles%\RootMind\backend\`, so an update brings the service
+to the app's version; only when that backend is missing do they use the
+service's registered copy under `%ProgramFiles%\RootMind Service\`. Switching MCP
+over HTTP elevates the copy that the backend service's ImagePath names. Both
+locations are admin-only, and `service install` refuses a source folder that
+other accounts can change (exit 10). A launch that
+Windows security refuses (Smart App Control, WDAC or antivirus: Windows error
+codes 225, 226, 1260 and 4550–4599) is reported as blocked.
+
+**Settings → RootMind service** (`desktop/src/screens/ServiceSection.tsx`) is
+read-only: a status badge, the address and the service's version. When the
+service cannot be used, it names the problem (not installed, stopped, another
+program on its port, another account's service, a service RootMind did not
+install, no answer) and offers **Repair** where that helps: for a missing,
+stopped or unresponsive service, on an administrator account. A banner with
+**Update service** appears when the service runs an older version than the
+app. The checkbox **Serve MCP over HTTP (for n8n and other remote agents)**
+switches the MCP service (one administrator approval). While it is on, the
+section shows the **MCP endpoint** with **Copy** and **Copy token**, and the
+values for **n8n (MCP Client Tool)** with **Copy**, which fills in the token,
+plus the link **Reach MCP from n8n**. The token is read from Rust on each
+copy and never shown. After a failed change, **Details** shows the output of
+`service_details`. While a custom backend is in use, the section reports what
+`service_info` shows.
 
 ## Folder access policy
 
@@ -361,8 +396,8 @@ class FolderAccess(Protocol):
 ```
 
 `Unrestricted` (`UNRESTRICTED`) keeps the plain behaviour: resolve the path,
-enter every folder, `open(path, "rb")`. The built-in backend, the command line
-and the MCP servers use it. `LocalConnector` calls `check_root` once,
+enter every folder, `open(path, "rb")`. The command line (`rootmind api`,
+`index`) and the MCP servers use it. `LocalConnector` calls `check_root` once,
 `may_descend` before it enters a folder and `open_file` for every read and
 hash. Under any other policy it never follows a link itself: it resolves
 paths lexically instead of with `Path.resolve()`, examines every component
@@ -400,9 +435,10 @@ seconds after start. `backend/packaging/entry.py` runs `api` when the
 executable gets no arguments.
 
 - `backend/packaging/smoke-test.ps1` checks a build: `--version`, the API with
-  and without a token, the ready line and the lifeline, indexing of every
-  document format in the eval corpus, that both LLM client libraries load,
-  and MCP over HTTP and stdio.
+  and without a token (the token never reaches the output), that the options
+  of the removed built-in backend (`--exit-with-parent`, `--import-config`)
+  are refused, indexing of every document format in the eval corpus, that
+  both LLM client libraries load, and MCP over HTTP and stdio.
 - `backend/packaging/tree_hash.py` computes the tree hash (SHA-256 over the
   sorted `<path>\t<sha256>` lines of every file). CI uses it to make sure the
   installer and the zip contain exactly the tested build.
@@ -414,8 +450,9 @@ tree hash, its size and `--version`. The overlay
 `$INSTDIR\backend\`. Without the overlay there is no backend, so `cargo
 check`, `pnpm tauri dev` and the desktop CI work without a backend build.
 
-The NSIS installer installs per user (`installMode: currentUser`, default
-folder `%LOCALAPPDATA%\RootMind`). It is built from
+The NSIS installer installs per machine (`installMode: perMachine`): always
+into `%ProgramFiles%\RootMind`, with an uninstall entry in HKLM and one
+administrator (UAC) prompt. It is built from
 `desktop/src-tauri/installer/installer.nsi` (`bundle.windows.nsis.template`):
 Tauri's NSIS template for the locked Tauri CLI with two changes, each marked
 "RootMind:" in the file:
@@ -423,7 +460,7 @@ Tauri's NSIS template for the locked Tauri CLI with two changes, each marked
 - No reinstall page. Running the installer over an installed version (older,
   newer or the same) replaces it in place without questions, as Tauri's
   updater does: the installed version's uninstaller never runs, so app data,
-  shortcuts and the background service stay.
+  shortcuts and the service stay.
 - No folder page when the app is installed (`SkipIfPassiveOrInstalled`): an
   update goes to the installed folder, so it cannot leave the installed
   version behind in another one.
@@ -434,28 +471,96 @@ anchor of a change is missing or not unique. It needs network access;
 release.yml runs `--check`, and the offline test
 `scripts/tests/test_nsis_template.py` fails when the locked CLI is not the one
 the file was made for, so CI fails until a Tauri CLI update refreshes it.
-After the build, release.yml checks the rendered script for a reinstall page.
+After the build, release.yml checks the rendered script: per machine, no
+reinstall page, the folder page skipped for an update, and the hooks
+included.
 
-`desktop/src-tauri/installer/hooks.nsh`:
+`desktop/src-tauri/installer/hooks.nsh` sets up the service. Installing runs
+these steps:
 
-- before installing or uninstalling, closes the app and then
-  `$INSTDIR\backend\rootmind-backend.exe` through Tauri's Restart Manager
-  check, which matches by path and so never touches the service's copy under
-  Program Files;
-- then removes the whole `$INSTDIR\backend\` folder (when it holds the
-  backend executable), so an update leaves no files the new version does not
-  ship, such as the previous version's package metadata;
-- before an interactive uninstall, reads the ImagePath of `RootMind-Backend`,
-  requires it to lie under `$PROGRAMFILES64\RootMind Service\`, asks "Also
-  remove the RootMind background service? (administrator approval required)"
-  and runs that program elevated with `service uninstall`. Silent and passive
-  uninstalls (`/S`, `/P`) and an uninstall with `/UPDATE` (as Tauri's updater
-  runs it) leave the service.
+1. **Account check**, before anything changes. The installer compares the
+   account it runs as (`GetUserNameEx`) with the user of its Windows session
+   (`WTSQuerySessionInformation`), by SID when both can be looked up, else by
+   name. When they differ, for example when an administrator approved the
+   prompt for a signed-in standard account, it shows a message and exits
+   with 8 without changing anything: the service reads with the installing
+   account's rights and only that account can read its token, so the
+   signed-in account could not use it. Without a session user (session 0: a
+   service, a deployment tool, SSH) there is nothing to compare, and
+   `service install` takes the account the installer runs as.
+2. **Install folder check.** The template has no folder page, and the install
+   folder must be `$PROGRAMFILES64\RootMind` (case-insensitive, a trailing
+   backslash ignored): the service is set up from the backend in that folder,
+   so it has to be a folder that only administrators can change. Any other
+   folder (`/D=`, or a changed install location in HKLM) is refused with a
+   message and exit code 10 before anything changes.
+3. Closes the app and the programs that run from `$INSTDIR\backend\` (an MCP
+   client's `rootmind-backend.exe mcp`) through Tauri's Restart Manager
+   check, which matches by path and so never touches the service's copy.
+4. Removes a RootMind 1.x installation of this account (per user, HKCU
+   uninstall entry, `%LOCALAPPDATA%\RootMind`): its `uninstall.exe /S` runs
+   as the signed-in account and not elevated
+   (`nsis_tauri_utils::RunAsUser`), because it lies in a folder that account
+   can change; the installer waits up to 2 minutes for the entry to
+   disappear. A silent 1.x uninstall keeps a 1.x background service, which
+   step 7 then updates with its folders, settings and index. The 1.x
+   built-in backend's folders, settings, API keys and index are not
+   imported; its folder `%LOCALAPPDATA%\io.github.cgaeking.rootmind\backend`
+   is left in place, and chats stay.
+5. Removes the whole `$INSTDIR\backend\` folder (when it holds the backend
+   executable), so an update leaves no files the new version does not ship,
+   such as the previous version's package metadata.
+6. Copies the files (Tauri's template).
+7. Runs `"$INSTDIR\backend\rootmind-backend.exe" service install --port auto
+   --mcp-port auto --user-sid <SID of the signed-in account>`, with its output
+   in the installer's details list. A new install chooses free ports and
+   turns MCP over HTTP on; an update keeps the ports, the MCP setting, the
+   tokens and the data. If this step fails, the app stays installed: a
+   message names the cause (3 foreign service, 4 no free port, 6
+   `%ProgramData%\RootMind` not protected, 7 the service did not start or
+   answer, 8 another account's service, 9 the access check could not be set
+   up, 10 the install folder can be changed by other accounts, otherwise an
+   unexpected error), points to the details list and
+   `%ProgramData%\RootMind\logs\install.log`, and the installer exits with
+   that code. After fixing the cause, run the installer again or use Repair.
+
+**Update.** Running the installer of a newer version (or the same one)
+updates in place: the app is closed first, the files are replaced while the
+service keeps running from its own copy, and step 7 updates the service,
+keeping ports, tokens, settings and index. Tauri's updater would run the old
+uninstaller with `/UPDATE`; such an uninstall keeps the service. The app has
+no updater.
+
+**Uninstall** (Windows Settings → Apps). The uninstaller is elevated, closes
+the app, and, unless it runs with `/UPDATE`, removes the services: it reads
+the ImagePath of `RootMind-Backend` (else `RootMind-MCP-HTTP`), accepts it
+only as an existing
+`$PROGRAMFILES64\RootMind Service\<one folder>\rootmind-backend.exe`, falls
+back to `$INSTDIR\backend\rootmind-backend.exe`, and runs `service uninstall`
+with it. With **Delete the application data** ticked it runs
+`service uninstall --purge`, which also deletes `%ProgramData%\RootMind`, and
+Tauri's template deletes `%APPDATA%\io.github.cgaeking.rootmind` (chats) and
+`%LOCALAPPDATA%\io.github.cgaeking.rootmind` of the account that runs the
+uninstaller. A silent uninstall (`/S`) leaves the box unticked: it removes the
+services but never deletes data. If `service uninstall` fails, a message
+gives the command to run later from an elevated prompt.
+
+**Repair.** Settings → RootMind service → **Repair**, and **Update service**,
+run `service install --port auto --mcp-port auto --user-sid <SID>` elevated,
+with the backend installed with the app in `%ProgramFiles%\RootMind\backend\`, so
+the service ends up at the app's version. Only when that backend is missing
+do they use the service's registered copy under `%ProgramFiles%\RootMind Service\`
+(the backend's, else the MCP service's), which repairs the service at its
+current version; with neither, the app asks to reinstall RootMind. On an
+installed service this is an update that keeps ports, MCP setting, tokens and
+data; a missing service is installed again.
 
 `bundle.publisher` is "Christian Gäking"; it names the "Installed apps" entry
-that winget matches. The release workflow measures the installer and states
-its size in the release notes. Build commands are in the README
-([Build the installer yourself](README.md#build-the-installer-yourself)).
+that winget matches. The winget manifest declares a machine-scope installer
+that elevates itself (`Scope: machine`, `ElevationRequirement: elevatesSelf`,
+install location `%ProgramFiles%\RootMind`). The release workflow measures the
+installer and states its size in the release notes. Build commands are in the
+README ([Build the installer yourself](README.md#build-the-installer-yourself)).
 
 **Versions.** `backend/pyproject.toml`, `desktop/package.json` (which
 `tauri.conf.json` reads) and `desktop/src-tauri/Cargo.toml` carry the same
@@ -704,17 +809,17 @@ each field. Sections:
 - `indexer`: schedule, size limit, global include and exclude patterns.
 - `api`: host and port for `rootmind api` (and `rootmind` without a command)
   when neither `--host`/`--port` nor `RLM_HOST`/`RLM_PORT` are given. The
-  built-in backend and the service get their port on the command line.
+  service gets its port on the command line.
 
 | Environment variable | Used by | Effect |
 |---|---|---|
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY` | backend | Provider keys, used when `config.yaml` has no key for that provider. Also read from a `.env` file in the working directory |
 | `CONFIG_PATH` | MCP servers | Config file when `--config` is not given (the `rootmind` CLI always defaults to `config.yaml`). Also read from `.env` |
 | `RLM_HOME` | all backend processes | Folder for `config.yaml` and `data/`; created if missing. Never indexed itself |
-| `RLM_API_TOKEN` | `rootmind api` | REST bearer token; turns authentication on. Set but empty: exit 2. Removed from the process environment after reading. The desktop app sets it for its built-in backend |
+| `RLM_API_TOKEN` | `rootmind api` | REST bearer token; turns authentication on. Set but empty: exit 2. Removed from the process environment after reading |
 | `RLM_HOST`, `RLM_PORT` | `rootmind api`, `rootmind`, `rootmind-backend.exe` | Bind address when `--host`/`--port` are not given; they take precedence over `api.*` in `config.yaml`. An invalid `RLM_PORT`: exit 2 |
 | `RLM_DISABLE_SCHEDULER` | REST API | Serve only; never index in this process (the MCP servers serve only unless started with `--index`) |
-| `RLM_DEV` | REST API | Also allow the Vite dev server origins (`localhost:1420`) for `pnpm tauri dev`. Debug builds of the app set it for their built-in backend |
+| `RLM_DEV` | REST API | Also allow the Vite dev server origins (`localhost:1420`) for `pnpm tauri dev` against a `rootmind api` started by hand |
 | `MCP_API_TOKEN` | MCP HTTP | Bearer token. If set but empty, the server refuses to start. Removed from the process environment after reading |
 | `MCP_ALLOWED_ORIGINS` | MCP HTTP | Extra browser origins to accept, comma-separated |
 | `MCP_HTTP_HOST`, `MCP_HTTP_PORT` | MCP HTTP | Bind address, default `127.0.0.1:3000` |
@@ -725,9 +830,8 @@ variable set for the whole machine cannot change its token or its files.
 
 ## REST API
 
-FastAPI app on `127.0.0.1`: port 8000 from the command line by default, a
-free port for the built-in backend, and the service's port for the background
-service. The desktop app uses a subset of these endpoints (see
+FastAPI app on `127.0.0.1`: port 8000 from the command line by default, and
+the service's port (8000, or one from 18300–18399) for the Windows service. The desktop app uses a subset of these endpoints (see
 `desktop/src/api/rlm.ts`). Requests from non-loopback addresses get 403.
 
 **Authentication.** `create_app(config, api_token=..., folder_access=...)`
@@ -776,18 +880,22 @@ How the API is protected, and what remains open, is described in
   `GET /health` and `GET /`, which the connectivity check calls before it
   knows who answers. The CSP only allows `localhost` and `127.0.0.1`.
 - **Backends.** `src/state/bootstrap.ts`, `src/hooks/useBackendBootstrap.ts`
-  and `src/state/backendActions.ts` choose and switch between the built-in
-  backend, the background service and a custom address (see
-  [Deployment modes](#deployment-modes)). `src/api/backend.ts` wraps the Rust
-  commands.
+  and `src/state/backendActions.ts` choose between the RootMind service and a
+  custom address (see [Deployment modes](#deployment-modes)) and run the
+  service changes the app offers (Repair, MCP over HTTP). `src/api/backend.ts`
+  wraps the Rust commands, and `src/state/service.ts` holds the pure helpers:
+  which problem the service has, whether Repair can fix it, the messages for
+  the exit codes, and version comparison.
 - **Connection state.** A heartbeat checks the backend every 5 seconds: with a
   token, one authenticated `GET /status`. In service mode every check goes
   through `service_connect`, which repeats the listener check and clears the
-  address and token when it fails. A 401 makes the built-in and service modes
-  fetch the current token again, and a custom backend ask for one. A dialog per
-  mode offers the next step: restart or show the log (built-in), repair or use
-  the built-in backend for now (service), or enter an address and token
-  (custom).
+  address and token when it fails. A 401 makes the service mode fetch the
+  current token again, and a custom backend ask for one. While a repair or an
+  MCP change runs, the state is "switching", so the heartbeat does not react
+  to the service going down on purpose. A dialog offers the next step: for
+  the service, what is wrong, **Repair** where it helps, **Check again**, or
+  a backend at another address; for a custom backend, the address and token,
+  or **Use the RootMind service**.
 - **Stale data.** Settings, Folders and Status load their data for the backend
   that is live (`src/hooks/useLiveBackend.ts`), reset it when the backend
   changes, drop answers from a previous backend, and refuse to save settings
@@ -795,21 +903,27 @@ How the API is protected, and what remains open, is described in
 - **Screens.** Chat (with sources that open the file or reveal it in
   Explorer, and hints when no folder, no API key or no index exists yet),
   Folders (changes are saved at once; a folder the backend refuses is taken
-  back with the reason, and in service mode the folders the service cannot
-  read are marked), Settings (appearance and language, Background service,
-  provider, model, keys, schedule, Advanced for a custom backend, and About
-  with the app and backend versions) and Status.
-- **Rust side.** `src-tauri/src/backend.rs` runs the built-in backend,
-  `service.rs` and `win/` read the service state, check the listener and run
-  the elevated `service` commands, and `conversations.rs` stores each
-  conversation as a JSON file in the app data folder. Every command that takes
-  a conversation id validates it with `safe_id` (ASCII letters, digits, `-` and
-  `_`, at most 100 characters), so an id cannot escape that folder. Every
-  `unsafe` block states why it is sound (clippy enforces the comment).
+  back with the reason, and the folders the service cannot read are marked
+  "Not accessible to the RootMind service: ..."), Settings (appearance and
+  language, RootMind service, provider, model, keys, schedule, Advanced for a
+  custom backend, and About with the app and backend versions) and Status.
+- **Rust side.** `src-tauri/src/app.rs` reports the build information and
+  locates the backend that ships with the app; `service.rs` and `win/` read
+  the service state, check the listener, read the token files and run the
+  elevated `service install`; `args.rs` quotes command-line arguments,
+  `imagepath.rs` and `tcptable.rs` parse the ImagePath and the TCP table; and
+  `conversations.rs` stores each conversation as a JSON file in the app data
+  folder. Every command that takes a conversation id validates it with
+  `safe_id` (ASCII letters, digits, `-` and `_`, at most 100 characters), so
+  an id cannot escape that folder. Every `unsafe` block states why it is
+  sound (clippy enforces the comment). A second launch focuses the running
+  window (`tauri-plugin-single-instance`), so two windows never write the
+  same chat history.
 - **Permissions.** `src-tauri/capabilities/default.json` grants only what the
   UI uses. Opening files is limited to the document types the backend indexes;
-  `src-tauri/tests/opener_scope.rs` checks this against `parser.py`. The shell
-  plugin is used from Rust only and has no permission in the capabilities.
+  `src-tauri/tests/opener_scope.rs` checks this against `parser.py`. The app
+  has no shell plugin: Rust starts the backend program itself, unelevated only
+  for `service status --json`, and elevated for `service install`.
 - **Language.** English and German labels live in `src/i18n/`; both files
   must have the same keys, which the type checker and a test enforce.
   Settings → Appearance → Language switches at runtime between *System* (the
@@ -834,7 +948,9 @@ How the API is protected, and what remains open, is described in
 - API tests use FastAPI's `TestClient` with the real lifespan. MCP tests drive
   the stdio server through the official MCP client in-process and the HTTP
   server through `TestClient`. Command-line tests start `rootmind api` on
-  port 0 in a subprocess for the ready line, the token and the lifeline.
+  port 0 in a subprocess, read the port from its log and check the token, and
+  check that the removed options `--exit-with-parent` and `--import-config`
+  are refused.
 - The authentication tests run every route of the app without a token and
   expect 401 except for the open ones, so a new route cannot be left open by
   accident.
@@ -856,29 +972,43 @@ How the API is protected, and what remains open, is described in
   [Packaging](#packaging)).
 - `backend/tests/e2e/service_e2e.ps1` installs the services on the elevated
   CI runner and checks the refusals (foreign service, busy port, wrong
-  account, unprotected data folder), the accounts, privileges and quoted
-  command lines, the permissions of the program and data folders, both
-  tokens, read confinement (a file only administrators can read is not found
-  by search; system folders and shares are refused), the MCP folder reload,
-  restart and update, and uninstall with and without `--purge`. It refuses to
-  run outside CI.
-- `desktop/scripts/installer-smoke.ps1` installs the release installer
-  silently, checks the "Installed apps" entry and the backend's tree hash,
-  starts the installed backend and reinstalls over it while it runs. Then it
-  updates the installed version in place, silently and passively (`/S`,
-  `/P`), from a simulated older version and to the same version: each run
-  keeps the install folder, the uninstall entry and the app data, and leaves
-  no stale backend files. Last, it uninstalls.
-- `scripts/tests/` covers the release scripts and the NSIS template.
+  account, unprotected data folder), an install with MCP over HTTP on by
+  default, the accounts, privileges and quoted command lines, the
+  permissions of the program and data folders, both tokens, read confinement
+  (a file only administrators can read is not found by search; system
+  folders and shares are refused), the MCP folder reload, restart and update,
+  switching MCP over HTTP off and on again from the Program Files copy (as
+  the app does; the MCP token is kept), and uninstall with and without
+  `--purge`. It refuses to run outside CI.
+- `desktop/scripts/installer-smoke.ps1` runs the per-machine installer on the
+  elevated CI runner, silently (`/S`, as winget runs it) and passively (`/P`).
+  A fresh install creates the HKLM "Installed apps" entry and the install
+  folder `%ProgramFiles%\RootMind`, which standard accounts cannot change, with
+  the tested backend's tree hash; both services run for this account from
+  the admin-only copy, answer 401 without and 200 with their tokens, keep a
+  folder added through the REST API, and `service status --json` reports no
+  warnings. A silent update from a simulated older version and a passive
+  reinstall of the same version keep the install folder, the uninstall entry
+  (so the old uninstaller never ran), the app data, the ports, both tokens
+  and the service's data, leave no stale backend files, and move the services
+  to a new program copy. A silent uninstall removes the services, their
+  program copy, the entry and the app, and keeps the service's data folder
+  without the REST token. The refusal of an installer approved by another
+  account is not covered (the runner has one account); the hooks are
+  checked statically by `scripts/tests/test_nsis_template.py`.
+- `scripts/tests/` covers the release scripts, the NSIS template and the
+  installer hooks.
 
 **Desktop.** ESLint and the TypeScript compiler; vitest with happy-dom for
-the backend choice, the store, the client's token handling, the stale-data
-guards (including a render test of Settings switching backends), the service
-result messages and the label files; Rust tests for the ready-line parser,
-argument quoting, exit-code mapping, the ImagePath and TCP table parsers, the
-restart policy, `safe_id` and the file-opening scope, plus lifecycle tests that
-start a fake backend process. The approval prompts and the installer's
-dialogs are checked by hand before a release (see
+the backend choice, the store, the client's token handling, the connectivity
+check, the stale-data guards (including a render test of Settings switching
+backends), the service problems and result messages, the RootMind service
+section, the backend dialog and the label files; Rust tests for argument
+quoting, exit-code mapping, the ImagePath and TCP table parsers, the order of
+the listener check and the token read, token files, `safe_id` and the
+file-opening scope, plus Windows-only tests of the Service Control Manager,
+TCP table and account bindings. The approval prompts, the installer's
+dialogs and its account check are checked by hand before a release (see
 [CONTRIBUTING.md](CONTRIBUTING.md#releasing)).
 
 **Evals** (`backend/evals/`, `backend/scripts/run_evals.py`) measure the agent
@@ -897,20 +1027,33 @@ retrieval step is visible. The cost is more LLM round trips per question and
 no synonym matching; the README has the trade-off table. The repository class
 is the seam for a different retrieval backend.
 
-**A built-in backend started by the app.** The app ships the backend and runs
-it as a child process, so an install needs neither Python nor administrator
-rights. The backend picks a free port itself (`--port 0`) and reports it on
-stdout, which avoids clashes with anything else on 8000. Its lifetime is tied
-to the app through stdin, which also covers an app crash.
+**Always a Windows service.** Since 2.0 the backend always runs as the
+Windows service that the installer sets up; the app has no backend of its
+own. Indexing continues while the app is closed, the app and MCP clients
+use one index, and settings and data live in one place instead of two
+homes with an import between them. The costs are below: an administrator
+account to install, one account per computer, no network drives or shares,
+and parsers that run as SYSTEM.
 
-**REST tokens where the app manages the backend.** The built-in backend gets a
-new token for every start, and the service a token in a file only its account
-can read, so other accounts and web pages cannot use them. A token cannot
-stop programs of the same user, which can read it. The plain command line
-runs without a token unless asked, so scripts and the curl examples work
-without one; a token by default there may come with a future major version.
-The middleware is pure ASGI so it also covers WebSockets, and `/` and
-`/health` stay open so the app can identify a backend and its `auth` mode.
+**Administrator rights to install.** The per-machine installer needs one
+administrator approval, and the account signed in to Windows must be the
+one that approves it. The service reads with that account's rights and only
+that account can read its token, so an approval by another administrator
+("over the shoulder") would set up a service the signed-in account cannot
+use; the installer refuses it before anything changes. A standard account
+can use RootMind only with a backend it starts itself (Settings →
+Advanced). RootMind 1.x installed per account without administrator rights;
+2.0 cannot.
+
+**A REST token for the service.** The service's token is in a file only its
+account, SYSTEM and administrators can read, and the app takes it only after
+checking that the service's own process listens on the port, so other
+accounts and web pages cannot use the API. A token cannot stop programs of
+the same user, which can read it. The plain command line runs without a token
+unless asked, so scripts and the curl examples work without one; a token by
+default there may come with a future major version. The middleware is pure
+ASGI so it also covers WebSockets, and `/` and `/health` stay open so the app
+can identify a backend and its `auth` mode.
 
 **LocalSystem with read confinement for the service.** A service has to read
 the user's folders while no one is logged in. A dedicated service account
@@ -919,8 +1062,9 @@ could not read folders the user may read but does not own, and would change
 how folders are added. LocalSystem can read them without changes, so the
 service runs as LocalSystem and confines itself with an AuthZ check to what
 the user can read without elevation, failing closed. MCP over HTTP, which
-never reads the folders, runs as a virtual account instead. The service is
-offered to administrator accounts only, because its parsers run as SYSTEM.
+never reads the folders, runs as a virtual account instead. Installing it
+needs an administrator account also because its parsers run as SYSTEM: for a
+standard account, a parser bug would be a way to SYSTEM.
 
 **A native service host instead of a wrapper.** The executable hosts itself
 through pywin32's `ServiceFramework`: no third-party service wrapper to
@@ -933,7 +1077,9 @@ behind in `%TEMP%`, and the service can run it from Program Files as is.
 
 **Bearer token for MCP HTTP.** That server exists for clients that cannot
 start a local process, possibly on other machines behind a tunnel, so it
-requires a token from the start and fails closed without one.
+requires a token from the start and fails closed without one. The service
+serves it by default, on `127.0.0.1` only: for the installed app it is the
+way MCP clients reach the index, which the stdio server cannot open.
 
 **A hand-written MCP HTTP transport.** `mcp_http.py` implements the JSON-RPC
 methods it needs on FastAPI (JSON responses on `POST /mcp`, plus the older SSE
@@ -972,15 +1118,16 @@ service would need:
 - The release binaries are not code-signed. SmartScreen warns, and Smart App
   Control may block them. The winget submission waits for signed binaries
   (`packaging/winget/README.md`).
-- The approval prompts, the installer's dialogs and switching modes in the
-  app are tested by hand; CI covers the service through its command line and
-  the installer in silent and passive mode.
-- The background service is offered to administrator accounts only and cannot
-  index network drives or shares. Domain accounts whose domain cannot be
-  reached may not get an access context, and the service then refuses to
-  start.
-- The built-in backend and the service do not share an index; turning the service
-  on builds a new one.
+- The approval prompts, the installer's dialogs, its refusal of an approval
+  by another account, the upgrade from 1.x, and Repair and the MCP switch in
+  the app are tested by hand; CI covers the service through its command line
+  and the installer in silent and passive mode on a runner with one account.
+- Installing needs an administrator account, the service serves one account
+  per computer, and it cannot index network drives or shares. Domain accounts
+  whose domain cannot be reached may not get an access context, and the
+  service then refuses to start.
+- The upgrade from 1.x does not carry over the folders, settings, API keys
+  or index of the 1.x built-in backend.
 - No token rotation command; delete the token file and run `service install`
   again.
 - No installers or services for macOS or Linux, and no automatic updates.
