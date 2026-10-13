@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-13
+
 ### Added
 
 - German README (`README.de.md`) with a language switch at the top of both READMEs, and a row of status badges: latest release, backend and desktop CI, license, platform and downloads ([#18](https://github.com/cgaeking/rootmind/issues/18)).
