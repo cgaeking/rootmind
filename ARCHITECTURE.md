@@ -718,7 +718,6 @@ each field. Sections:
 | `MCP_API_TOKEN` | MCP HTTP | Bearer token. If set but empty, the server refuses to start. Removed from the process environment after reading |
 | `MCP_ALLOWED_ORIGINS` | MCP HTTP | Extra browser origins to accept, comma-separated |
 | `MCP_HTTP_HOST`, `MCP_HTTP_PORT` | MCP HTTP | Bind address, default `127.0.0.1:3000` |
-| `VITE_APP_LANG` | desktop build | `de` builds the German UI; English is the default |
 
 The background service sets `RLM_HOME` itself and ignores `RLM_API_TOKEN`,
 `MCP_API_TOKEN`, `CONFIG_PATH`, `RLM_DEV`, `RLM_HOST` and `RLM_PORT`, so a
@@ -795,9 +794,11 @@ How the API is protected, and what remains open, is described in
   that were loaded from another backend.
 - **Screens.** Chat (with sources that open the file or reveal it in
   Explorer, and hints when no folder, no API key or no index exists yet),
-  Folders (in service mode with the folders the service cannot read),
-  Settings (Background service, provider, model, keys, schedule, and
-  Advanced for a custom backend) and Status.
+  Folders (changes are saved at once; a folder the backend refuses is taken
+  back with the reason, and in service mode the folders the service cannot
+  read are marked), Settings (appearance and language, Background service,
+  provider, model, keys, schedule, Advanced for a custom backend, and About
+  with the app and backend versions) and Status.
 - **Rust side.** `src-tauri/src/backend.rs` runs the built-in backend,
   `service.rs` and `win/` read the service state, check the listener and run
   the elevated `service` commands, and `conversations.rs` stores each
@@ -809,10 +810,12 @@ How the API is protected, and what remains open, is described in
   UI uses. Opening files is limited to the document types the backend indexes;
   `src-tauri/tests/opener_scope.rs` checks this against `parser.py`. The shell
   plugin is used from Rust only and has no permission in the capabilities.
-- **Language.** Labels are selected at build time (`src/i18n/`); English is
-  the default and `VITE_APP_LANG=de` builds German. Both label files must have
-  the same keys, which the type checker and a test enforce. There is no
-  runtime switch.
+- **Language.** English and German labels live in `src/i18n/`; both files
+  must have the same keys, which the type checker and a test enforce.
+  Settings → Appearance → Language switches at runtime between *System* (the
+  default, which follows the Windows display language as the webview reports
+  it), *English* and *Deutsch*. The choice is stored per user in
+  `localStorage` and applies without a restart.
 
 ## Testing and evals
 
@@ -940,9 +943,11 @@ cover the whole streamable HTTP specification (no server-sent event
 stream on `GET /mcp`, no sessions, no batches). The stdio server uses the
 official MCP SDK.
 
-**Build-time i18n.** Two label files with identical keys and a build switch
-keep every component free of language state. Switching languages means a
-separate build.
+**Lightweight i18n.** Two label files with identical keys and a live
+`labels` binding instead of an i18n library. A language change re-renders the
+app layout and every screen, which subscribe to it; code must read labels when
+it runs and never copy one into a module-level constant. There are no plural
+rules or message formats beyond small label functions.
 
 ## How this would map to a server deployment
 

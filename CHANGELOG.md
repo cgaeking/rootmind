@@ -4,6 +4,20 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Added
+
+- German README (`README.de.md`) with a language switch at the top of both READMEs, and a row of status badges: latest release, backend and desktop CI, license, platform and downloads ([#18](https://github.com/cgaeking/rootmind/issues/18)).
+- Quickstart in English and German (`docs/QUICKSTART.md`, `docs/QUICKSTART.de.md`): from the installer to a first search, an API key for questions, and MCP for Claude Desktop, Claude Code and n8n. Both READMEs link to it at the top ([#19](https://github.com/cgaeking/rootmind/issues/19)).
+- Desktop app: Settings → Appearance → **Language** with *System*, *English* and *Deutsch*. *System* follows the Windows display language (German for a German Windows, English otherwise). The choice is stored per user and switches every screen at once, without a restart ([#13](https://github.com/cgaeking/rootmind/issues/13)).
+- Desktop app: Settings → **About** shows the app version and the version of the backend in use (they differ when the background service runs an older build), author, license and links to the repository, the releases and the issues, which open in the default browser ([#17](https://github.com/cgaeking/rootmind/issues/17)).
+
+### Changed
+
+- Desktop app: the UI language is no longer chosen at build time; `VITE_APP_LANG` has no effect any more ([#13](https://github.com/cgaeking/rootmind/issues/13)).
+- Desktop app: the Folders screen has no **Save** button. A folder picked in the dialog, a removed folder and an edited path are saved right away. A folder the backend refuses (for example one the background service may not read) is taken back out, and the reason is shown ([#14](https://github.com/cgaeking/rootmind/issues/14)).
+- Desktop app: paths are shown with backslashes on Windows (folder list, search results, chat sources, Status). Typed paths may use either separator; stored paths are unchanged ([#15](https://github.com/cgaeking/rootmind/issues/15)).
+- Desktop app: Settings → LLM has **Save** next to the API key instead of **Load models**. The key is checked with the provider first: a valid key is saved together with the selected provider and a model (the selected one if the provider lists it, otherwise the first listed), and fills the model list, so no further Save is needed; an invalid one shows the provider's error and changes nothing. The model field stays disabled while the selected provider has no saved key. A pasted key preselects its provider by format (`sk-ant-` Anthropic, `xai-` xAI, other `sk-` OpenAI) with a hint, and another provider can still be chosen. Saved keys stay masked ([#16](https://github.com/cgaeking/rootmind/issues/16)).
+
 ## [1.2.0] - 2026-10-12
 
 ### Added

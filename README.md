@@ -1,5 +1,17 @@
 # RootMind
 
+**English** | [Deutsch](README.de.md)
+
+[![Latest release](https://img.shields.io/github/v/release/cgaeking/rootmind)](https://github.com/cgaeking/rootmind/releases/latest)
+[![backend CI](https://github.com/cgaeking/rootmind/actions/workflows/backend.yml/badge.svg?branch=main)](https://github.com/cgaeking/rootmind/actions/workflows/backend.yml?query=branch%3Amain)
+[![desktop CI](https://github.com/cgaeking/rootmind/actions/workflows/desktop.yml/badge.svg?branch=main)](https://github.com/cgaeking/rootmind/actions/workflows/desktop.yml?query=branch%3Amain)
+[![License: MIT](https://img.shields.io/github/license/cgaeking/rootmind)](LICENSE)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)](#install)
+[![Downloads](https://img.shields.io/github/downloads/cgaeking/rootmind/total)](https://github.com/cgaeking/rootmind/releases)
+
+> **New here?** The [Quickstart](docs/QUICKSTART.md) gets you from download to
+> a first search result in a few steps.
+
 Local document search with an agentic LLM loop. RootMind indexes the files in
 folders you choose into SQLite FTS5. When you ask a question, a language model
 decides what to search for and which documents to read, using a small set of
@@ -12,7 +24,8 @@ The repository has two parts:
 - **Backend** (Python, FastAPI): indexer, full-text search, the agent loop, a
   localhost REST API, and MCP servers over stdio and HTTP.
 - **Desktop app** (Tauri 2 with React and TypeScript, plus a Rust shell): a
-  chat and search UI for Windows that ships with the backend and runs it.
+  chat and search UI for Windows, in English and German, that ships with the
+  backend and runs it.
 
 > **Status:** this is a personal project. It is not commercially maintained and
 > comes with no support commitment. Issues and pull requests are welcome and
@@ -40,9 +53,13 @@ this.
 
 Then add a folder under **Folders**. Indexing starts within about a minute,
 and search works without an API key once the folder is indexed. To ask
-questions, add an API key for Anthropic, OpenAI or xAI under **Settings**.
-Optionally, Settings → **Background service** keeps the index up to date
-while the app is closed (see [Background service](#background-service)).
+questions, add an API key for Anthropic, OpenAI or xAI under **Settings** and
+save it. Optionally, Settings → **Background service** keeps the index up to
+date while the app is closed (see [Background service](#background-service)).
+
+The app follows the Windows display language (English or German); Settings →
+**Appearance** → **Language** changes it. Settings → **About** shows the app
+and backend versions and links to releases and issues.
 
 ### Verify downloads
 
@@ -483,8 +500,7 @@ pnpm tauri build --config src-tauri/tauri.release.conf.json
 
 The installer is written to `desktop/src-tauri/target/release/bundle/nsis/`.
 Run `uv sync` in `backend/` afterwards to get the development tools back.
-Without the overlay, `pnpm tauri build` builds an app without a backend. Set
-`VITE_APP_LANG=de` before step 3 for the German UI.
+Without the overlay, `pnpm tauri build` builds an app without a backend.
 
 ## Repository layout
 
