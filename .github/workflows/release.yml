@@ -11,6 +11,8 @@ name: release
 #              installer smoke test (install with the Windows services,
 #              update, reinstall, uninstall) on the elevated runner
 #   winget     the winget manifests, rendered and validated against the schemas
+#   mcpb       rootmind.mcpb for Claude Desktop: the bridge's tests, then the
+#              bundle validated and packed with the mcpb CLI
 #   publish    tags only: backend zip, checksums, attestations, GitHub Release
 #
 # A manual run (workflow_dispatch) and pull requests that change the packaging
@@ -32,6 +34,7 @@ on:
       - "desktop/scripts/**"
       - "backend/packaging/**"
       - "packaging/winget/**"
+      - "packaging/mcpb/**"
       - "scripts/check_versions.py"
       - "scripts/nsis_template.py"
       - "scripts/prepare_backend.py"
@@ -54,6 +57,8 @@ concurrency:
 env:
   ANTHROPIC_BASE_URL: "http://127.0.0.1:9"
   OPENAI_BASE_URL: "http://127.0.0.1:9"
+  # The mcpb CLI that packs rootmind.mcpb; mcpb.yml uses the same version.
+  MCPB_CLI: "@anthropic-ai/mcpb@2.1.2"
 
 jobs:
   meta:
@@ -297,9 +302,59 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  mcpb:
+    name: Claude Desktop bundle
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Bridge tests
+        run: node --test "packaging/mcpb/test/*.test.mjs"
+
+      # The meta job checked that the manifest carries the release version
+      # (scripts/check_versions.py). Only manifest.json, icon.png and server/
+      # go into the bundle.
+      - name: Validate and pack
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          npx --yes "$MCPB_CLI" validate packaging/mcpb/manifest.json
+          mkdir -p "$RUNNER_TEMP/mcpb"
+          npx --yes "$MCPB_CLI" pack packaging/mcpb "$RUNNER_TEMP/mcpb/rootmind.mcpb"
+          contents=$(unzip -Z1 "$RUNNER_TEMP/mcpb/rootmind.mcpb" | LC_ALL=C sort | tr '\n' ' ')
+          expected="icon.png manifest.json server/bridge.mjs server/index.mjs "
+          if [ "$contents" != "$expected" ]; then
+            echo "::error::unexpected bundle contents: $contents"
+            exit 1
+          fi
+          packed=$(unzip -p "$RUNNER_TEMP/mcpb/rootmind.mcpb" manifest.json | jq -r .version)
+          if [ "$packed" != "$VERSION" ]; then
+            echo "::error::the bundle has version $packed, expected $VERSION"
+            exit 1
+          fi
+          sha=$(sha256sum "$RUNNER_TEMP/mcpb/rootmind.mcpb" | cut -d ' ' -f 1)
+          size=$(stat -c %s "$RUNNER_TEMP/mcpb/rootmind.mcpb")
+          echo "Claude Desktop bundle: rootmind.mcpb, $size bytes, SHA-256 $sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rootmind-mcpb
+          path: ${{ runner.temp }}/mcpb/rootmind.mcpb
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
     name: Publish the release
-    needs: [meta, backend, installer, winget]
+    needs: [meta, backend, installer, winget, mcpb]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -325,8 +380,14 @@ jobs:
           name: rootmind-backend-windows-x64
           path: ${{ runner.temp }}/backend/rootmind-backend
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rootmind-mcpb
+          path: ${{ runner.temp }}/assets
+
       # The zip holds the folder rootmind-backend/ with exactly the tested
-      # tree, files whose names start with a dot included.
+      # tree, files whose names start with a dot included. The bundle for
+      # Claude Desktop comes from the mcpb job.
       - name: Backend zip and checksums
         env:
           TREE_SHA256: ${{ needs.backend.outputs.tree-sha256 }}
@@ -342,7 +403,7 @@ jobs:
             find rootmind-backend -type f | LC_ALL=C sort | zip -X -q "$assets/rootmind-backend-windows-x64.zip" -@
           )
           cd "$assets"
-          sha256sum RootMind-Setup-x64.exe rootmind-backend-windows-x64.zip > SHA256SUMS.txt
+          sha256sum RootMind-Setup-x64.exe rootmind.mcpb rootmind-backend-windows-x64.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
           ls -l
 
@@ -350,6 +411,7 @@ jobs:
         with:
           subject-path: |
             ${{ runner.temp }}/assets/RootMind-Setup-x64.exe
+            ${{ runner.temp }}/assets/rootmind.mcpb
             ${{ runner.temp }}/assets/rootmind-backend-windows-x64.zip
             ${{ runner.temp }}/assets/SHA256SUMS.txt
 
@@ -369,5 +431,6 @@ jobs:
           fi
           gh release create "$TAG" "${flags[@]}" \
             "$assets/RootMind-Setup-x64.exe" \
+            "$assets/rootmind.mcpb" \
             "$assets/rootmind-backend-windows-x64.zip" \
             "$assets/SHA256SUMS.txt"

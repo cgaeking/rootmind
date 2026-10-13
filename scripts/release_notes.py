@@ -25,6 +25,7 @@ from check_versions import ROOT, VersionError, normalize_version, tag_version
 REPOSITORY = "cgaeking/rootmind"
 INSTALLER = "RootMind-Setup-x64.exe"
 BACKEND_ZIP = "rootmind-backend-windows-x64.zip"
+MCP_BUNDLE = "rootmind.mcpb"
 CHECKSUMS = "SHA256SUMS.txt"
 
 _HEADING = re.compile(r"^##\s+\[(?P<label>[^\]]+)\]")
@@ -88,8 +89,9 @@ def footer(installer_size: int | None = None) -> str:
 | File | What it is |
 | --- | --- |
 | `{INSTALLER}` | The Windows app with its background service{size}. Installs for all users of the computer and sets up the service for your account; needs one administrator approval, no Python. |
+| `{MCP_BUNDLE}` | RootMind for Claude Desktop: double-click it and Claude Desktop installs it. Needs RootMind installed with **Serve MCP over HTTP** on (the default). |
 | `{BACKEND_ZIP}` | The backend on its own, for the command line and servers. Not needed for the app. |
-| `{CHECKSUMS}` | SHA-256 checksums of both files. |
+| `{CHECKSUMS}` | SHA-256 checksums of these files. |
 
 ### Verify the download
 
