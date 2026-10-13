@@ -144,10 +144,17 @@ indexer keeps the folders it started with until a restart.
 For the installed app, use MCP over HTTP. The service's database lives in a
 folder that your account can only read, and SQLite readers in WAL mode need
 to write, so `rootmind-backend.exe mcp` from the app's folder cannot open it.
-Claude Desktop starts only stdio servers from `claude_desktop_config.json`
-and needs a stdio-to-HTTP bridge to reach the endpoint, which RootMind does
-not include. The stdio server is meant for a source checkout or a uv install
-with its own `config.yaml`.
+Claude Desktop starts only stdio servers; the release asset `rootmind.mcpb`
+(an MCP Bundle, source in `packaging/mcpb/`) is one: a Node.js bridge that
+Claude Desktop runs with its built-in Node. It reads the MCP port and token
+file from `"%ProgramFiles%\RootMind\backend\rootmind-backend.exe" service
+status --json`, forwards each JSON-RPC line from stdin to `POST /mcp` with the
+bearer token and writes the answers to stdout. When RootMind cannot be used
+(not installed, MCP over HTTP off, service stopped, token of another account,
+no connection) it answers each request with a JSON-RPC error that says what
+to do, and it looks the service up again after a connection error, so it
+follows a new port. The stdio server is meant for a source checkout or a uv
+install with its own `config.yaml`.
 
 ## Interfaces between the parts
 
@@ -375,7 +382,7 @@ program on its port, another account's service, a service RootMind did not
 install, no answer) and offers **Repair** where that helps: for a missing,
 stopped or unresponsive service, on an administrator account. A banner with
 **Update service** appears when the service runs an older version than the
-app. The checkbox **Serve MCP over HTTP (for n8n and other remote agents)**
+app. The checkbox **Serve MCP over HTTP (for Claude Desktop, n8n and other agents)**
 switches the MCP service (one administrator approval). While it is on, the
 section shows the **MCP endpoint** with **Copy** and **Copy token**, and the
 values for **n8n (MCP Client Tool)** with **Copy**, which fills in the token,
@@ -562,8 +569,15 @@ install location `%ProgramFiles%\RootMind`). The release workflow measures the
 installer and states its size in the release notes. Build commands are in the
 README ([Build the installer yourself](README.md#build-the-installer-yourself)).
 
+**Claude Desktop bundle.** `release.yml` packs `packaging/mcpb/` with the
+mcpb CLI into `rootmind.mcpb` (manifest, icon and the bridge; Node's standard
+library only, no `node_modules`) after the bridge's tests, and publishes it
+with the release, in `SHA256SUMS.txt` and with an attestation. It is not
+signed with `mcpb sign`. Details: [packaging/mcpb/README.md](packaging/mcpb/README.md).
+
 **Versions.** `backend/pyproject.toml`, `desktop/package.json` (which
-`tauri.conf.json` reads) and `desktop/src-tauri/Cargo.toml` carry the same
+`tauri.conf.json` reads), `desktop/src-tauri/Cargo.toml` and
+`packaging/mcpb/manifest.json` carry the same
 version. `scripts/check_versions.py` compares them in PEP 440 normal form, and
 with `--tag` also the release tag. The release steps are in
 [CONTRIBUTING.md](CONTRIBUTING.md#releasing).

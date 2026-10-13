@@ -40,7 +40,7 @@ Das Repository hat zwei Teile:
 ## Installation
 
 Jedes [Release](https://github.com/cgaeking/rootmind/releases/latest) enthält
-zwei Downloads für Windows (x64):
+diese Downloads für Windows (x64):
 
 - **[RootMind-Setup-x64.exe](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-Setup-x64.exe)**,
   für die meisten, unter Windows 10 oder 11: die Desktop-App und ihr
@@ -52,6 +52,9 @@ zwei Downloads für Windows (x64):
 - **[rootmind-backend-windows-x64.zip](https://github.com/cgaeking/rootmind/releases/latest/download/rootmind-backend-windows-x64.zip)**,
   für die Kommandozeile und Server: das Backend allein, ohne die App (siehe
   [Installation für Entwicklung und Server](#installation-für-entwicklung-und-server)).
+- **[rootmind.mcpb](https://github.com/cgaeking/rootmind/releases/latest/download/rootmind.mcpb)**,
+  RootMind für Claude Desktop, nach der App zu installieren (siehe
+  [RootMind in Claude Desktop nutzen](#rootmind-in-claude-desktop-nutzen)).
 
 Zur Installation brauchst du ein Administratorkonto. Der Dienst gehört dem
 Konto, das RootMind installiert, deshalb läuft der Installer nur als das bei
@@ -170,7 +173,10 @@ Sicherheitsmodell.
 MCP-Clients bekommen dieselben lesenden Tools wie der Agent der App und nutzen
 ihr eigenes Modell. Verbinde sie mit MCP über HTTP des Dienstes:
 Einstellungen → RootMind-Dienst zeigt den **MCP-Endpunkt** und kopiert ihn
-und das Token (**Token kopieren**). Claude Code:
+und das Token (**Token kopieren**). Für Claude Desktop gibt es ein Bundle,
+das beides nicht braucht (siehe
+[RootMind in Claude Desktop nutzen](#rootmind-in-claude-desktop-nutzen)).
+Claude Code:
 
 ```bash
 claude mcp add --transport http rootmind http://127.0.0.1:<port>/mcp \
@@ -181,11 +187,35 @@ Der Port ist 3000, wenn er frei ist, sonst einer aus 18400–18499. Das Token
 bleibt über Updates hinweg erhalten, und der Server übernimmt geänderte
 Ordner ohne Neustart.
 
-Claude Desktop startet aus `claude_desktop_config.json` nur lokale
-(stdio-)MCP-Server. Um den HTTP-Endpunkt von dort zu erreichen, braucht es
-eine Brücke von stdio zu HTTP, die RootMind nicht mitbringt. Das Programm im
-Ordner der App (`rootmind-backend.exe mcp`) kann für die installierte App
-nicht als stdio-Server dienen: Es kann den Index des Dienstes nicht öffnen.
+### RootMind in Claude Desktop nutzen
+
+1. Lade
+   [rootmind.mcpb](https://github.com/cgaeking/rootmind/releases/latest/download/rootmind.mcpb)
+   aus dem [neuesten Release](https://github.com/cgaeking/rootmind/releases/latest)
+   herunter.
+2. Doppelklicke die Datei. Claude Desktop öffnet sie, zeigt die Tools von
+   RootMind und installiert sie, sobald du bestätigst.
+
+Einzurichten ist nichts. Die Erweiterung findet den RootMind-Dienst auf
+diesem Computer, liest dort Port und Token für MCP und verbindet sich mit MCP
+über HTTP auf 127.0.0.1. Sie braucht ein installiertes RootMind mit
+eingeschaltetem **MCP über HTTP anbieten** (Standard; Einstellungen →
+RootMind-Dienst), und Claude Desktop muss unter dem Windows-Konto laufen, das
+RootMind installiert hat, denn nur dieses Konto kann das Token lesen. Fehlt
+etwas, sagt die Fehlermeldung der Erweiterung, was zu tun ist, etwa RootMind
+zu installieren oder MCP über HTTP einzuschalten; danach funktioniert die
+nächste Anfrage, ohne die Erweiterung neu zu installieren. Nach einer
+Reparatur folgt sie dem Dienst selbst auf einen neuen Port. Zum Aktualisieren
+installierst du die `rootmind.mcpb` eines neueren Releases. Das Bundle ist
+noch nicht signiert, deshalb kennzeichnet Claude Desktop es als nicht
+signiert. Quelltext und Funktionsweise:
+[packaging/mcpb](packaging/mcpb/README.md) (englisch).
+
+Claude Desktop startet nur lokale (stdio-)MCP-Server; die Erweiterung ist ein
+solcher Server und leitet an den HTTP-Endpunkt des Dienstes weiter. Das
+Programm im Ordner der App (`rootmind-backend.exe mcp`) kann für die
+installierte App nicht als stdio-Server dienen: Es kann den Index des
+Dienstes nicht öffnen.
 Der stdio-Server ist für eine Installation aus dem Quellcode oder mit uv und
 eigener `config.yaml` gedacht (siehe
 [3. Die Tools aus einem MCP-Client nutzen](#3-die-tools-aus-einem-mcp-client-nutzen)).
@@ -569,6 +599,7 @@ desktop/
                            installer/ mit NSIS-Vorlage und den Dienst-Hooks
   scripts/                 Smoke-Test des Installers
 packaging/winget/          Vorlagen für winget-Manifeste
+packaging/mcpb/            Bundle für Claude Desktop (rootmind.mcpb): Brücke von stdio zu HTTP, Manifest, Tests
 scripts/                   Versionsprüfung, Release Notes, Backend-Vorbereitung, winget-Rendering,
                            Aktualisierung der NSIS-Vorlage
 .github/workflows/         CI und Release
@@ -627,10 +658,11 @@ Secrets. Nur der Release-Job darf in das Repository schreiben:
 
 | Workflow | Was er ausführt |
 |---|---|
-| [`backend.yml`](.github/workflows/backend.yml) | ruff check und Format-Prüfung; die Versionsprüfung über Backend und Desktop; die Tests der Release-Skripte unter Ubuntu und Windows; pytest mit Coverage unter Ubuntu (Python 3.12 und 3.14) und Windows (Python 3.12); den Such-Regressionstest im Dry-Modus |
+| [`backend.yml`](.github/workflows/backend.yml) | ruff check und Format-Prüfung; die Versionsprüfung über Backend, Desktop und das Bundle für Claude Desktop; die Tests der Release-Skripte unter Ubuntu und Windows; pytest mit Coverage unter Ubuntu (Python 3.12 und 3.14) und Windows (Python 3.12); den Such-Regressionstest im Dry-Modus |
 | [`backend-exe.yml`](.github/workflows/backend-exe.yml) | Den PyInstaller-onedir-Build unter Windows, einen Smoke-Test der Programmdatei (REST, MCP über HTTP und stdio, Indizierung jedes Dateityps) und ihren Tree-Hash; danach einen End-to-End-Test des Windows-Dienstes auf dem Runner mit Administratorrechten: Installation, Berechtigungen, Tokens, Lese-Beschränkung, Update und Deinstallation. Bei Pull Requests läuft der Dienst-Test nur, wenn sich dienstbezogener Code geändert hat |
 | [`desktop.yml`](.github/workflows/desktop.yml) | ESLint, TypeScript-Typprüfung, vitest, Vite-Build, `cargo fmt`, `cargo clippy`, `cargo check`, `cargo test` unter Windows |
-| [`release.yml`](.github/workflows/release.yml) | Für einen Versions-Tag `v*`: das Backend über `backend-exe.yml`; den Installer für alle Benutzer mit diesem Backend, eine Prüfung, dass er eine installierte Version ohne Neuinstallations-Seite an Ort und Stelle aktualisiert, und einen Smoke-Test auf dem Runner mit Administratorrechten, der RootMind mit seinen Windows-Diensten installiert, aktualisiert, neu installiert und deinstalliert; die winget-Manifeste, gegen ihre Schemas geprüft; dann ein GitHub-Release mit Installer, Backend-Zip, `SHA256SUMS.txt` und Attestierungen. Manuelle Läufe und Pull Requests, die das Packaging ändern, sind Probeläufe, die nichts veröffentlichen |
+| [`release.yml`](.github/workflows/release.yml) | Für einen Versions-Tag `v*`: das Backend über `backend-exe.yml`; den Installer für alle Benutzer mit diesem Backend, eine Prüfung, dass er eine installierte Version ohne Neuinstallations-Seite an Ort und Stelle aktualisiert, und einen Smoke-Test auf dem Runner mit Administratorrechten, der RootMind mit seinen Windows-Diensten installiert, aktualisiert, neu installiert und deinstalliert; die winget-Manifeste, gegen ihre Schemas geprüft; `rootmind.mcpb` für Claude Desktop, getestet, geprüft und gepackt; dann ein GitHub-Release mit Installer, Bundle, Backend-Zip, `SHA256SUMS.txt` und Attestierungen. Manuelle Läufe und Pull Requests, die das Packaging ändern, sind Probeläufe, die nichts veröffentlichen |
+| [`mcpb.yml`](.github/workflows/mcpb.yml) | Das Bundle für Claude Desktop: die `node:test`-Tests der Brücke unter Ubuntu und Windows, dann das Manifest mit der mcpb-CLI geprüft und das Bundle gepackt |
 | [`secrets.yml`](.github/workflows/secrets.yml) | detect-secrets über alle versionierten Dateien, gegen die geprüfte Baseline `.secrets.baseline` |
 
 Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) schlägt

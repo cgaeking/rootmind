@@ -24,7 +24,16 @@ uv run ruff format .
 uv run pytest -q
 uv run pytest ../scripts/tests -q         # release scripts: versions, notes, backend copy, winget, NSIS template
 uv run python scripts/run_evals.py        # retrieval regression (dry evals), offline
-python ../scripts/check_versions.py       # backend and desktop versions match
+python ../scripts/check_versions.py       # backend, desktop and bundle versions match
+```
+
+The Claude Desktop bundle in `packaging/mcpb/` has its own tests (Node 24,
+standard library only) and is validated with the mcpb CLI; see
+[packaging/mcpb/README.md](packaging/mcpb/README.md):
+
+```bash
+node --test "packaging/mcpb/test/*.test.mjs"
+npx --yes @anthropic-ai/mcpb@2.1.2 validate packaging/mcpb/manifest.json
 ```
 
 The backend CLI has the commands `api`, `index`, `rebuild-trigrams`, `mcp`,
@@ -224,16 +233,17 @@ rejected.
 
 A tag `vX.Y.Z` makes `.github/workflows/release.yml` build the backend and
 the installer, test both, render the winget manifests and publish a GitHub
-Release with `RootMind-Setup-x64.exe`, `rootmind-backend-windows-x64.zip`,
-`SHA256SUMS.txt` and attestations. The release notes are the version's
+Release with `RootMind-Setup-x64.exe`, `rootmind.mcpb` (Claude Desktop),
+`rootmind-backend-windows-x64.zip`, `SHA256SUMS.txt` and attestations. The release notes are the version's
 section of `CHANGELOG.md` plus a fixed part about the downloads and how to
 verify them.
 
 1. **Versions.** Set the new version in `backend/pyproject.toml`,
-   `desktop/package.json` and `desktop/src-tauri/Cargo.toml`, then run
+   `desktop/package.json`, `desktop/src-tauri/Cargo.toml` and
+   `packaging/mcpb/manifest.json`, then run
    `uv lock` in `backend/` and `cargo check` in `desktop/src-tauri/` so the
    lockfiles follow. For a prerelease, write `1.2.0rc1` in `pyproject.toml`
-   and `1.2.0-rc.1` in the other two files; the tag is then `v1.2.0-rc.1`,
+   and `1.2.0-rc.1` in the other three files; the tag is then `v1.2.0-rc.1`,
    spelled exactly like that, and the release is marked as a prerelease.
    Update the tag in the README's `uv tool install` line as well.
 2. **Changelog.** Turn `## [Unreleased]` into `## [X.Y.Z] - YYYY-MM-DD` and
@@ -251,7 +261,7 @@ verify them.
    release → Run workflow). Every job except "Publish the release" must pass.
    The run's summary shows the release notes, the installer's size and its
    SHA-256; the artifacts are `rootmind-installer-windows-x64`,
-   `rootmind-backend-windows-x64` and `winget-manifests`.
+   `rootmind-backend-windows-x64`, `winget-manifests` and `rootmind-mcpb`.
 5. **Manual checks** in Windows Sandbox or a throwaway virtual machine, with
    the installer from the dry run:
    - a first install by double-click, including the SmartScreen warning and

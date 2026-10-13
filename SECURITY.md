@@ -331,6 +331,14 @@ uninstall that keeps the data, and copies of it live in the MCP clients you
 set up (for example n8n credentials or the Claude Code configuration). If you
 do not use MCP, turn it off under Settings → RootMind service.
 
+The Claude Desktop bundle (`rootmind.mcpb`) keeps no copy: it runs as the
+signed-in account, reads the token file named by `service status --json` at
+start and after a connection error, and sends the token only in the
+`Authorization` header to `127.0.0.1`. It never writes the token to its output
+or its log (stderr); tests assert both. Unlike the app, it does not check
+which process owns the port (Node.js has no API for that); it sends the token
+only to the port that `service status` reports for the running MCP service.
+
 - Every MCP endpoint requires `Authorization: Bearer <token>`. Only
   `/health` is open; there are no `/docs`, `/redoc` or `/openapi.json` pages.
 - It only serves by default. With `--index` it also indexes, using the

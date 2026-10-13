@@ -129,7 +129,7 @@ export const labels = {
     updateBanner: (service: string, app: string) =>
       `The RootMind service runs version ${service}; this app is version ${app}.`,
     updateService: "Update service",
-    mcpToggle: "Serve MCP over HTTP (for n8n and other remote agents)",
+    mcpToggle: "Serve MCP over HTTP (for Claude Desktop, n8n and other agents)",
     mcpUrlLabel: "MCP endpoint",
     copyToken: "Copy token",
     tokenFailed: (msg: string) => `Could not read the token: ${msg}`,

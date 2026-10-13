@@ -45,10 +45,13 @@ standardmäßig MCP über HTTP auf 127.0.0.1 bereit: Einstellungen →
 **RootMind-Dienst** zeigt den **MCP-Endpunkt** und kopiert ihn und das
 Bearer-Token (**Token kopieren**).
 
+- **Claude Desktop:** lade
+  [rootmind.mcpb](https://github.com/cgaeking/rootmind/releases/latest/download/rootmind.mcpb)
+  herunter und doppelklicke die Datei; Claude Desktop installiert sie, ohne
+  dass etwas einzurichten ist (siehe
+  [RootMind in Claude Desktop nutzen](../README.de.md#rootmind-in-claude-desktop-nutzen)).
 - **Claude Code:**
   `claude mcp add --transport http rootmind <endpoint> --header "Authorization: Bearer <token>"`.
-  Claude Desktop braucht eine Brücke von stdio zu HTTP, die RootMind nicht
-  mitbringt (siehe [MCP-Clients verbinden](../README.de.md#mcp-clients-verbinden)).
 - **n8n und andere entfernte Clients:** **Kopieren** unter **n8n (MCP Client
   Tool)** kopiert die Werte für den Knoten MCP Client Tool von n8n. Siehe
   [MCP von n8n aus erreichen](../README.de.md#mcp-von-n8n-aus-erreichen).

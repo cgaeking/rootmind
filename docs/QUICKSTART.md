@@ -39,10 +39,12 @@ RootMind needs no API key for them. The RootMind service serves MCP over HTTP
 on 127.0.0.1 by default: Settings → **RootMind service** shows the **MCP
 endpoint** and copies it and the bearer token (**Copy token**).
 
+- **Claude Desktop:** download
+  [rootmind.mcpb](https://github.com/cgaeking/rootmind/releases/latest/download/rootmind.mcpb)
+  and double-click it; Claude Desktop installs it, with nothing to configure
+  (see [Use RootMind in Claude Desktop](../README.md#use-rootmind-in-claude-desktop)).
 - **Claude Code:**
   `claude mcp add --transport http rootmind <endpoint> --header "Authorization: Bearer <token>"`.
-  Claude Desktop needs a stdio-to-HTTP bridge, which RootMind does not include
-  (see [Connect MCP clients](../README.md#connect-mcp-clients)).
 - **n8n and other remote clients:** **Copy** next to **n8n (MCP Client Tool)**
   copies the values for n8n's MCP Client Tool node. See
   [Reach MCP from n8n](../README.md#reach-mcp-from-n8n).
