@@ -196,10 +196,11 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ;    installed $INSTDIR\backend before the new one is copied, so none of its
 ;    files are left; the main binary and uninstall.exe are overwritten.
 
-; 5. Choose install directory page
-; RootMind: not shown when the app is installed (see SkipIfPassiveOrInstalled).
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrInstalled
-!insertmacro MUI_PAGE_DIRECTORY
+; 5. RootMind: no install directory page. RootMind installs per machine into
+;    $PROGRAMFILES64\RootMind only: the installer sets up a Windows service
+;    that runs as LocalSystem from the backend in that folder, so the folder
+;    must be one that only administrators can change. NSIS_HOOK_PREINSTALL
+;    (installer/hooks.nsh) refuses any other $INSTDIR, such as one from /D=.
 
 ; 6. Start menu shortcut page
 Var AppStartMenuFolder
@@ -717,15 +718,6 @@ Function Skip
   Abort
 FunctionEnd
 
-; RootMind: skips the page like SkipIfPassive, and also when the app is
-; installed: an update goes to the installed folder
-; (RestorePreviousInstallLocation), and another folder would leave the
-; installed version behind.
-Function SkipIfPassiveOrInstalled
-  ${IfThen} $PassiveMode = 1 ${|} Abort ${|}
-  ReadRegStr $0 SHCTX "${UNINSTKEY}" "UninstallString"
-  ${IfThen} $0 != "" ${|} Abort ${|}
-FunctionEnd
 Function SkipIfPassive
   ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
 FunctionEnd

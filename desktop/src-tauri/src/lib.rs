@@ -1,8 +1,8 @@
 // Every unsafe block states why it is sound.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+mod app;
 mod args;
-mod backend;
 mod conversations;
 mod imagepath;
 mod service;
@@ -10,34 +10,24 @@ mod tcptable;
 #[cfg(windows)]
 mod win;
 
-/// Hooks for the integration tests in tests/; not an API.
-#[doc(hidden)]
-pub mod testing {
-    pub use crate::backend::{
-        BackendInfo, Launch, Sidecar, SidecarError, SidecarState, SidecarStatus, LOG_FILE,
-        READY_PREFIX, STOP_GRACE,
-    };
-}
-
-// RootMind desktop is a client of the RootMind backend REST API. Which
-// backend it talks to is decided in the UI (src/state/bootstrap.ts):
-// - Built-in (default): the backend that ships with the app, started here as
-//   a child process on a free loopback port with a fresh token for every
-//   start, and stopped when the app exits (backend.rs).
-// - Background service: the backend runs as a Windows service. This side reads
-//   its state unelevated, hands out its token only after checking that the
-//   service's own process listens on its port, and runs the backend's
-//   `service install|uninstall` commands elevated, with arguments built here
-//   and never taken from the webview (service.rs, win/).
-// - Custom: a URL (and optional token) the user enters; Rust is not involved.
-// The backend owns indexing, scheduling and its config.yaml in every mode.
-// The Rust side also persists chat history (conversations.rs).
+// RootMind desktop is a client of the RootMind backend REST API. Since 2.0
+// the backend always runs as a Windows service, which the per-machine
+// installer sets up for the account that installs the app:
+// - Background service: this side reads its state unelevated, hands out its
+//   token only after checking that the service's own process listens on its
+//   port, and runs the backend's `service install` elevated to repair it or to
+//   switch MCP over HTTP, with arguments built here and never taken from the
+//   webview (service.rs, win/).
+// - Custom: a URL (and optional token) the user enters, for development and
+//   other setups; Rust is not involved.
+// The backend owns indexing, scheduling and its config.yaml. The Rust side
+// also persists chat history (conversations.rs).
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
     // Must be the first plugin: a second launch focuses this window instead
-    // of starting a second backend on the same data folder.
+    // of opening a second one that writes the same chat history.
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         use tauri::Manager;
@@ -47,38 +37,23 @@ pub fn run() {
             let _ = window.set_focus();
         }
     }));
-    let app = builder
-        // Process spawning from Rust only; the webview has no shell:* permission.
-        .plugin(tauri_plugin_shell::init())
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(backend::Sidecar::default())
         .manage(service::ServiceOps::default())
         .invoke_handler(tauri::generate_handler![
             conversations::save_conversation,
             conversations::load_conversation,
             conversations::list_conversations,
             conversations::delete_conversation,
-            backend::app_mode,
-            backend::sidecar_start,
-            backend::sidecar_status,
-            backend::sidecar_restart,
-            backend::backend_log_dir,
+            app::app_mode,
             service::service_info,
             service::service_connect,
-            service::service_enable,
-            service::service_disable,
             service::service_set_mcp,
             service::service_update,
             service::service_mcp_token,
             service::service_details,
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building the tauri application");
-
-    app.run(|handle, event| {
-        if let tauri::RunEvent::Exit = event {
-            backend::shutdown(handle);
-        }
-    });
+        .run(tauri::generate_context!())
+        .expect("error while running the tauri application");
 }

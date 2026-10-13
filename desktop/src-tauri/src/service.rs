@@ -1,5 +1,7 @@
-// Background service: RootMind-Backend (and optionally RootMind-MCP-HTTP)
-// installed by the backend's own `service install` command.
+// Background service: RootMind-Backend and RootMind-MCP-HTTP, installed by
+// the backend's own `service install` command. Since 2.0 the installer runs it
+// (per-machine install) and the service is the app's only backend; the app is
+// a client of it.
 //
 // Reading needs no rights beyond a standard user's: the ImagePath from HKLM,
 // the state and process ID from the Service Control Manager, the token file
@@ -12,26 +14,33 @@
 //
 // Changes run elevated (one UAC prompt each) with arguments built here from
 // fixed parts:
-// - turning the service on and updating it run the per-user backend that
-//   ships with the app;
-// - turning it off and switching MCP over HTTP run the copy under
-//   %ProgramFiles%\RootMind Service\, which must be the one in the ImagePath.
+// - Update and Repair (service_update) run the backend installed with the
+//   app (<install folder>\backend), so the service gets the app's version.
+//   The installer always installs the app into %ProgramFiles%\RootMind (no
+//   folder page; another folder is refused), and `service install` itself
+//   refuses to copy from a folder that accounts other than administrators
+//   can change (exit 10), so a program planted in a writable folder never
+//   becomes the LocalSystem service. Only when the app's backend is missing
+//   does Repair fall back to the service's registered admin-only copy.
+// - Switching MCP over HTTP runs the service's own copy under
+//   %ProgramFiles%\RootMind Service\ (the one in the ImagePath).
+// Installing and removing the service is the installer's job.
 // The exit codes are the backend's service codes (0 ok, 3 foreign service,
 // 4 port busy, 5 not elevated, 6 data folder refused, 7 health check failed,
-// 8 account mismatch, 9 no access context); 1223 means the prompt was
-// cancelled.
+// 8 account mismatch, 9 no access context, 10 unsafe program folder); 1223
+// means the prompt was cancelled.
 
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_shell::ShellExt;
 
+use crate::app;
 use crate::args;
-use crate::backend::{self, BackendInfo, Sidecar};
 use crate::imagepath::{self, ImagePath, Role};
 use crate::tcptable;
 
@@ -44,6 +53,24 @@ const INSTALL_LOG_LINES: usize = 60;
 
 // ---------------------------------------------------------------------------
 // IPC types (camelCase over IPC)
+
+/// The service's address and REST token, `{url, token}`.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendInfo {
+    pub url: String,
+    pub token: String,
+}
+
+/// Never prints the token.
+impl std::fmt::Debug for BackendInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackendInfo")
+            .field("url", &self.url)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -207,6 +234,16 @@ pub enum Outcome {
 }
 
 pub const ERROR_CANCELLED: u32 = 1223;
+
+/// Whether a Win32 error code means Windows security blocked a program:
+/// ERROR_VIRUS_INFECTED (225), ERROR_VIRUS_DELETED (226),
+/// ERROR_ACCESS_DISABLED_BY_POLICY (1260), and the ERROR_SYSTEM_INTEGRITY_*
+/// range 4550-4599 (Smart App Control and WDAC, including the reputation
+/// checks). The same list is in src/state/service.ts.
+pub fn is_blocked_code(code: u32) -> bool {
+    matches!(code, 225 | 226 | 1260 | 4550..=4599)
+}
+
 /// "Unexpected failure", also used for launch errors without a meaning of
 /// their own (they would collide with the service exit codes).
 pub const CODE_UNEXPECTED: u32 = 1;
@@ -220,38 +257,15 @@ pub fn classify(result: Elevated) -> Outcome {
         Elevated::LaunchFailed(ERROR_CANCELLED) => Outcome::Cancelled,
         // Windows security blocked the program: passed to the UI unchanged so
         // it can say so.
-        Elevated::LaunchFailed(code) if backend::is_blocked_code(code) => Outcome::Failed(code),
+        Elevated::LaunchFailed(code) if is_blocked_code(code) => Outcome::Failed(code),
         Elevated::LaunchFailed(_) => Outcome::Failed(CODE_UNEXPECTED),
     }
 }
 
-/// `service install` for turning the service on.
-pub fn install_args(
-    mcp: bool,
-    user_sid: &str,
-    import_config: Option<&Path>,
-) -> Result<Vec<String>, String> {
-    if !imagepath::is_sid(user_sid) {
-        return Err("The account SID is malformed.".into());
-    }
-    let mut out: Vec<String> = ["service", "install", "--port", "auto"]
-        .map(String::from)
-        .to_vec();
-    if mcp {
-        out.extend(["--mcp-http", "--mcp-port", "auto"].map(String::from));
-    } else {
-        out.push("--no-mcp-http".into());
-    }
-    out.extend(["--user-sid".to_string(), user_sid.to_string()]);
-    if let Some(file) = import_config {
-        out.push("--import-config".into());
-        out.push(path_arg(file)?);
-    }
-    Ok(out)
-}
-
 /// `service install` on the existing service: update and repair. Ports, MCP
-/// and the account are read back from the service (sticky options).
+/// and the account are read back from the service (sticky options). For a
+/// missing service, free ports are chosen as the installer does (MCP over
+/// HTTP is on by default), so a busy default port does not fail it.
 pub fn update_args(user_sid: &str) -> Result<Vec<String>, String> {
     if !imagepath::is_sid(user_sid) {
         return Err("The account SID is malformed.".into());
@@ -261,11 +275,33 @@ pub fn update_args(user_sid: &str) -> Result<Vec<String>, String> {
         "install",
         "--port",
         "auto",
+        "--mcp-port",
+        "auto",
         "--user-sid",
         user_sid,
     ]
     .map(String::from)
     .to_vec())
+}
+
+/// The program Update and Repair run: the backend installed with the app
+/// (`app_backend`, the app's own version), else the first registered service
+/// copy that exists (the backend's, then the MCP service's), which repairs
+/// the service at its current version.
+pub fn repair_exe(
+    app_backend: Option<&Path>,
+    views: &[&ServiceView],
+    exists: impl Fn(&Path) -> bool,
+) -> Result<PathBuf, String> {
+    if let Some(exe) = app_backend.filter(|exe| exists(exe)) {
+        return Ok(exe.to_path_buf());
+    }
+    views
+        .iter()
+        .filter_map(|view| view.image.as_ref())
+        .map(|image| PathBuf::from(&image.exe))
+        .find(|exe| exists(exe))
+        .ok_or_else(|| "The backend that ships with the app is missing. Reinstall RootMind.".into())
 }
 
 /// `service install` from the Program Files copy, switching MCP over HTTP.
@@ -279,20 +315,6 @@ pub fn set_mcp_args(enabled: bool) -> Vec<String> {
             .map(String::from)
             .to_vec()
     }
-}
-
-pub fn uninstall_args(purge: bool) -> Vec<String> {
-    let mut out = vec!["service".to_string(), "uninstall".to_string()];
-    if purge {
-        out.push("--purge".into());
-    }
-    out
-}
-
-fn path_arg(path: &Path) -> Result<String, String> {
-    path.to_str()
-        .map(str::to_string)
-        .ok_or_else(|| format!("The path {} cannot be passed on.", path.display()))
 }
 
 /// What the app learned about one of the two services.
@@ -507,8 +529,8 @@ fn service_home() -> Option<PathBuf> {
     platform::program_data().ok().map(|p| p.join("RootMind"))
 }
 
-/// `%ProgramData%\RootMind\logs`, for "Show log" in service mode.
-pub fn service_log_dir() -> Option<PathBuf> {
+/// `%ProgramData%\RootMind\logs`.
+fn service_log_dir() -> Option<PathBuf> {
     service_home().map(|h| h.join("logs"))
 }
 
@@ -643,27 +665,22 @@ fn program_files_exe(view: &ServiceView) -> Result<PathBuf, String> {
     Ok(exe)
 }
 
-fn per_user_exe(app: &AppHandle) -> Result<PathBuf, String> {
-    let exe = backend::bundled_exe(app)?;
+/// The backend program installed with the app (see app.rs), for
+/// `service status`.
+fn installed_exe(app: &AppHandle) -> Result<PathBuf, String> {
+    let exe = app::bundled_exe(app)?;
     if !exe.is_file() {
-        return Err("The backend that ships with the app is missing.".into());
+        return Err("The backend that ships with the app is missing. Reinstall RootMind.".into());
     }
     Ok(exe)
 }
 
-/// The backend the UI should use after a failed change: the service if it
-/// answers, else the built-in backend if it runs.
-async fn current_backend(app: &AppHandle) -> Option<BackendInfo> {
-    if let Ok(connected) = blocking(connect).await {
-        if let Some(info) = connected.backend() {
-            return Some(info);
-        }
-    }
-    let status = app.state::<Sidecar>().status();
-    match (status.url, status.token) {
-        (Some(url), Some(token)) => Some(BackendInfo { url, token }),
-        _ => None,
-    }
+/// The service, if the app can connect to it after a failed change.
+async fn current_backend() -> Option<BackendInfo> {
+    blocking(connect)
+        .await
+        .ok()
+        .and_then(ServiceConnect::backend)
 }
 
 /// One service change at a time.
@@ -689,93 +706,8 @@ pub async fn service_info() -> Result<ServiceInfo, String> {
 }
 
 #[tauri::command]
-pub async fn service_connect(app: AppHandle) -> Result<ServiceConnect, String> {
-    let result = blocking(connect).await?;
-    if matches!(result, ServiceConnect::Connected { .. }) {
-        app.state::<Sidecar>().set_service_mode(true);
-    }
-    Ok(result)
-}
-
-/// Turn the service on: stop the built-in backend, install the service from
-/// the per-user exe (importing the built-in config), then connect to it. On
-/// failure or cancel the built-in backend starts again.
-#[tauri::command]
-pub async fn service_enable(app: AppHandle, mcp: bool) -> Result<ServiceResult, String> {
-    let ops = app.state::<ServiceOps>();
-    let _busy = ops.begin()?;
-    let exe = per_user_exe(&app)?;
-    let sid = blocking(platform::current_user_sid)
-        .await?
-        .map_err(|e| format!("Could not read the account SID: {e}"))?;
-    let config = backend::sidecar_home(&app)?.join("config.yaml");
-    let import = config.is_file().then_some(config);
-    let args = install_args(mcp, &sid, import.as_deref())?;
-
-    let sidecar = app.state::<Sidecar>();
-    sidecar.stop().await;
-    let outcome = elevate(&app, exe, args).await?;
-    if outcome == Outcome::Succeeded {
-        if let Some(info) = connect_after_change().await {
-            sidecar.set_service_mode(true);
-            return Ok(ServiceResult::done(info));
-        }
-    }
-    let (cancelled, code) = match outcome {
-        Outcome::Cancelled => (true, ERROR_CANCELLED),
-        Outcome::Failed(code) => (false, code),
-        Outcome::Succeeded => (false, CODE_HEALTH),
-    };
-    let backend = sidecar.ensure_started(&app).await.ok();
-    Ok(ServiceResult::failed(cancelled, code, backend))
-}
-
-/// Turn the service off: keep a copy of its config, uninstall it from the
-/// Program Files exe, then start the built-in backend with that config. On
-/// failure or cancel the service stays in use.
-#[tauri::command]
-pub async fn service_disable(app: AppHandle, purge: bool) -> Result<ServiceResult, String> {
-    let ops = app.state::<ServiceOps>();
-    let _busy = ops.begin()?;
-    let view = blocking(|| inspect(BACKEND_SERVICE, Role::Backend)).await?;
-    let exe = program_files_exe(&view)?;
-    let home = backend::sidecar_home(&app)?;
-    fs::create_dir_all(&home).map_err(|e| e.to_string())?;
-    let copy = home.join("config.from-service.yaml");
-    let copied = match service_home() {
-        Some(service_home) => fs::copy(service_home.join("config.yaml"), &copy).is_ok(),
-        None => false,
-    };
-
-    let failure = match elevate(&app, exe, uninstall_args(purge)).await? {
-        Outcome::Succeeded => None,
-        Outcome::Cancelled => Some((true, ERROR_CANCELLED)),
-        Outcome::Failed(code) => Some((false, code)),
-    };
-    if let Some((cancelled, code)) = failure {
-        if copied {
-            let _ = fs::remove_file(&copy);
-        }
-        let backend = current_backend(&app).await;
-        return Ok(ServiceResult::failed(cancelled, code, backend));
-    }
-    // The backend deletes nothing it imported; the copy is removed once the
-    // ready line arrived (backend.rs), or here if the start failed.
-    let started = app
-        .state::<Sidecar>()
-        .restart(&app, copied.then(|| copy.clone()))
-        .await;
-    match started {
-        Ok(info) => Ok(ServiceResult::done(info)),
-        Err(e) => {
-            if copied {
-                let _ = fs::remove_file(&copy);
-            }
-            Err(format!(
-                "The background service was removed, but the built-in backend did not start: {e}"
-            ))
-        }
-    }
+pub async fn service_connect() -> Result<ServiceConnect, String> {
+    blocking(connect).await
 }
 
 /// Switch MCP over HTTP on or off from the Program Files exe.
@@ -786,34 +718,40 @@ pub async fn service_set_mcp(app: AppHandle, enabled: bool) -> Result<ServiceRes
     let view = blocking(|| inspect(BACKEND_SERVICE, Role::Backend)).await?;
     let exe = program_files_exe(&view)?;
     let outcome = elevate(&app, exe, set_mcp_args(enabled)).await?;
-    finish_change(&app, outcome).await
+    finish_change(outcome).await
 }
 
-/// Update or repair the service from the per-user exe of this app version.
+/// Update or repair the service to the app's version: `service install` on
+/// an installed service (also a stopped one) keeps its ports, MCP setting,
+/// tokens and data, and installs it again when it is missing. It runs the
+/// backend installed with the app (see `repair_exe`).
 #[tauri::command]
 pub async fn service_update(app: AppHandle) -> Result<ServiceResult, String> {
     let ops = app.state::<ServiceOps>();
     let _busy = ops.begin()?;
-    let exe = per_user_exe(&app)?;
+    let app_backend = app::bundled_exe(&app).ok();
+    let views = blocking(|| {
+        (
+            inspect(BACKEND_SERVICE, Role::Backend),
+            inspect(MCP_SERVICE, Role::McpHttp),
+        )
+    })
+    .await?;
+    let exe = repair_exe(app_backend.as_deref(), &[&views.0, &views.1], Path::is_file)?;
     let sid = blocking(platform::current_user_sid)
         .await?
         .map_err(|e| format!("Could not read the account SID: {e}"))?;
     let outcome = elevate(&app, exe, update_args(&sid)?).await?;
-    finish_change(&app, outcome).await
+    finish_change(outcome).await
 }
 
-async fn finish_change(app: &AppHandle, outcome: Outcome) -> Result<ServiceResult, String> {
+async fn finish_change(outcome: Outcome) -> Result<ServiceResult, String> {
     if outcome == Outcome::Succeeded {
         if let Some(info) = connect_after_change().await {
-            // The service is the backend again; a built-in one started for the
-            // meantime must not index the same folders.
-            let sidecar = app.state::<Sidecar>();
-            sidecar.stop().await;
-            sidecar.set_service_mode(true);
             return Ok(ServiceResult::done(info));
         }
     }
-    let backend = current_backend(app).await;
+    let backend = current_backend().await;
     Ok(match outcome {
         Outcome::Cancelled => ServiceResult::failed(true, ERROR_CANCELLED, backend),
         Outcome::Failed(code) => ServiceResult::failed(false, code, backend),
@@ -838,19 +776,74 @@ pub async fn service_mcp_token() -> Result<String, String> {
     .await?
 }
 
+/// Run `exe` with `args` unelevated and without a window, and collect its
+/// output; the program is stopped after `timeout`.
+fn run_captured(exe: &Path, args: &[&str], timeout: Duration) -> io::Result<std::process::Output> {
+    let mut command = Command::new(exe);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command.spawn()?;
+    // Drain both pipes on their own threads, so a full pipe never blocks the child.
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let out = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = stdout.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = stderr.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the program did not finish in time",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
+}
+
 /// Diagnostics for a failed change: `service status --json` run unelevated
-/// from the per-user exe, plus the end of `logs\install.log`.
+/// from the backend installed with the app, plus the end of `logs\install.log`.
 #[tauri::command]
 pub async fn service_details(app: AppHandle) -> Result<String, String> {
     let mut out = String::new();
-    match per_user_exe(&app) {
+    match installed_exe(&app) {
         Ok(exe) => {
-            let command = app
-                .shell()
-                .command(&exe)
-                .args(["service", "status", "--json"]);
-            match tokio::time::timeout(DETAILS_TIMEOUT, command.output()).await {
-                Ok(Ok(output)) => {
+            let output = blocking(move || {
+                run_captured(&exe, &["service", "status", "--json"], DETAILS_TIMEOUT)
+            })
+            .await?;
+            match output {
+                Ok(output) => {
                     let code = output
                         .status
                         .code()
@@ -863,8 +856,10 @@ pub async fn service_details(app: AppHandle) -> Result<String, String> {
                         out.push_str(stderr.trim_end());
                     }
                 }
-                Ok(Err(e)) => out.push_str(&format!("service status could not run: {e}")),
-                Err(_) => out.push_str("service status did not answer within 30 seconds."),
+                Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                    out.push_str("service status did not answer within 30 seconds.")
+                }
+                Err(e) => out.push_str(&format!("service status could not run: {e}")),
             }
         }
         Err(e) => out.push_str(&e),
@@ -887,6 +882,7 @@ pub async fn service_details(app: AppHandle) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     const PF: &str = r"C:\Program Files";
     const GOLDEN_BACKEND: &str = r#""C:\Program Files\RootMind Service\1.2.0-0a1b2c3d\rootmind-backend.exe" service run backend --port 8000 --user-sid S-1-5-21-1-2-3-1001"#;
@@ -904,7 +900,7 @@ mod tests {
     #[test]
     fn exit_codes_map_to_outcomes() {
         assert_eq!(classify(Elevated::Exited(0)), Outcome::Succeeded);
-        for code in [3, 4, 5, 6, 7, 8, 9] {
+        for code in [3, 4, 5, 6, 7, 8, 9, 10] {
             assert_eq!(
                 classify(Elevated::Exited(code)),
                 Outcome::Failed(code),
@@ -937,28 +933,10 @@ mod tests {
     }
 
     #[test]
-    fn install_arguments() {
-        let args = install_args(false, SID, None).unwrap();
-        assert_eq!(
-            args::join_args(&args).unwrap(),
-            "service install --port auto --no-mcp-http --user-sid S-1-5-21-1-2-3-1001"
-        );
-        let config = Path::new(
-            r"C:\Users\Jane Doe\AppData\Local\io.github.cgaeking.rootmind\backend\config.yaml",
-        );
-        let args = install_args(true, SID, Some(config)).unwrap();
-        assert_eq!(
-            args::join_args(&args).unwrap(),
-            r#"service install --port auto --mcp-http --mcp-port auto --user-sid S-1-5-21-1-2-3-1001 --import-config "C:\Users\Jane Doe\AppData\Local\io.github.cgaeking.rootmind\backend\config.yaml""#
-        );
-        assert!(install_args(false, "S-1-5-21 --purge", None).is_err());
-    }
-
-    #[test]
     fn other_change_arguments() {
         assert_eq!(
             args::join_args(&update_args(SID).unwrap()).unwrap(),
-            "service install --port auto --user-sid S-1-5-21-1-2-3-1001"
+            "service install --port auto --mcp-port auto --user-sid S-1-5-21-1-2-3-1001"
         );
         assert!(update_args("not-a-sid").is_err());
         assert_eq!(
@@ -968,14 +946,6 @@ mod tests {
         assert_eq!(
             args::join_args(&set_mcp_args(false)).unwrap(),
             "service install --no-mcp-http"
-        );
-        assert_eq!(
-            args::join_args(&uninstall_args(false)).unwrap(),
-            "service uninstall"
-        );
-        assert_eq!(
-            args::join_args(&uninstall_args(true)).unwrap(),
-            "service uninstall --purge"
         );
     }
 
@@ -1346,6 +1316,69 @@ mod tests {
         fs::write(&file, "x".repeat(5000)).unwrap();
         assert_eq!(read_token(&file), TokenRead::Invalid);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_runs_the_app_backend_first() {
+        let backend = view(Some(GOLDEN_BACKEND), Some(RUNNING), Role::Backend);
+        let mcp = view(Some(GOLDEN_MCP), Some(RUNNING), Role::McpHttp);
+        let none = ServiceView::default();
+        let foreign = view(Some(r#""C:\x\other.exe" --x"#), None, Role::Backend);
+        let copy =
+            PathBuf::from(r"C:\Program Files\RootMind Service\1.2.0-0a1b2c3d\rootmind-backend.exe");
+        let app = PathBuf::from(r"C:\Program Files\RootMind\backend\rootmind-backend.exe");
+        // The app's backend wins, also over a (possibly older) service copy.
+        assert_eq!(
+            repair_exe(Some(&app), &[&backend, &mcp], |_| true).unwrap(),
+            app
+        );
+        assert_eq!(
+            repair_exe(Some(&app), &[&none, &none], |_| true).unwrap(),
+            app
+        );
+        // Without it: the registered copy (the backend's, else the MCP service's).
+        let copy_only = |exe: &Path| exe == copy.as_path();
+        assert_eq!(
+            repair_exe(Some(&app), &[&backend, &mcp], copy_only).unwrap(),
+            copy
+        );
+        assert_eq!(repair_exe(None, &[&none, &mcp], |_| true).unwrap(), copy);
+        // Neither: an error, also with a foreign service.
+        assert!(repair_exe(Some(&app), &[&backend, &mcp], |_| false).is_err());
+        assert!(repair_exe(None, &[&foreign, &none], |_| true).is_err());
+        assert!(repair_exe(None, &[&none, &none], |_| true).is_err());
+    }
+
+    #[test]
+    fn blocked_codes() {
+        for code in [225, 226, 1260, 4550, 4580, 4599] {
+            assert!(is_blocked_code(code), "{code}");
+        }
+        for code in [0, 2, 5, 1223, 4549, 4600] {
+            assert!(!is_blocked_code(code), "{code}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn captured_output_and_timeout() {
+        let cmd = crate::win::paths::system_dir().unwrap().join("cmd.exe");
+        let output = run_captured(
+            &cmd,
+            &["/d", "/c", "echo out& echo err 1>&2& exit 3"],
+            DETAILS_TIMEOUT,
+        )
+        .unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "out");
+        assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "err");
+        let ping = crate::win::paths::system_dir().unwrap().join("PING.EXE");
+        let slow = run_captured(
+            &ping,
+            &["-n", "30", "127.0.0.1"],
+            Duration::from_millis(500),
+        );
+        assert_eq!(slow.unwrap_err().kind(), io::ErrorKind::TimedOut);
     }
 
     #[test]

@@ -87,8 +87,8 @@ def footer(installer_size: int | None = None) -> str:
 
 | File | What it is |
 | --- | --- |
-| `{INSTALLER}` | The Windows app with its built-in backend{size}. Installs for your account; no administrator rights and no Python needed. |
-| `{BACKEND_ZIP}` | The backend on its own, for the command line, servers and the Windows background service. Not needed for the app. |
+| `{INSTALLER}` | The Windows app with its background service{size}. Installs for all users of the computer and sets up the service for your account; needs one administrator approval, no Python. |
+| `{BACKEND_ZIP}` | The backend on its own, for the command line and servers. Not needed for the app. |
 | `{CHECKSUMS}` | SHA-256 checksums of both files. |
 
 ### Verify the download

@@ -72,7 +72,9 @@ def test_renders_the_three_manifests(tmp_path, tauri_conf, capsys):
     assert f"InstallerSha256: {SHA.upper()}\n" in installer
     assert "ReleaseDate: 2026-10-20\n" in installer
     assert "InstallerType: nullsoft\n" in installer
-    assert "Scope: user\n" in installer
+    assert "Scope: machine\n" in installer
+    assert "ElevationRequirement: elevatesSelf\n" in installer
+    assert "DefaultInstallLocation: '%ProgramFiles%\\RootMind'\n" in installer
     assert "ProductCode: RootMind\n" in installer
     assert "  Publisher: Christian Gäking\n" in installer
     assert "Publisher: Christian Gäking\n" in locale

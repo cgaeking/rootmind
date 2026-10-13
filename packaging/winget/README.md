@@ -1,8 +1,9 @@
 # winget manifests
 
 These templates describe RootMind for the Windows Package Manager (winget): the package
-`cgaeking.RootMind` with the moniker `rootmind`, installed by the per-user installer
-`RootMind-Setup-x64.exe` from the GitHub release.
+`cgaeking.RootMind` with the moniker `rootmind`, installed by the per-machine installer
+`RootMind-Setup-x64.exe` from the GitHub release. The installer needs administrator approval
+and sets up the RootMind Windows service for the account signed in to Windows.
 
 RootMind is not in the winget repository yet. The first submission is planned for when the
 release binaries are code-signed. Until then, install RootMind from the
@@ -13,7 +14,7 @@ release binaries are code-signed. Until then, install RootMind from the
 | File | Content |
 | --- | --- |
 | `cgaeking.RootMind.yaml` | Version manifest |
-| `cgaeking.RootMind.installer.yaml` | Installer manifest: NSIS (`nullsoft`), user scope, x64, the release URL and SHA-256 |
+| `cgaeking.RootMind.installer.yaml` | Installer manifest: NSIS (`nullsoft`), machine scope, `ElevationRequirement: elevatesSelf`, x64, the release URL and SHA-256 |
 | `cgaeking.RootMind.locale.en-US.yaml` | Default locale: publisher, description, license, links |
 | `schemas/` | The JSON schemas for `ManifestVersion` 1.12.0, from `microsoft/winget-cli` (see `schemas/README.md`) |
 
@@ -23,11 +24,21 @@ The templates use the placeholders `${VERSION}`, `${INSTALLER_SHA256}`, `${RELEA
 `bundle.publisher` into the "Installed apps" entry, and winget recognises an installed package by
 that entry, so the manifest and the installer must name the same publisher.
 
-winget installs a `nullsoft` installer with `/S` and chooses a folder with `/D=<path>`. No extra
-switches are needed. `ProductCode: RootMind` is the name of the uninstall key the installer
-creates, and `%LocalAppData%\RootMind` is its default folder. With `UpgradeBehavior: install`,
-`winget upgrade` runs the new installer over the installed version, which updates it in place
-and keeps the app data; the installed version is not uninstalled first.
+winget installs a `nullsoft` installer with `/S`. No extra switches are needed. The install
+folder is fixed: a folder passed with `/D=<path>` (`winget install --location`) other than
+`%ProgramFiles%\RootMind` is refused with exit code 10 and without changes. The installer is per machine (`Scope: machine`): `ProductCode: RootMind` is
+the name of the uninstall key it creates under `HKLM`, and `%ProgramFiles%\RootMind` is its
+only folder. It asks for administrator approval itself (`ElevationRequirement:
+elevatesSelf`). It refuses, with exit code 8 and without changes, when it runs as another account
+than the one signed in to Windows, for example when winget runs in an administrator's prompt
+while a standard account is signed in. After copying the files it runs `service install`; when
+that fails, the app stays installed and the installer exits with the service command's exit
+code.
+
+With `UpgradeBehavior: install`, `winget upgrade` runs the new installer over the installed
+version, which updates the app and the service in place and keeps the app data and the
+service's data; the installed version is not uninstalled first. `winget uninstall` runs the
+uninstaller with `/S`, which removes the services but keeps `%ProgramData%\RootMind`.
 
 ## Render and validate
 
@@ -66,7 +77,8 @@ release assets must never change after a submission; immutable releases on GitHu
    .\Tools\SandboxTest.ps1 <folder with the three manifests>
    ```
 
-   On a machine that has winget, the manual steps are (from an administrator prompt):
+   On a machine that has winget, the manual steps are (from an administrator prompt of the
+   account signed in to Windows):
 
    ```powershell
    winget settings --enable LocalManifestFiles
@@ -75,9 +87,10 @@ release assets must never change after a submission; immutable releases on GitHu
    ```
 
    Start RootMind once, then remove it with `winget uninstall cgaeking.RootMind`.
-3. Scan the installer and the installed backend (`%LOCALAPPDATA%\RootMind\backend`) with Microsoft
-   Defender. The winget pipeline runs Defender on every submission. If a file is flagged, report
-   it to Microsoft as a false positive before you submit.
+3. Scan the installer, the installed backend (`%ProgramFiles%\RootMind\backend`) and the
+   service's copy (`%ProgramFiles%\RootMind Service`) with Microsoft Defender. The winget
+   pipeline runs Defender on every submission. If a file is flagged, report it to Microsoft as
+   a false positive before you submit.
 4. Fork `microsoft/winget-pkgs`, copy the three files to
    `manifests/c/cgaeking/RootMind/<version>/`, and open a pull request. Fill in the checklist of
    the pull request template, and sign the Microsoft CLA when the bot asks for it.

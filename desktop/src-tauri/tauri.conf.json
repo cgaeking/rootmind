@@ -38,7 +38,7 @@
     ],
     "windows": {
       "nsis": {
-        "installMode": "currentUser",
+        "installMode": "perMachine",
         "languages": ["English", "German"],
         "template": "installer/installer.nsi",
         "installerHooks": "installer/hooks.nsh"
