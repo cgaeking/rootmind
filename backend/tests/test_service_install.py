@@ -133,11 +133,12 @@ class FakeEnv:
         self.http_log: list[tuple] = []
         self.unhealthy: set[str] = set()
         self.open_status: set[str] = set()  # services that answer /status without a token
-        self.app_installed = True
+        self.app_present = True
         self.folders = 0
         self.clock = 0.0
         self.squatters: dict[int, int] = {}  # port -> PID of another program listening there
         self.owner_error: OSError | None = None
+        self.source_problems: list[str] = []
 
     # process
     def is_windows(self):
@@ -162,8 +163,12 @@ class FakeEnv:
         if self.access_error is not None:
             raise self.access_error
 
-    def app_installed_for_user(self):
-        return self.app_installed
+    def program_source_problems(self, folder, approver_sid):
+        self.events.append(("check_source", folder, approver_sid))
+        return list(self.source_problems)
+
+    def app_installed(self):
+        return self.app_present
 
     # folders
     def program_files(self):
@@ -304,7 +309,7 @@ def install_existing(env, *, mcp_port=None, port=8000, sid=USER_SID, folder="1.2
 
 
 def test_fresh_install_registers_the_backend(env):
-    code, out, err = run_install(env)
+    code, out, err = run_install(env, mcp=False)
     assert code == 0, err
     record = env.manager.services[BACKEND_SERVICE]
     assert record["image_path"] == (
@@ -330,7 +335,7 @@ def test_fresh_install_registers_the_backend(env):
 
 
 def test_fresh_install_writes_config_tokens_and_log(env):
-    assert run_install(env)[0] == 0
+    assert run_install(env, mcp=False)[0] == 0
     config = yaml.safe_load((env.root / "config.yaml").read_text())
     assert config == {"database": {"path": "./data/db/index.db"}}
     token = (env.root / "data" / "rest_token.txt").read_text()
@@ -346,6 +351,26 @@ def test_fresh_install_checks_health_and_authentication(env):
     assert ("GET", "/health", False) in env.http_log
     assert ("GET", "/status", False) in env.http_log
     assert ("GET", "/status", True) in env.http_log
+
+
+def test_mcp_over_http_is_on_by_default(env):
+    code, out, err = run_install(env)
+    assert code == 0, err
+    backend = imagepath.parse(env.manager.services[BACKEND_SERVICE]["image_path"])
+    mcp = imagepath.parse(env.manager.services[MCP_SERVICE]["image_path"])
+    assert (backend.port, mcp.port) == (8000, 3000)
+    assert env.manager.services[MCP_SERVICE]["state"] == scm.RUNNING
+    assert (env.root / "data" / "api_token.txt").read_text()
+    assert ("prepare_data", USER_SID, True) in env.events
+    assert "http://127.0.0.1:3000/mcp" in out
+
+
+def test_no_mcp_http_on_a_fresh_install(env):
+    code, _out, err = run_install(env, mcp=False)
+    assert code == 0, err
+    assert MCP_SERVICE not in env.manager.services
+    assert not (env.root / "data" / "api_token.txt").exists()
+    assert ("prepare_data", USER_SID, False) in env.events
 
 
 def test_install_with_mcp(env):
@@ -530,7 +555,10 @@ def test_data_folder_refused(env):
 def test_mcp_token_from_needs_mcp(env, tmp_path):
     source = tmp_path / "token.txt"
     source.write_text("abc")
-    assert run_install(env, mcp_token_from=source)[0] == ExitCode.USAGE
+    assert run_install(env, mcp=False, mcp_token_from=source)[0] == ExitCode.USAGE
+    # MCP is on by default for a new install, so the file is used then.
+    assert run_install(env, mcp_token_from=source)[0] == 0
+    assert (env.root / "data" / "api_token.txt").read_text() == "abc"
 
 
 @pytest.mark.parametrize("content", [b"", b"   \n", b"a b", b"x" * 5000, b"\xff\xfe\x00"])
@@ -547,35 +575,6 @@ def test_mcp_token_from_refuses_folders_and_missing_files(env, tmp_path):
 
 
 # --- options that carry data -------------------------------------------------------------------
-
-
-def test_import_config_resets_the_database_path(env, tmp_path):
-    source = tmp_path / "sidecar.yaml"
-    source.write_text(
-        yaml.safe_dump(
-            {
-                "connectors": [{"name": "docs", "type": "local", "path": str(tmp_path)}],
-                "database": {"path": "C:/elsewhere/index.db"},
-            }
-        )
-    )
-    code, out, err = run_install(env, import_config=source)
-    assert code == 0, err
-    config = yaml.safe_load((env.root / "config.yaml").read_text())
-    assert config["database"]["path"] == "./data/db/index.db"
-    assert config["connectors"][0]["name"] == "docs"
-    assert "Imported the settings" in out
-
-
-def test_a_failed_import_keeps_a_working_config(env, tmp_path):
-    source = tmp_path / "broken.yaml"
-    source.write_text("connectors: [")
-    code, _out, err = run_install(env, import_config=source)
-    assert code == 0
-    assert "could not import" in err
-    assert yaml.safe_load((env.root / "config.yaml").read_text())["database"]["path"] == (
-        "./data/db/index.db"
-    )
 
 
 def test_mcp_token_from_file(env, tmp_path):
@@ -614,6 +613,15 @@ def test_update_keeps_ports_tokens_and_mcp(env):
     )
     assert ("wait_process_exit", 101) in env.events
     assert "updated (version 1.2.0)" in out
+
+
+def test_update_keeps_mcp_off(env):
+    """MCP over HTTP is on by default only for a new install; an update keeps the choice."""
+    install_existing(env)
+    code, _out, err = run_install(env, port="auto", mcp_port="auto")
+    assert code == 0, err
+    assert MCP_SERVICE not in env.manager.services
+    assert not (env.root / "data" / "api_token.txt").exists()
 
 
 def test_a_failed_update_restarts_the_old_services(env):
@@ -853,6 +861,40 @@ def test_not_elevated_changes_no_owner(env):
     assert ("default_owner",) not in env.events
 
 
+def test_fresh_install_checks_the_source_folder(env):
+    assert run_install(env)[0] == 0
+    assert ("check_source", ntpath.dirname(USER_EXE), USER_SID) in env.events
+
+
+def test_an_unsafe_source_folder_is_refused_before_any_change(env):
+    env.source_problems = ["rootmind-backend.exe: S-1-5-11 may change it"]
+    code, _out, err = run_install(env)
+    assert code == ExitCode.UNSAFE_PROGRAM_FOLDER == 10
+    assert "can be changed by accounts other than administrators" in err
+    assert "S-1-5-11 may change it" in err
+    assert not env.manager.services
+    assert not env.root.exists()
+    assert env.folders == 0
+
+
+def test_an_update_from_an_unsafe_source_leaves_the_services_running(env):
+    install_existing(env, mcp_port=3000)
+    env.source_problems = [r"C:\Downloads\rootmind-backend: S-1-5-32-545 may change it"]
+    code, _out, _err = run_install(env)
+    assert code == ExitCode.UNSAFE_PROGRAM_FOLDER
+    assert not any(call[0] in ("stop", "update", "delete") for call in env.manager.calls)
+    assert env.manager.services[BACKEND_SERVICE]["state"] == scm.RUNNING
+
+
+def test_the_registered_copy_is_not_checked_again(env):
+    install_existing(env, folder="1.2.0-0a1b2c3d")
+    env.executable = program_exe("1.2.0-0a1b2c3d")
+    env.source_problems = ["would refuse"]
+    code, _out, err = run_install(env, port="auto", mcp_port="auto")
+    assert code == 0, err
+    assert not any(event[0] == "check_source" for event in env.events)
+
+
 def test_an_unprotected_program_folder_is_refused(env):
     def refuse(*args):
         raise layout.LayoutError("RootMind Service exists but is not protected", ["x: S-1-1-0"])
@@ -1029,7 +1071,7 @@ def test_status_warnings(env):
     install_existing(env)
     env.manager.services[BACKEND_SERVICE]["state"] = scm.STOPPED
     (env.root / "data" / "rest_token.txt").unlink()
-    env.app_installed = False
+    env.app_present = False
     info = install.status(env)
     assert info["version"] is None
     assert "service is stopped" in info["warnings"]
@@ -1040,7 +1082,7 @@ def test_status_warnings(env):
 
 def test_status_uninstall_hint_only_for_the_stored_account(env):
     install_existing(env, sid=OTHER_SID)
-    env.app_installed = False
+    env.app_present = False
     assert not any(w.startswith("RootMind is not") for w in install.status(env)["warnings"])
 
 
@@ -1103,16 +1145,6 @@ def test_cli_windows_only(env):
     [
         # The exact command lines the desktop app builds (desktop/src-tauri/src/service.rs).
         ["install", "--port", "auto", "--no-mcp-http", "--user-sid", USER_SID],
-        [
-            "install",
-            "--port",
-            "auto",
-            "--no-mcp-http",
-            "--user-sid",
-            USER_SID,
-            "--import-config",
-            r"C:\Users\me\AppData\Local\io.github.cgaeking.rootmind\backend\config.yaml",
-        ],
         ["install", "--port", "auto", "--mcp-http", "--mcp-port", "auto", "--user-sid", USER_SID],
         ["install", "--port", "auto", "--user-sid", USER_SID],
         ["install", "--mcp-http", "--mcp-port", "auto"],
@@ -1128,8 +1160,6 @@ def test_cli_windows_only(env):
             "--mcp-http",
             "--mcp-port",
             "3000",
-            "--import-config",
-            r"C:\data\config.yaml",
             "--mcp-token-from",
             r"C:\data\api_token.txt",
             "--no-start",

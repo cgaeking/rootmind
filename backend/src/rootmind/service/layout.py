@@ -55,6 +55,7 @@ USERS = "S-1-5-32-545"
 TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 CREATOR_OWNER = "S-1-3-0"
 CREATOR_GROUP = "S-1-3-1"
+OWNER_RIGHTS = "S-1-3-4"
 
 ADMIN_SIDS = frozenset({SYSTEM, ADMINISTRATORS, TRUSTED_INSTALLER})
 
@@ -599,6 +600,57 @@ def check_admin_only(
                 if not (ace[1] & _INHERIT_ONLY_ACE and ace[3] in creator_templates)
             ]
         problems.extend(f"{shown}: {sid} may change it" for sid in write_grants(security, writers))
+    return problems
+
+
+# Rights on a folder above the program folder that let an account move or
+# replace what it holds: delete child, delete, WRITE_DAC, WRITE_OWNER,
+# GENERIC_ALL and MAXIMUM_ALLOWED.
+_ANCESTOR_RIGHTS = 0x0040 | 0x00010000 | _WRITE_DAC | _WRITE_OWNER | 0x10000000 | 0x02000000
+
+
+def program_source_problems(
+    folder: Path,
+    *,
+    owners: frozenset[str] = ADMIN_SIDS,
+    writers: frozenset[str] = ADMIN_SIDS,
+) -> list[str]:
+    """Why ``service install`` must not copy the program from ``folder``; empty when it may.
+
+    The services run as LocalSystem from the copy, so whoever can change the
+    source before or while it is copied could run code as SYSTEM:
+
+    - ``folder`` and everything below it must be admin-only
+      (:func:`check_admin_only`);
+    - no folder above it may let another account move or replace what it
+      holds (delete child, delete, change permissions or owner), and each
+      must be owned by ``owners``.
+
+    ``owners`` and ``writers`` are SIDs besides which nobody may own or
+    change anything; tests and an administrator without UAC add the account.
+    OWNER RIGHTS entries only grant to the owner, which is checked itself.
+    """
+    writers = writers | {OWNER_RIGHTS}
+    try:
+        problems = check_admin_only(folder, recursive=True, owners=owners, writers=writers)
+    except OSError as e:
+        return [f"{folder}: cannot be checked ({e.strerror or e})"]
+    for ancestor in folder.parents:
+        try:
+            security = read_security(ancestor)
+        except Exception as e:  # pywintypes.error, OSError
+            problems.append(f"{ancestor}: cannot read its permissions ({e})")
+            continue
+        if security.owner not in owners:
+            problems.append(f"{ancestor}: owned by {security.owner}")
+        if security.aces is None:
+            problems.append(f"{ancestor}: Everyone (no access list)")
+            continue
+        for ace_type, flags, mask, sid in security.aces:
+            if ace_type in _DENY_ACE_TYPES or flags & _INHERIT_ONLY_ACE:
+                continue
+            if mask & _ANCESTOR_RIGHTS and sid not in writers:
+                problems.append(f"{ancestor}: {sid} may move or replace what it holds")
     return problems
 
 

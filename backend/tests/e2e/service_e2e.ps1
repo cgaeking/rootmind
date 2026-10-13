@@ -13,14 +13,16 @@
     services and folders exist yet. It always cleans up, also after a failure.
 
     1. Refusals: a foreign RootMind-Backend (3), a busy port (4), another
-       account (8), an unprotected data folder (6).
-    2. Install with MCP: services, accounts, privileges, quoted ImagePath,
-       service key permissions.
+       account (8), an unprotected data folder (6), a program folder that
+       Users may change (10).
+    2. Install (MCP over HTTP is on by default): services, accounts,
+       privileges, quoted ImagePath, service key permissions.
     3. Permissions of the program and data folders.
     4. Tokens: present, different, not in the registry; 401/200 on both.
     5. Confinement: the service reads only what the account can read.
     6. MCP sees a newly added folder without a restart.
-    7. Restart, status --json, an update from another copy.
+    7. Restart, status --json, an update from another copy, MCP off and on
+       again (as the app's settings switch it).
     8. Uninstall from the Program Files copy, again, and with --purge.
 
 .EXAMPLE
@@ -67,6 +69,9 @@ foreach ($port in @($ApiPort, $McpPort)) {
 }
 $ProgramFiles = [Environment]::GetFolderPath("ProgramFiles")
 $ProgramBase = Join-Path $ProgramFiles "RootMind Service"
+# Two admin-only copies of the build stand in for two installed app versions:
+# "service install" copies only from a folder non-administrators cannot change.
+$Sources = Join-Path $ProgramFiles "RootMind E2E Sources"
 $DataRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "RootMind"
 foreach ($name in $ServiceNames) {
     if (Get-Service -Name $name -ErrorAction SilentlyContinue) {
@@ -74,7 +79,7 @@ foreach ($name in $ServiceNames) {
         exit 2
     }
 }
-foreach ($path in @($ProgramBase, $DataRoot)) {
+foreach ($path in @($ProgramBase, $DataRoot, $Sources)) {
     if (Test-Path -LiteralPath $path) {
         Write-Host "service_e2e: refusing to run: $path exists already."
         exit 2
@@ -213,8 +218,9 @@ function Test-PendingDelete([string] $Path) {
 
 # --- the test ----------------------------------------------------------------------------------
 
-$Copy1 = Join-Path $WorkDir "copy1\rootmind-backend"
-$Copy2 = Join-Path $WorkDir "copy2\rootmind-backend"
+$Copy1 = Join-Path $Sources "copy1\rootmind-backend"
+$Copy2 = Join-Path $Sources "copy2\rootmind-backend"
+$Unsafe = Join-Path $WorkDir "unsafe\rootmind-backend"
 $Exe1 = Join-Path $Copy1 "rootmind-backend.exe"
 $Exe2 = Join-Path $Copy2 "rootmind-backend.exe"
 $ApiUrl = "http://127.0.0.1:$ApiPort"
@@ -229,11 +235,17 @@ function Invoke-Mcp([string] $Token, [string] $Method, $Params, [int] $Id = 1) {
 $Initialize = @{ protocolVersion = "2025-06-18"; capabilities = @{}; clientInfo = @{ name = "service-e2e"; version = "1" } }
 
 try {
-    # The installer copies from a user folder, as the app's per-user copy does.
-    foreach ($copy in @($Copy1, $Copy2)) {
+    # Two copies of the build stand in for two installed app versions: a
+    # Program Files subfolder created by this elevated administrator, with the
+    # permissions and owner it gets that way, as the installer creates the
+    # app's folder. "service install" must accept it as a source.
+    foreach ($copy in @($Copy1, $Copy2, $Unsafe)) {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $copy) | Out-Null
         Copy-Item -LiteralPath $ExeDir -Destination $copy -Recurse
     }
+    # A copy that Users may change, as in a folder chosen outside Program Files.
+    & icacls.exe $Unsafe /grant "*S-1-5-32-545:(OI)(CI)M" /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "could not open $Unsafe to Users" }
     $Version = ((Invoke-Exe $Exe1 @("--version")).Output.Trim() -split '\s+')[-1]
     Pass "testing version $Version as $UserSid"
 
@@ -241,7 +253,7 @@ try {
     $foreignImage = "C:\Windows\System32\cmd.exe"
     & sc.exe create RootMind-Backend binPath= $foreignImage start= demand | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "could not create the foreign test service" }
-    Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort")) 3 "install next to a foreign RootMind-Backend"
+    Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort", "--mcp-port", "$McpPort")) 3 "install next to a foreign RootMind-Backend"
     Assert-True ((Get-ImagePath "RootMind-Backend") -eq $foreignImage) "the foreign service was not changed"
     & sc.exe delete RootMind-Backend | Out-Null
     Assert-True (-not (Test-Path -LiteralPath $DataRoot)) "nothing was created"
@@ -249,19 +261,23 @@ try {
     $listener = New-Object System.Net.Sockets.TcpListener ([Net.IPAddress]::Loopback), $ApiPort
     $listener.Start()
     try {
-        Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort")) 4 "install on a busy port"
+        Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort", "--mcp-port", "$McpPort")) 4 "install on a busy port"
     } finally {
         $listener.Stop()
     }
-    Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort", "--user-sid", "S-1-5-32-545")) 8 "install for another account"
+    Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort", "--mcp-port", "$McpPort", "--user-sid", "S-1-5-32-545")) 8 "install for another account"
     New-Item -ItemType Directory -Path $DataRoot | Out-Null  # inherits "Users: create" from ProgramData
-    Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort")) 6 "install over an unprotected data folder"
+    Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort", "--mcp-port", "$McpPort")) 6 "install over an unprotected data folder"
     Remove-Item -LiteralPath $DataRoot -Recurse -Force
+    $unsafeRun = Invoke-Exe (Join-Path $Unsafe "rootmind-backend.exe") @("service", "install", "--port", "$ApiPort", "--mcp-port", "$McpPort")
+    Assert-Exit $unsafeRun 10 "install from a program folder that Users may change"
+    Assert-True ($unsafeRun.Output -match "S-1-5-32-545 may change it") "the refusal names the account that may change the program"
+    Assert-True (-not (Test-Path -LiteralPath $DataRoot)) "nothing was created for the unsafe program folder"
     Assert-True (-not (Get-Service -Name "RootMind-Backend" -ErrorAction SilentlyContinue)) "no service after the refusals"
     Assert-True (-not (Test-Path -LiteralPath $ProgramBase)) "no program folder after the refusals"
 
-    # --- 2. install with MCP -------------------------------------------------------------------
-    Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort", "--mcp-http", "--mcp-port", "$McpPort")) 0 "install with MCP"
+    # --- 2. install (MCP over HTTP is on by default) --------------------------------------------
+    Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort", "--mcp-port", "$McpPort")) 0 "install"
     foreach ($name in $ServiceNames) {
         $service = Get-Service -Name $name
         Assert-True ($service.Status -eq "Running") "$name is running"
@@ -426,7 +442,7 @@ try {
     Assert-True ($status.port -eq $ApiPort -and $status.version -eq $Version -and $status.user_sid -eq $UserSid) "status: port, version and account"
     Assert-True ($status.token_readable -and $status.binary -eq (Get-ProgramExe)) "status: token readable, binary"
     Assert-True ($status.mcp_http.installed -and $status.mcp_http.state -eq "running" -and $status.mcp_http.port -eq $McpPort) "status: MCP"
-    $unexpected = @($status.warnings | Where-Object { $_ -notlike "RootMind is not installed for this account*" })
+    $unexpected = @($status.warnings | Where-Object { $_ -notlike "RootMind is not installed*" })
     Assert-True ($unexpected.Count -eq 0) "status: no warnings besides the missing app ($($status.warnings -join '; '))"
 
     $oldDir = $ProgramDir
@@ -440,6 +456,17 @@ try {
     Assert-Status (Invoke-Http GET "$ApiUrl/status" -Token $RestToken) 200 "REST after the update"
     Assert-Status (Invoke-Mcp $McpToken "initialize" $Initialize) 200 "MCP after the update"
 
+    # MCP over HTTP off and on again, from the Program Files copy (the app's settings do this).
+    $programExe = Get-ProgramExe
+    Assert-Exit (Invoke-Exe $programExe @("service", "install", "--no-mcp-http")) 0 "MCP over HTTP off"
+    & sc.exe query RootMind-MCP-HTTP | Out-Null
+    Assert-True ($LASTEXITCODE -eq 1060) "the MCP service is gone"
+    Assert-True (-not (Test-PortOpen $McpPort)) "the MCP port is closed"
+    Assert-Status (Invoke-Http GET "$ApiUrl/status" -Token $RestToken) 200 "REST without MCP"
+    Assert-Exit (Invoke-Exe $programExe @("service", "install", "--mcp-http", "--mcp-port", "$McpPort")) 0 "MCP over HTTP on"
+    Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $DataRoot "data\api_token.txt")).Trim() -eq $McpToken) "the MCP token is unchanged"
+    Assert-Status (Invoke-Mcp $McpToken "initialize" $Initialize) 200 "MCP after turning it on again"
+
     # --- 8. uninstall ----------------------------------------------------------------------------
     $programExe = Get-ProgramExe
     Assert-Exit (Invoke-Exe $programExe @("service", "uninstall")) 0 "uninstall from the Program Files copy"
@@ -451,7 +478,7 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $DataRoot "data\rest_token.txt"))) "rest_token.txt was deleted"
     Assert-True ((Test-Path -LiteralPath (Join-Path $DataRoot "data\api_token.txt")) -and (Test-Path -LiteralPath (Join-Path $DataRoot "config.yaml"))) "the MCP token and the data were kept"
     Assert-Exit (Invoke-Exe $Exe1 @("service", "uninstall")) 0 "uninstall again"
-    Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort")) 0 "a fresh install over the kept data"
+    Assert-Exit (Invoke-Exe $Exe1 @("service", "install", "--port", "$ApiPort", "--mcp-port", "$McpPort")) 0 "a fresh install over the kept data"
     Assert-Exit (Invoke-Exe $Exe1 @("service", "uninstall", "--purge")) 0 "uninstall --purge"
     Assert-True (-not (Test-Path -LiteralPath $DataRoot)) "--purge deleted the data folder"
     Write-Host "Service e2e test passed."
@@ -497,7 +524,7 @@ try {
             & sc.exe delete $name 2>&1 | Out-Null
         }
     }
-    foreach ($path in @($DataRoot, $ProgramBase)) {
+    foreach ($path in @($DataRoot, $ProgramBase, $Sources)) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
     }
     if (Test-Path -LiteralPath $Confine) {

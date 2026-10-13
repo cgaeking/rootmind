@@ -13,7 +13,7 @@ defense is layered:
   ``Authorization: Bearer <token>`` on every route except ``GET``/``HEAD`` on
   ``/`` and ``/health``. The docs pages and the OpenAPI schema are then off.
 
-The desktop app's built-in backend and the Windows service always run with a
+The Windows service, the desktop app's backend, always runs with a
 token. The plain CLI (``rootmind api``) runs without one unless
 ``RLM_API_TOKEN`` or ``--require-token`` asks for it.
 

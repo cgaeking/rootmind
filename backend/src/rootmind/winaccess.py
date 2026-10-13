@@ -23,8 +23,8 @@ links are never followed: one can point to a network share, and opening it as
 LocalSystem would authenticate to that share with the computer's account.
 
 The module uses ctypes only and imports on every platform; the policy itself
-works only on Windows. The desktop app's built-in backend and the CLI do not use
-it (see :mod:`rootmind.access`).
+works only on Windows. The command line and the MCP servers do not use it (see
+:mod:`rootmind.access`).
 """
 
 from __future__ import annotations

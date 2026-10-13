@@ -9,23 +9,51 @@ Install (and update, when our services already exist):
 
 1. Preconditions: Windows and the release build (2), elevated (5), the
    account is the approving one (8), its access check can be built (9).
+   When the program will be copied (step 6), the folder it is copied from
+   must be one that only administrators can change (10).
 2. A service with our name that we did not install: exit 3, untouched. Our
    services: update mode, with port, MCP on/off and MCP port read back from
    the ImagePath ("sticky"); the stored account must be the approving one (8).
+   A new install serves MCP over HTTP unless ``--no-mcp-http`` is given.
 3. Ports for new services (:mod:`.ports`; busy: 4).
 4. Update mode: stop the services first, so nothing writes into the data
    folder while it is checked.
 5. The data folder: created, or validated and normalized (refused: 6).
 6. Copy the program into a new version folder (skipped when this executable
    is already the registered copy).
-7. Config: ``--import-config``, or a default config when there is none; the
-   database is moved into ``data\\db`` when it lies elsewhere.
+7. Config: a default config when there is none; the database is moved into
+   ``data\\db`` when it lies elsewhere.
 8. Tokens: ``data\\rest_token.txt``; with MCP ``data\\api_token.txt``
    (``--mcp-token-from``, or kept, or created).
 9. Register the services; ``--no-mcp-http`` removes the MCP service.
 10. Start them and check health and authentication (failure: 7). A token is
     sent only once the service's own process owns the listening socket.
 11. Delete older version folders, append to ``logs\\install.log``.
+
+Since 2.0 the RootMind installer is per machine and runs this command itself
+(the app no longer has a backend of its own), with the backend it placed in
+``<Program Files>\\RootMind\\backend``. The services still run from their own
+copy in ``<Program Files>\\RootMind Service\\<version>-<id>`` (step 6), not from
+the app's folder. That costs a second copy of the program (about 85 MB) and
+keeps three properties the app's folder cannot give:
+
+- It is admin-only by construction and checked, whatever folder the program
+  comes from: :func:`.layout.install_program` creates the copy with its own
+  protected access list and verifies it after copying. The installer always
+  uses ``<Program Files>\\RootMind`` (no folder page; another folder is
+  refused), and step 1 refuses a source folder that non-administrators can
+  change, so a program planted there never becomes the LocalSystem service.
+- Updates are atomic for the service. The installer replaces the app's files
+  while the old service keeps running from its copy; this command stops it
+  only once the new copy is complete, and a failure before the services are
+  registered restarts the old version (step 4). Running from the app's folder
+  would mean stopping the services before the installer extracts anything,
+  and an interrupted extraction would leave an automatic-start LocalSystem
+  service pointing at a half-written program.
+- The installer closes programs that run from the app's folder, matched by
+  path (the Restart Manager check in ``installer/hooks.nsh``). A service
+  process there would be terminated, and its failure actions would restart it
+  in the middle of the extraction.
 """
 
 from __future__ import annotations
@@ -85,9 +113,8 @@ class InstallOptions:
     """The options of ``service install``."""
 
     port: int | str | None = None  # number, "auto", or None (strict default)
-    mcp: bool | None = None  # None: keep the current state (off for a new install)
+    mcp: bool | None = None  # None: keep the current state (on for a new install)
     mcp_port: int | str | None = None
-    import_config: Path | None = None
     mcp_token_from: Path | None = None
     user_sid: str | None = None
     start: bool = True
@@ -328,7 +355,12 @@ def _plan(env, options: InstallOptions, manager, report: Report) -> _Plan:
             "Uninstall it first (service uninstall).",
         )
 
-    mcp_enabled = options.mcp if options.mcp is not None else mcp is not None
+    if options.mcp is not None:
+        mcp_enabled = options.mcp
+    elif images:
+        mcp_enabled = mcp is not None  # an update keeps the current state
+    else:
+        mcp_enabled = True  # MCP over HTTP is on by default
     if options.mcp_token_from is not None and not mcp_enabled:
         raise ServiceCommandError(ExitCode.USAGE, "--mcp-token-from needs --mcp-http")
 
@@ -372,6 +404,31 @@ def _plan(env, options: InstallOptions, manager, report: Report) -> _Plan:
         current=current,
         images=images,
     )
+
+
+def _check_source(env, plan: _Plan) -> None:
+    """Refuse to copy the program from a folder that non-administrators can change (10).
+
+    The services run the copy as LocalSystem. A program folder another
+    account can write (an install folder chosen outside Program Files, or a
+    download folder) would let that account run code as SYSTEM through the
+    next install, update or repair. Nothing is copied when this executable is
+    already the registered copy, which step 6 created admin-only.
+    """
+    registered = next(iter(plan.images.values())).exe if plan.images else None
+    if registered is not None and env.same_path(env.executable, registered):
+        return
+    folder = ntpath.dirname(env.executable)
+    problems = env.program_source_problems(folder, plan.user_sid)
+    if problems:
+        detail = "".join(f"\n  {p}" for p in problems[:20])
+        raise ServiceCommandError(
+            ExitCode.UNSAFE_PROGRAM_FOLDER,
+            f"{folder} can be changed by accounts other than administrators, so the service is "
+            "not installed from it. Install RootMind into Program Files (the RootMind "
+            "installer does), or run this command from a copy of the release build in a "
+            f"folder only administrators can change.{detail}",
+        )
 
 
 def _specs(plan: _Plan, exe: str) -> dict[str, scm.ServiceSpec]:
@@ -526,7 +583,7 @@ def _database_in_service_folder(config_file: Path, root: Path) -> bool:
 
 
 def _prepare_files(
-    env, options: InstallOptions, plan: _Plan, root: Path, mcp_token: str | None, report: Report
+    env, plan: _Plan, root: Path, mcp_token: str | None, report: Report
 ) -> tuple[str, str | None, dict[str, str]]:
     """Steps 6-8: program, config and tokens. Returns the exe, the new folder and the tokens."""
     # 6. Program.
@@ -544,14 +601,6 @@ def _prepare_files(
 
     # 7. Config.
     config_file = root / "config.yaml"
-    if options.import_config is not None:
-        from ..config import import_config
-
-        try:
-            import_config(options.import_config, root, database_path=SERVICE_DATABASE_PATH)
-            report.info(f"Imported the settings from {options.import_config}")
-        except (OSError, ValueError) as e:
-            report.warn(f"could not import the settings from {options.import_config}: {e}")
     if not config_file.exists():
         _write_atomic(config_file, DEFAULT_CONFIG)
     elif not _database_in_service_folder(config_file, root):
@@ -591,6 +640,7 @@ def _install(env, options: InstallOptions, report: Report) -> None:
 
     with env.scm(write=True) as manager:
         plan = _plan(env, options, manager, report)
+        _check_source(env, plan)
         root = env.data_root()
 
         # 4. Update mode: stop what runs, and let the processes end. Nothing
@@ -615,7 +665,7 @@ def _install(env, options: InstallOptions, report: Report) -> None:
                 raise ServiceCommandError(ExitCode.DATA_FOLDER_REFUSED, f"{e}{detail}") from None
             report.log_path = root / "logs" / "install.log"
 
-            exe, new_folder, tokens = _prepare_files(env, options, plan, root, mcp_token, report)
+            exe, new_folder, tokens = _prepare_files(env, plan, root, mcp_token, report)
         except BaseException:
             # Nothing is registered yet: the old version keeps serving.
             for name in was_running:
@@ -801,10 +851,10 @@ def status(env) -> dict[str, Any]:
             me = env.process_user_sid()
         except OSError:
             me = None
-        if _same_sid(me, image.user_sid) and not env.app_installed_for_user():
+        if _same_sid(me, image.user_sid) and not env.app_installed():
             warnings.append(
-                "RootMind is not installed for this account. If you uninstalled it, remove the "
-                f'background service with "{image.exe}" service uninstall from an elevated prompt'
+                "RootMind is not installed. If you uninstalled it, remove the background "
+                f'service with "{image.exe}" service uninstall from an elevated prompt'
             )
 
     mcp_image = _ours(mcp, program_files)

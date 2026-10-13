@@ -34,8 +34,8 @@ def rest_client(app, token: str | None = None):
 def capture_serving(monkeypatch) -> dict[str, Any]:
     """Make ``rootmind.main`` record what it would serve instead of binding a socket.
 
-    After ``main(["api", ...])`` the returned dict holds ``bind`` (host, port),
-    ``app`` (the FastAPI app) and ``exit_with_parent``.
+    After ``main(["api", ...])`` the returned dict holds ``bind`` (host, port)
+    and ``app`` (the FastAPI app).
     """
     from rootmind import main as main_module
 
@@ -46,10 +46,9 @@ def capture_serving(monkeypatch) -> dict[str, Any]:
         seen["bind"] = (host, port)
         return sock
 
-    def fake_serve(app, bound, *, exit_with_parent=False):
+    def fake_serve(app, bound):
         assert bound is sock
         seen["app"] = app
-        seen["exit_with_parent"] = exit_with_parent
 
     monkeypatch.setattr(main_module, "bind_socket", fake_bind)
     monkeypatch.setattr(main_module, "serve", fake_serve)

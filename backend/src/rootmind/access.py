@@ -2,8 +2,8 @@
 
 The local connector asks a :class:`FolderAccess` policy before it uses an
 indexed folder, before the walk enters a subfolder, and to open every file it
-reads. The desktop app's built-in backend and the CLI use :data:`UNRESTRICTED`,
-which is plain filesystem access with the process's own rights. The Windows
+reads. The command line (``rootmind api``, ``index``) and the MCP servers use
+:data:`UNRESTRICTED`, which is plain filesystem access with the process's own rights. The Windows
 background service runs as LocalSystem and passes a policy that confines reads
 to what the installing account could read without elevation
 (``rootmind.winaccess.WindowsUserAccess``).
@@ -53,7 +53,7 @@ class FolderAccess(Protocol):
 
 
 class Unrestricted:
-    """No policy: the process reads with its own rights (built-in backend and CLI)."""
+    """No policy: the process reads with its own rights (command line and MCP servers)."""
 
     def check_root(self, path: str | Path) -> Path:
         return Path(path).resolve()

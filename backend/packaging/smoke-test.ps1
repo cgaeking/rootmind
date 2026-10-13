@@ -3,13 +3,15 @@
     Smoke test of the packaged RootMind backend (the PyInstaller onedir folder).
 
 .DESCRIPTION
-    Runs the frozen rootmind-backend.exe the way the app, MCP clients and the
-    CLI do, and fails on the first problem:
+    Runs the frozen rootmind-backend.exe the way MCP clients and the CLI do
+    (the Windows service runs the same code; backend/tests/e2e/service_e2e.ps1
+    tests it), and fails on the first problem:
 
     - --version prints the package version;
     - api with a token: /health 200, /status 401 without and 200 with the
-      token, /docs 404; the ready line; "shutdown" on stdin stops it;
-    - api --port 0: the ready line names the port; closing stdin stops it;
+      token, /docs 404; the token never reaches the output;
+    - the options of the removed built-in backend (--exit-with-parent,
+      --import-config) are refused;
     - index over the evaluation corpus (.md .pdf .docx .xlsx .pptx .csv)
       without errors, and every format is listed by the API;
     - POST /llm/models for anthropic and openai with a dummy key against a
@@ -39,7 +41,6 @@ $ErrorActionPreference = "Stop"
 
 $ToolNames = @("search_documents", "search_fuzzy", "list_documents", "read_document", "get_statistics")
 $CorpusFormats = @(".md", ".pdf", ".docx", ".xlsx", ".pptx", ".csv")
-$ReadyPattern = '^ROOTMIND_LISTENING \{"port":(\d+)\}$'
 $Started = New-Object System.Collections.ArrayList
 
 function Fail([string] $Message) { throw "SMOKE FAILED: $Message" }
@@ -160,32 +161,8 @@ function Start-Backend {
     [void]$Started.Add($process)
     $stderr = $process.StandardError.ReadToEndAsync()
     return [pscustomobject]@{
-        Process = $process; Stderr = $stderr; Lines = (New-Object System.Collections.ArrayList)
+        Process = $process; Stderr = $stderr
         Pending = $null; Started = [DateTime]::UtcNow
-    }
-}
-
-# Read stdout lines until the ready line; returns the port.
-function Wait-Ready($Backend, [int] $TimeoutSeconds = 90) {
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    while ($true) {
-        if ($null -eq $Backend.Pending) { $Backend.Pending = $Backend.Process.StandardOutput.ReadLineAsync() }
-        $left = [int]([Math]::Max(0, ($deadline - [DateTime]::UtcNow).TotalMilliseconds))
-        if (-not $Backend.Pending.Wait($left)) { Fail "no ready line within $TimeoutSeconds s" }
-        $line = $Backend.Pending.Result
-        $Backend.Pending = $null
-        if ($null -eq $line) {
-            $Backend.Process.WaitForExit(5000) | Out-Null
-            Fail "the backend exited before the ready line: $($Backend.Stderr.Result)"
-        }
-        [void]$Backend.Lines.Add($line)
-        if ($line -match $ReadyPattern) {
-            $port = [int]$Matches[1]
-            if ($port -lt 1 -or $port -gt 65535) { Fail "ready line with invalid port: $line" }
-            # Keep draining stdout so the backend never blocks on a full pipe.
-            $Backend.Pending = $Backend.Process.StandardOutput.ReadToEndAsync()
-            return $port
-        }
     }
 }
 
@@ -193,6 +170,16 @@ function Send-Stdin($Backend, [string] $Text) {
     $bytes = (New-Object System.Text.UTF8Encoding $false).GetBytes($Text)
     $Backend.Process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
     $Backend.Process.StandardInput.BaseStream.Flush()
+}
+
+# Collect what the backend writes to stdout from now on (read it after Stop-Backend).
+function Start-Draining($Backend) {
+    $Backend.Pending = $Backend.Process.StandardOutput.ReadToEndAsync()
+}
+
+function Stop-Backend($Backend) {
+    if (-not $Backend.Process.HasExited) { $Backend.Process.Kill() }
+    if (-not $Backend.Process.WaitForExit(10000)) { Fail "process $($Backend.Process.Id) did not stop" }
 }
 
 function Wait-Exit($Backend, [int] $TimeoutSeconds, [string] $What) {
@@ -223,16 +210,14 @@ try {
     $apiHome = Join-Path $WorkDir "api-home"
     New-Item -ItemType Directory -Force -Path $apiHome | Out-Null
     $token = New-Token
-    $api = Start-Backend -Arguments @("api", "--host", "127.0.0.1", "--port", "$ApiPort", "--exit-with-parent") `
+    $api = Start-Backend -Arguments @("api", "--host", "127.0.0.1", "--port", "$ApiPort") `
         -Environment @{ RLM_HOME = $apiHome; RLM_API_TOKEN = $token }
-    $port = Wait-Ready $api
-    $readySeconds = ([DateTime]::UtcNow - $api.Started).TotalSeconds
-    if ($port -ne $ApiPort) { Fail "ready line names port $port, expected $ApiPort" }
+    Start-Draining $api
     $url = "http://127.0.0.1:$ApiPort"
     Wait-Healthy $url
     $healthySeconds = ([DateTime]::UtcNow - $api.Started).TotalSeconds
-    Pass ("api ready after {0:N1} s, healthy after {1:N1} s" -f $readySeconds, $healthySeconds)
-    [void]$Summary.Add(("Time to ready line: {0:N1} s; time to healthy: {1:N1} s" -f $readySeconds, $healthySeconds))
+    Pass ("api healthy after {0:N1} s" -f $healthySeconds)
+    [void]$Summary.Add(("Time to healthy: {0:N1} s" -f $healthySeconds))
     $root = Invoke-Http GET "$url/"
     Assert-Status $root 200 "GET /"
     if ($root.Json.auth -ne "bearer" -or $root.Json.version -ne $ExpectedVersion) { Fail "GET / says $($root.Text)" }
@@ -241,22 +226,20 @@ try {
     Assert-Status (Invoke-Http GET "$url/status" -Token $token) 200 "GET /status with the token"
     Assert-Status (Invoke-Http GET "$url/docs" -Token $token) 404 "GET /docs"
     Assert-Status (Invoke-Http GET "$url/openapi.json" -Token $token) 404 "GET /openapi.json"
-    Send-Stdin $api "shutdown`n"
-    Wait-Exit $api 10 "api after 'shutdown' on stdin"
-    $output = ($api.Lines -join "`n") + "`n" + $api.Pending.Result + "`n" + $api.Stderr.Result
+    Stop-Backend $api
+    $output = $api.Pending.Result + "`n" + $api.Stderr.Result
     if ($output.Contains($token)) { Fail "the token appears in the backend's output" }
-    $readyLines = @(($api.Lines + @($api.Pending.Result -split "`r?`n")) | Where-Object { $_ -match $ReadyPattern })
-    if ($readyLines.Count -ne 1) { Fail "expected one ready line, got $($readyLines.Count)" }
-    Pass "the token is not in the output; one ready line"
+    if ($output.Contains("ROOTMIND_LISTENING")) { Fail "the backend printed the ready line of the removed built-in backend" }
+    Pass "the token is not in the output"
 
-    # --- api --port 0, stdin closed ------------------------------------------------------
-    $dynamic = Start-Backend -Arguments @("api", "--host", "127.0.0.1", "--port", "0", "--exit-with-parent") `
-        -Environment @{ RLM_HOME = $apiHome; RLM_API_TOKEN = (New-Token); RLM_DISABLE_SCHEDULER = "1" }
-    $dynamicPort = Wait-Ready $dynamic
-    if ($dynamicPort -eq 0) { Fail "--port 0 reported port 0" }
-    Assert-Status (Invoke-Http GET "http://127.0.0.1:$dynamicPort/health") 200 "api --port 0 on port $dynamicPort"
-    $dynamic.Process.StandardInput.Close()
-    Wait-Exit $dynamic 10 "api after stdin was closed"
+    # --- options of the removed built-in backend ---------------------------------------
+    foreach ($removed in @(@("--exit-with-parent"), @("--import-config", "x.yaml"))) {
+        $run = Start-Backend -Arguments (@("api", "--port", "$ApiPort") + $removed) -Environment @{ RLM_HOME = $apiHome }
+        Start-Draining $run
+        if (-not $run.Process.WaitForExit(60000)) { Fail "api $($removed[0]) did not exit" }
+        if ($run.Process.ExitCode -ne 2) { Fail "api $($removed[0]) exited with $($run.Process.ExitCode), expected 2" }
+        Pass "api $($removed[0]) is refused (exit 2)"
+    }
 
     # --- index over the corpus -----------------------------------------------------------
     $indexHome = Join-Path $WorkDir "index-home"
@@ -288,9 +271,10 @@ try {
 
     # --- the indexed formats and the LLM SDKs through the API ------------------------------
     $token = New-Token
-    $api = Start-Backend -Arguments @("api", "--host", "127.0.0.1", "--port", "$ApiPort", "--exit-with-parent") `
+    $api = Start-Backend -Arguments @("api", "--host", "127.0.0.1", "--port", "$ApiPort") `
         -Environment @{ RLM_HOME = $indexHome; RLM_API_TOKEN = $token; RLM_DISABLE_SCHEDULER = "1" }
-    Wait-Ready $api | Out-Null
+    Start-Draining $api
+    Wait-Healthy $url
     $documents = Invoke-Http GET "$url/documents?limit=1000" -Token $token
     Assert-Status $documents 200 "GET /documents"
     $names = @($documents.Json.documents | ForEach-Object { $_.file_name })
@@ -305,8 +289,7 @@ try {
         }
         Pass "POST /llm/models ($provider) -> 502 could not reach the provider"
     }
-    $api.Process.StandardInput.Close()
-    Wait-Exit $api 10 "api after stdin was closed"
+    Stop-Backend $api
 
     # --- mcp-http -----------------------------------------------------------------------------
     $mcpToken = New-Token

@@ -6,10 +6,14 @@ Windows services, hosted by the same executable (``service run <role>``):
 - ``RootMind-Backend`` runs the REST API and the indexer as LocalSystem. Its
   reads are confined to what the installing account can read without
   elevation (:class:`rootmind.winaccess.WindowsUserAccess`).
-- ``RootMind-MCP-HTTP`` (optional) serves MCP over HTTP as the virtual account
-  ``NT SERVICE\\RootMind-MCP-HTTP``. It only reads the index.
+- ``RootMind-MCP-HTTP`` serves MCP over HTTP as the virtual account
+  ``NT SERVICE\\RootMind-MCP-HTTP``. It only reads the index. It is on for a new
+  install; ``--no-mcp-http`` turns it off.
 
-The program is copied to ``%ProgramFiles%\\RootMind Service\\<version>-<id>\\``
+Since 2.0 the service is RootMind's only backend: the per-machine installer
+runs ``service install`` for the account that installs the app, and the
+uninstaller runs ``service uninstall``. The program is copied to
+``%ProgramFiles%\\RootMind Service\\<version>-<id>\\`` (why: :mod:`.install`)
 and the data lives in ``%ProgramData%\\RootMind``. Modules:
 
 - :mod:`.cli`: the ``service`` command line;
@@ -78,7 +82,8 @@ def release_zip_url(version: str) -> str:
     return RELEASE_ZIP_URL.format(tag=tag)
 
 
-# The per-user app's uninstall entry (NSIS, current-user install).
+# The app's uninstall entry (NSIS). Since 2.0 the app is installed per machine
+# (HKLM); RootMind 1.x installed it per user (HKCU).
 APP_UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\RootMind"
 
 # Service-specific exit code of a clean stop on a config, token or access
@@ -99,6 +104,10 @@ class ExitCode(IntEnum):
     HEALTH_CHECK_FAILED = 7
     ACCOUNT_MISMATCH = 8  # the approving account is not the app's, or the service is another's
     ACCESS_CONTEXT = 9  # the access check for the account cannot be built
+    # The program folder this command would copy from (the folder of the
+    # running rootmind-backend.exe, _internal included) can be changed by
+    # accounts other than administrators.
+    UNSAFE_PROGRAM_FOLDER = 10
 
 
 class ServiceCommandError(Exception):

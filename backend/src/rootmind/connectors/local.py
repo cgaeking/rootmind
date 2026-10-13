@@ -1,7 +1,7 @@
 """Local filesystem connector.
 
-Without a folder access policy (the desktop app's built-in backend and the
-CLI) the connector uses the file system like any program of the user.
+Without a folder access policy (the command line and the MCP servers) the
+connector uses the file system like any program of the user.
 
 Under a policy (the Windows background service, which runs as LocalSystem)
 it never follows a link: paths are resolved lexically instead of with
