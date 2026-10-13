@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="desktop/src-tauri/icons/128x128@2x.png" alt="RootMind logo" width="128">
+</p>
+
 # RootMind
 
 [English](README.md) | **Deutsch**
