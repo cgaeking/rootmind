@@ -49,7 +49,7 @@ protected your PC": choose **More info**, then **Run anyway**. If Smart App
 Control is on, it may block the installer or the app's backend without that
 choice; a blocked backend is reported in the app. Smart App Control has no
 exception for a single app; signed releases, which are planned, will avoid
-this.
+this (see the [code signing policy](CODE_SIGNING.md)).
 
 Then add a folder under **Folders**. Indexing starts within about a minute,
 and search works without an API key once the folder is indexed. To ask
@@ -652,3 +652,9 @@ described in [SECURITY.md](SECURITY.md).
 
 The packaged backend and the installer bundle third-party dependencies, which
 keep their own licenses.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate
+by [SignPath Foundation](https://signpath.org). See [CODE_SIGNING.md](CODE_SIGNING.md)
+for what is signed, the team roles and the privacy policy.

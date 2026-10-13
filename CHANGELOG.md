@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Added
+
+- Code signing policy ([CODE_SIGNING.md](CODE_SIGNING.md)) with team roles and a privacy policy, linked from the READMEs and the release notes, in preparation for signed releases.
+
 ## [1.3.0] - 2026-10-13
 
 ### Added
