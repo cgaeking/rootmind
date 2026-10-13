@@ -1,5 +1,5 @@
-// English strings (default build). labels.de.ts mirrors this file key for key;
-// see labels.ts for how one of the two is picked at build time.
+// English strings. labels.de.ts mirrors this file key for key; see labels.ts
+// for how the language is chosen at runtime.
 
 export const labels = {
   locale: "en-US",
@@ -97,6 +97,11 @@ export const labels = {
     themeSystem: "System",
     themeLight: "Light",
     themeDark: "Dark",
+    languageLabel: "Language",
+    languageHint: "System follows the Windows display language.",
+    languageSystem: "System",
+    languageEn: "English",
+    languageDe: "Deutsch",
     serviceTitle: "Background service",
     serviceHelp:
       "Keeps your index up to date while the app is closed, and starts with Windows. Needs administrator approval. The service reads only folders your account can open; network drives and shares are not available.",
@@ -194,10 +199,14 @@ export const labels = {
     modelLabel: "Model",
     apiKeyLabel: "API key", // pragma: allowlist secret (UI label)
     apiKeyHintSaved: (key: string) => `Saved: ${key}  ·  stored per provider`,
-    apiKeyHintUnsaved: "Stored per provider. Needed to load the model list.", // pragma: allowlist secret (UI label)
-    loadModels: "Load models",
-    loadingModels: "Loading …",
-    modelHintNoKey: "Enter an API key first, then load models.",
+    apiKeyHintUnsaved: "Stored per provider. Save it to load the model list.", // pragma: allowlist secret (UI label)
+    saveKeyAria: "Save API key", // pragma: allowlist secret (UI label)
+    keySaved: "API key saved.", // pragma: allowlist secret (UI label)
+    keyRemoved: "API key removed.", // pragma: allowlist secret (UI label)
+    keyRejected: (msg: string) => `The key was not saved: ${msg}`,
+    providerDetected: (name: string) =>
+      `Detected from the key: ${name}. You can choose another provider.`,
+    modelHintNoKey: "Save an API key for this provider first.",
     modelHintCount: (n: number) => `${n} chat models from the provider API`,
     modelHintLoading: "Loading models …",
     modelsError: (msg: string) => `Could not load models: ${msg}. Check the API key.`,
@@ -216,6 +225,16 @@ export const labels = {
     savedRestart: "Saved – please restart the backend.",
     saveFailed: (msg: string) => `Save failed: ${msg}`,
     staleConfig: "The backend changed in the meantime. Nothing was saved; check the settings again.",
+    aboutTitle: "About",
+    aboutDesc: "Chat and search over your local documents.",
+    aboutAppVersion: "App version",
+    aboutBackendVersion: "Backend version",
+    aboutUnknown: "unknown",
+    aboutAuthor: "Author",
+    aboutLicense: "License",
+    aboutRepository: "Repository",
+    aboutReleases: "Releases and changelog",
+    aboutIssues: "Issues",
   },
   status: {
     subtitle: "Index status and statistics.",
@@ -252,7 +271,7 @@ export const labels = {
     subtitle: "Folders to be indexed.",
     loadError: (msg: string) => `Could not load configuration: ${msg}`,
     title: "Folders",
-    desc: "One folder path per line.",
+    desc: "Changes are saved right away.",
     none: "No folders yet – add one below.",
     pathPlaceholder: "C:\\Users\\…\\Documents",
     removeAria: "Remove",
@@ -262,7 +281,9 @@ export const labels = {
     saving: "Saving …",
     saved: "Applied.",
     savedRestart: "Saved – please restart the backend.",
-    saveFailed: (msg: string) => `Save failed: ${msg}`,
+    notAdded: (msg: string) => `The folder was not added: ${msg}`,
+    notRemoved: (msg: string) => `The folder was not removed: ${msg}`,
+    notChanged: (msg: string) => `The change was not saved: ${msg}`,
     staleConfig: "The backend changed in the meantime. Nothing was saved; check the folders again.",
   },
   chat: {

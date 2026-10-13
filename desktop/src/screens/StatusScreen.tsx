@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { labels } from "../i18n/labels";
+import { labels, useLanguage } from "../i18n/labels";
 import { useLiveBackend } from "../hooks/useLiveBackend";
 import { useStore } from "../state/store";
 import { getStatus, getStatistics, getProgress, getRecentIndexed, refreshIndex } from "../api/rlm";
 import { ApiError } from "../api/client";
 import type { ProgressResponse, RecentDoc, Statistics, StatusResponse } from "../types/api";
 import { Badge, Banner, Button, Row, Section } from "../components/ui";
+import { displayPath } from "../utils/paths";
 import { ConnBanner } from "../components/ConnBanner";
 
 /** True while `url` is the backend in use and reachable; older results are dropped. */
@@ -59,6 +60,7 @@ function Stat({ value, label, title }: { value: string; label: string; title?: s
 }
 
 export function StatusScreen() {
+  useLanguage();
   // The backend the shown numbers belong to (null while unreachable).
   const live = useLiveBackend();
 
@@ -196,7 +198,7 @@ export function StatusScreen() {
                 </div>
                 <p className="muted" style={{ marginTop: 6 }}>
                   {fmtNum(progress.processed)} / {fmtNum(progress.total)} ({pct}%)
-                  {progress.current_file ? ` · ${progress.current_file}` : ""}
+                  {progress.current_file ? ` · ${displayPath(progress.current_file)}` : ""}
                 </p>
               </div>
             )}
@@ -229,7 +231,7 @@ export function StatusScreen() {
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
                   }}
-                  title={d.file_path}
+                  title={displayPath(d.file_path)}
                 >
                   📄 {d.file_name}
                 </span>

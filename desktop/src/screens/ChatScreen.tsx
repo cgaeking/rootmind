@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
-import { labels } from "../i18n/labels";
+import { labels, useLanguage } from "../i18n/labels";
 import { useBackend } from "../hooks/useBackend";
 import { useLiveBackend } from "../hooks/useLiveBackend";
 import { useChatStore } from "../state/chatStore";
@@ -18,6 +18,7 @@ import { ApiError, AbortedError } from "../api/client";
 import type { QuerySource } from "../types/api";
 import type { StoredMessage } from "../types/chat";
 import { Banner, Button } from "../components/ui";
+import { displayPath } from "../utils/paths";
 import { ConnBanner } from "../components/ConnBanner";
 import { Markdown } from "../components/Markdown";
 import { ChatLoader } from "../components/ChatLoader";
@@ -167,7 +168,11 @@ function SourceList({
                 type="button"
                 className={styles.source}
                 onClick={() => onOpen(s)}
-                title={s.file_path ? labels.chat.openFileTitle(s.file_path) : labels.chat.openFileDefaultTitle}
+                title={
+                  s.file_path
+                    ? labels.chat.openFileTitle(displayPath(s.file_path))
+                    : labels.chat.openFileDefaultTitle
+                }
               >
                 📄 {s.file_name}
               </button>
@@ -180,6 +185,7 @@ function SourceList({
 }
 
 export function ChatScreen() {
+  useLanguage();
   const { conn } = useBackend();
   const active = useChatStore((s) => s.active);
   const startConversation = useChatStore((s) => s.startConversation);

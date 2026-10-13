@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { labels } from "../i18n/labels";
+import { labels, useLanguage, useLanguageStore } from "../i18n/labels";
+import type { LanguagePref } from "../i18n/labels";
 import { DEFAULT_BASE_URL, useStore } from "../state/store";
 import { useBackend } from "../hooks/useBackend";
 import { isCurrentBackend, useLiveBackend } from "../hooks/useLiveBackend";
@@ -11,8 +12,8 @@ import type { AppConfigDto, LlmProvider } from "../types/config";
 import { Banner, Button, Field, Row, Section, Select, TextInput } from "../components/ui";
 import { ConnBanner } from "../components/ConnBanner";
 import { BackgroundServiceSection } from "./BackgroundServiceSection";
-
-const PROVIDERS: LlmProvider[] = ["anthropic", "openai", "xai"];
+import { AboutSection } from "./AboutSection";
+import { PROVIDERS, PROVIDER_NAMES, detectProvider, maskKey } from "../state/llmKey";
 
 function errMsg(e: unknown): string {
   return e instanceof ApiError ? e.message : String(e);
@@ -95,6 +96,9 @@ function AdvancedSection() {
 }
 
 export function SettingsScreen() {
+  useLanguage();
+  const languagePref = useLanguageStore((s) => s.pref);
+  const setLanguagePref = useLanguageStore((s) => s.setPref);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
   const { conn } = useBackend();
@@ -112,6 +116,16 @@ export function SettingsScreen() {
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [replacedFrom, setReplacedFrom] = useState<string | null>(null);
+
+  // The API key field: null shows the saved (masked) key of the provider,
+  // a string is a key typed but not saved yet. `config.llm.api_keys` holds
+  // only saved keys, as masks.
+  const [keyDraft, setKeyDraft] = useState<string | null>(null);
+  // The provider preselected from the typed key's format, until overridden.
+  const [detected, setDetected] = useState<LlmProvider | null>(null);
+  const [savingKey, setSavingKey] = useState(false);
+  const [keyMsg, setKeyMsg] = useState<string | null>(null);
+  const [keyError, setKeyError] = useState<string | null>(null);
 
   // Results for a backend that is no longer in use are dropped.
   const loadModels = useCallback(async (provider: string, apiKey: string) => {
@@ -146,6 +160,11 @@ export function SettingsScreen() {
     setModelsError(null);
     setLoadingModels(false);
     setReplacedFrom(null);
+    setKeyDraft(null);
+    setDetected(null);
+    setSavingKey(false);
+    setKeyMsg(null);
+    setKeyError(null);
     if (!live) return;
     let cancelled = false;
     getConfig()
@@ -187,16 +206,8 @@ export function SettingsScreen() {
     setSaveMsg(null);
   }
 
-  function updateKey(value: string) {
-    setConfig((c) =>
-      c
-        ? { ...c, llm: { ...c.llm, api_keys: { ...(c.llm.api_keys ?? {}), [c.llm.provider]: value } } }
-        : c,
-    );
-    setSaveMsg(null);
-  }
-
-  function changeProvider(provider: LlmProvider) {
+  /** Switch the provider and load its models if a key is saved for it. */
+  function selectProvider(provider: LlmProvider) {
     if (!config) return;
     updateLlm({ provider });
     setModels(null);
@@ -205,6 +216,91 @@ export function SettingsScreen() {
     const key = (config.llm.api_keys ?? {})[provider];
     if (key) {
       void loadModels(provider, key);
+    }
+  }
+
+  /** The user picked a provider: this also overrides a detected one. */
+  function changeProvider(provider: LlmProvider) {
+    selectProvider(provider);
+    setDetected(null);
+    setKeyMsg(null);
+    setKeyError(null);
+  }
+
+  /** A key was typed or pasted: preselect the provider its format names. */
+  function changeKey(value: string) {
+    if (!config) return;
+    setKeyDraft(value);
+    setKeyMsg(null);
+    setKeyError(null);
+    const provider = detectProvider(value);
+    if (provider && provider !== config.llm.provider) {
+      selectProvider(provider);
+      setDetected(provider);
+    } else if (provider !== detected) {
+      setDetected(null);
+    }
+  }
+
+  /**
+   * Save the typed key for the selected provider. A key is first checked by
+   * loading the provider's models with it, so an invalid key shows the
+   * provider's error and changes nothing. A valid one is saved together with
+   * the selected provider and a model from the returned list (the selected
+   * one if listed, else the first), so no further Save is needed, and fills
+   * the model list. An emptied field removes only the saved key.
+   */
+  async function saveKey() {
+    if (!config || keyDraft === null) return;
+    const provider = config.llm.provider;
+    const key = keyDraft.trim();
+    setKeyMsg(null);
+    setKeyError(null);
+    // Never send a key to a backend other than the one the settings came from.
+    if (!isCurrentBackend(configUrl)) {
+      setKeyError(labels.settings.staleConfig);
+      return;
+    }
+    setSavingKey(true);
+    try {
+      const listed = key ? (await listLlmModels({ provider, api_key: key })).models : null;
+      // The masks keep the other providers' keys. A new key also makes its
+      // provider and a listed model the active ones; removing a key changes
+      // only the keys. Everything else keeps its stored value.
+      const apiKeys = { ...(config.llm.api_keys ?? {}), [provider]: key };
+      const model =
+        listed && !listed.includes(config.llm.model) && listed.length > 0
+          ? listed[0]
+          : config.llm.model;
+      await saveConfig({
+        llm: listed ? { provider, model, api_keys: apiKeys } : { api_keys: apiKeys },
+      });
+      if (!isCurrentBackend(configUrl)) return;
+      // The backend's masks for the saved keys (a local mask if it does not answer).
+      let saved: Record<string, string>;
+      try {
+        saved = (await getConfig()).llm.api_keys ?? {};
+      } catch {
+        saved = Object.fromEntries(
+          Object.entries(apiKeys)
+            .filter(([, v]) => v)
+            .map(([p, v]) => [p, p === provider ? maskKey(v) : v]),
+        );
+      }
+      if (!isCurrentBackend(configUrl)) return;
+      setConfig((c) =>
+        c ? { ...c, llm: { ...c.llm, api_keys: saved, ...(listed ? { model } : {}) } } : c,
+      );
+      setReplacedFrom(null);
+      setKeyDraft(null);
+      setDetected(null);
+      setModels(listed);
+      setModelsError(null);
+      setKeyMsg(key ? labels.settings.keySaved : labels.settings.keyRemoved);
+    } catch (e) {
+      if (isCurrentBackend(configUrl)) setKeyError(labels.settings.keyRejected(errMsg(e)));
+    } finally {
+      setSavingKey(false);
     }
   }
 
@@ -229,7 +325,11 @@ export function SettingsScreen() {
     }
   }
 
-  const currentKey = config ? ((config.llm.api_keys ?? {})[config.llm.provider] ?? "") : "";
+  // The saved key (masked) of the selected provider, and what the field shows.
+  const savedKey = config ? ((config.llm.api_keys ?? {})[config.llm.provider] ?? "") : "";
+  const keyValue = keyDraft ?? savedKey;
+  const keyChanged =
+    keyDraft !== null && keyDraft.trim() !== savedKey && (keyDraft.trim() !== "" || savedKey !== "");
   const modelOptions = models ?? (config?.llm.model ? [config.llm.model] : []);
 
   return (
@@ -246,6 +346,16 @@ export function SettingsScreen() {
             <option value="system">{labels.settings.themeSystem}</option>
             <option value="light">{labels.settings.themeLight}</option>
             <option value="dark">{labels.settings.themeDark}</option>
+          </Select>
+        </Field>
+        <Field label={labels.settings.languageLabel} hint={labels.settings.languageHint}>
+          <Select
+            value={languagePref}
+            onChange={(e) => setLanguagePref(e.currentTarget.value as LanguagePref)}
+          >
+            <option value="system">{labels.settings.languageSystem}</option>
+            <option value="en">{labels.settings.languageEn}</option>
+            <option value="de">{labels.settings.languageDe}</option>
           </Select>
         </Field>
       </Section>
@@ -265,14 +375,22 @@ export function SettingsScreen() {
 
         {config && (
           <>
-            <Field label={labels.settings.providerLabel}>
+            <Field
+              label={labels.settings.providerLabel}
+              hint={
+                detected && detected === config.llm.provider
+                  ? labels.settings.providerDetected(PROVIDER_NAMES[detected])
+                  : undefined
+              }
+            >
               <Select
                 value={config.llm.provider}
                 onChange={(e) => changeProvider(e.currentTarget.value as LlmProvider)}
+                disabled={savingKey}
               >
                 {PROVIDERS.map((p) => (
                   <option key={p} value={p}>
-                    {p}
+                    {PROVIDER_NAMES[p]}
                   </option>
                 ))}
               </Select>
@@ -281,34 +399,43 @@ export function SettingsScreen() {
             <Field
               label={labels.settings.apiKeyLabel}
               hint={
-                currentKey
-                  ? labels.settings.apiKeyHintSaved(currentKey)
+                savedKey
+                  ? labels.settings.apiKeyHintSaved(savedKey)
                   : labels.settings.apiKeyHintUnsaved
               }
             >
               <Row>
                 <TextInput
                   type="password"
-                  value={currentKey}
-                  onChange={(e) => updateKey(e.currentTarget.value)}
+                  value={keyValue}
+                  onChange={(e) => changeKey(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && keyChanged && !savingKey) void saveKey();
+                  }}
                   // The field shows the masked stored key. Selecting it on focus
                   // makes a paste replace the mask instead of appending to it.
                   onFocus={(e) => e.currentTarget.select()}
                   placeholder="sk-…"
+                  disabled={savingKey}
+                  spellCheck={false}
+                  autoComplete="off"
                 />
                 <Button
-                  onClick={() => void loadModels(config.llm.provider, currentKey)}
-                  disabled={loadingModels || !currentKey}
+                  onClick={() => void saveKey()}
+                  disabled={savingKey || !keyChanged}
+                  aria-label={labels.settings.saveKeyAria}
                 >
-                  {loadingModels ? labels.settings.loadingModels : labels.settings.loadModels}
+                  {savingKey ? labels.settings.saving : labels.common.save}
                 </Button>
               </Row>
             </Field>
+            {keyMsg && <span className="muted">{keyMsg}</span>}
+            {keyError && <Banner tone="err">{keyError}</Banner>}
 
             <Field
               label={labels.settings.modelLabel}
               hint={
-                !currentKey
+                !savedKey
                   ? labels.settings.modelHintNoKey
                   : modelsError
                     ? undefined
@@ -320,7 +447,7 @@ export function SettingsScreen() {
               <Select
                 value={config.llm.model}
                 onChange={(e) => updateLlm({ model: e.currentTarget.value })}
-                disabled={!currentKey || !models}
+                disabled={!savedKey || !models || loadingModels || savingKey}
               >
                 {modelOptions.map((m) => (
                   <option key={m} value={m}>
@@ -391,6 +518,8 @@ export function SettingsScreen() {
       <div style={{ marginTop: 18 }}>
         <AdvancedSection />
       </div>
+
+      <AboutSection />
     </div>
   );
 }
