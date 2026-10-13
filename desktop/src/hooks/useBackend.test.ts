@@ -1,17 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useStore } from "../state/store";
-import { jsonResponse, resetStore } from "../test/helpers";
+import { jsonResponse, resetStore, serviceInfoFixture } from "../test/helpers";
 
 vi.mock("../api/backend", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api/backend")>()),
+  inTauri: vi.fn(() => true),
   serviceConnect: vi.fn(),
-  sidecarStatus: vi.fn(),
+  serviceInfo: vi.fn(),
 }));
 
 const backend = await import("../api/backend");
 const { recheck } = await import("./useBackend");
 
 const fetchMock = vi.fn<typeof fetch>();
+
+const OURS = serviceInfoFixture({
+  installed: true,
+  ours: true,
+  state: "running",
+  port: 8000,
+  url: "http://127.0.0.1:8000",
+  tokenReadable: true,
+});
 
 /** A backend answering /health, / (with `auth`) and /status (401 unless `token`). */
 function backendAt(base: string, opts: { auth?: "bearer" | "none"; token?: string } = {}) {
@@ -36,7 +46,9 @@ beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
   vi.mocked(backend.serviceConnect).mockReset();
-  vi.mocked(backend.sidecarStatus).mockReset();
+  vi.mocked(backend.serviceInfo).mockReset();
+  vi.mocked(backend.serviceInfo).mockResolvedValue(OURS);
+  vi.mocked(backend.inTauri).mockReturnValue(true);
 });
 
 afterEach(async () => {
@@ -84,57 +96,6 @@ describe("recheck", () => {
     expect(useStore.getState().conn).toBe("offline");
   });
 
-  it("takes over the built-in backend's new port after a crash restart", async () => {
-    backendAt("http://127.0.0.1:50002", { auth: "bearer", token: "t" });
-    vi.mocked(backend.sidecarStatus).mockResolvedValue({
-      state: "running",
-      url: "http://127.0.0.1:50002",
-      token: "t",
-      exitCode: null,
-      error: null,
-      logTail: [],
-    });
-    useStore.setState({
-      kind: "builtin",
-      baseUrl: "http://127.0.0.1:50001",
-      token: "t",
-      conn: "online",
-    });
-    await recheck();
-    const s = useStore.getState();
-    expect(s.baseUrl).toBe("http://127.0.0.1:50002");
-    // The URL change triggers another check (the heartbeat effect); run it here.
-    await recheck();
-    expect(useStore.getState().conn).toBe("online");
-  });
-
-  it("shows a restarting built-in backend as starting, a failed one as offline", async () => {
-    backendAt("http://elsewhere");
-    useStore.setState({ kind: "builtin", baseUrl: "http://127.0.0.1:50001", token: "t", conn: "online" });
-    vi.mocked(backend.sidecarStatus).mockResolvedValue({
-      state: "restarting",
-      url: null,
-      token: null,
-      exitCode: 1,
-      error: null,
-      logTail: [],
-    });
-    await recheck();
-    expect(useStore.getState().conn).toBe("starting");
-
-    vi.mocked(backend.sidecarStatus).mockResolvedValue({
-      state: "failed",
-      url: null,
-      token: null,
-      exitCode: 3,
-      error: "exited",
-      logTail: ["boom"],
-    });
-    await recheck();
-    expect(useStore.getState().conn).toBe("offline");
-    expect(useStore.getState().sidecar?.error).toBe("exited");
-  });
-
   it("asks Rust for the service's URL and token on every check", async () => {
     backendAt("http://127.0.0.1:8000", { auth: "bearer", token: "svc" });
     vi.mocked(backend.serviceConnect).mockResolvedValue({
@@ -164,9 +125,54 @@ describe("recheck", () => {
     expect(s.conn).toBe("offline");
     expect(s.token).toBeNull();
     expect(s.baseUrl).toBe("");
-    expect(s.serviceIssue).toBe("listener_mismatch");
+    expect(s.serviceProblem).toBe("portBusy");
     // No request reached the port.
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("names each reason the service cannot be used", async () => {
+    const cases = [
+      ["not_installed", serviceInfoFixture(), "notInstalled"],
+      ["not_running", { ...OURS, state: "stopped" }, "notRunning"],
+      ["token_unreadable", { ...OURS, tokenReadable: false, blockedReason: "other_account" }, "otherAccount"],
+      // Another program's service: service_connect sees no service of ours.
+      ["not_installed", { ...OURS, ours: false, blockedReason: "foreign_service" }, "foreign"],
+    ] as const;
+    for (const [reason, info, problem] of cases) {
+      vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: false, reason });
+      vi.mocked(backend.serviceInfo).mockResolvedValue(info);
+      useStore.setState({ kind: "service", baseUrl: "", token: null, conn: "checking" });
+      await recheck();
+      expect(useStore.getState().conn).toBe("offline");
+      expect(useStore.getState().serviceProblem).toBe(problem);
+    }
+  });
+
+  it("reports a running service whose API does not answer, and clears the problem once it does", async () => {
+    vi.mocked(backend.serviceConnect).mockResolvedValue({
+      ok: true,
+      url: "http://127.0.0.1:8000",
+      token: "svc",
+    });
+    backendAt("http://elsewhere");
+    useStore.setState({ kind: "service", baseUrl: "http://127.0.0.1:8000", token: "svc", conn: "online" });
+    await recheck();
+    expect(useStore.getState().conn).toBe("offline");
+    expect(useStore.getState().serviceProblem).toBe("noAnswer");
+
+    backendAt("http://127.0.0.1:8000", { auth: "bearer", token: "svc" });
+    await recheck();
+    expect(useStore.getState().conn).toBe("online");
+    expect(useStore.getState().serviceProblem).toBeNull();
+  });
+
+  it("has no service to reach in the browser preview", async () => {
+    vi.mocked(backend.inTauri).mockReturnValue(false);
+    useStore.setState({ kind: "service", baseUrl: "", token: null, conn: "checking" });
+    await recheck();
+    expect(useStore.getState().conn).toBe("offline");
+    expect(useStore.getState().serviceProblem).toBe("unsupported");
+    expect(backend.serviceConnect).not.toHaveBeenCalled();
   });
 
   it("leaves a running service change alone", async () => {

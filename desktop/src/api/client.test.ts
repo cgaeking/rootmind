@@ -31,7 +31,7 @@ describe("api", () => {
   });
 
   it("sends the bearer token when one is set", async () => {
-    useStore.setState({ kind: "builtin", baseUrl: "http://b", token: "abc123", conn: "online" });
+    useStore.setState({ kind: "service", baseUrl: "http://b", token: "abc123", conn: "online" });
     fetchMock.mockResolvedValue(jsonResponse({ ok: true }));
     await api("/config", { method: "POST", body: "{}" });
     expect(sentHeaders().get("Authorization")).toBe("Bearer abc123");
@@ -69,7 +69,7 @@ describe("api", () => {
 describe("open routes", () => {
   it("never carry the token", async () => {
     const { getHealth, getRoot, checkAuth } = await import("./rlm");
-    useStore.setState({ kind: "builtin", baseUrl: "http://b", token: "abc123", conn: "online" });
+    useStore.setState({ kind: "service", baseUrl: "http://b", token: "abc123", conn: "online" });
     fetchMock.mockImplementation(async () => jsonResponse({ ok: true }));
     await getHealth();
     await getRoot();

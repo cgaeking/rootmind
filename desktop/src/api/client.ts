@@ -66,7 +66,7 @@ export function requestHeaders(token: string | null, extra?: HeadersInit): Heade
  * The base URL and token come from the app store (the backend chosen at start
  * or in Settings). Every request is bounded by a timeout and can be aborted via
  * `init.signal`. A 401 answer sets the connection state to "unauthorized", so
- * the app fetches a fresh token (built-in, service) or asks for one (custom).
+ * the app fetches a fresh token (service) or asks for one (custom).
  */
 export async function api<T>(path: string, init?: RequestInit, opts?: ApiOptions): Promise<T> {
   const { baseUrl, token } = useStore.getState();

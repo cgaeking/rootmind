@@ -30,7 +30,7 @@ function ExternalLink({ href, children }: { href: string; children: string }) {
 
 /**
  * Settings → About: the app and backend versions as they run (they differ
- * when the background service runs an older build), author, license, links.
+ * when the RootMind service runs an older build), author, license, links.
  */
 export function AboutSection() {
   // The app reports its version via app_mode (null in the browser preview);

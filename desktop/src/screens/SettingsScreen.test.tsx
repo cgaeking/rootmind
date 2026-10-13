@@ -309,7 +309,7 @@ describe("SettingsScreen About", () => {
     serveConfigs();
     useStore.setState({
       version: "1.1.0",
-      appMode: { version: "1.2.0", dev: false, builtinAvailable: true },
+      appMode: { version: "1.2.0", dev: false },
     });
     render(<SettingsScreen />);
     await screen.findByDisplayValue("*.a");
