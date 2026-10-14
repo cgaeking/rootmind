@@ -301,6 +301,11 @@ jobs:
           name: rootmind-backend-linux-x64
           path: ${{ runner.temp }}/linux-backend
 
+      # The scripts need Python 3.11+ (tomllib); ubuntu-22.04 ships 3.10.
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: false
+
       # The tested Linux build, checked against the tree hash backend-exe.yml
       # reported, its size and --version (scripts/prepare_backend.py).
       - name: Place the backend
@@ -308,7 +313,7 @@ jobs:
           TREE_SHA256: ${{ needs.backend.outputs.linux-tree-sha256 }}
         run: |
           tar -xzf "$RUNNER_TEMP/linux-backend/rootmind-backend-linux-x64.tar.gz" -C "$RUNNER_TEMP/linux-backend"
-          python3 scripts/prepare_backend.py --from "$RUNNER_TEMP/linux-backend/rootmind-backend" \
+          uv run --no-project --python 3.12 python scripts/prepare_backend.py --from "$RUNNER_TEMP/linux-backend/rootmind-backend" \
             --expect-tree-sha256 "$TREE_SHA256"
 
       - name: Install dependencies
@@ -363,7 +368,7 @@ jobs:
           sudo apt-get install -y -q "$out/RootMind-amd64.deb"
           test -x /usr/bin/rootmind-desktop
           test -f /usr/share/applications/RootMind.desktop
-          expected=$(python3 -c "import sys; sys.path.insert(0, 'scripts'); from check_versions import normalize_version; print(normalize_version('$VERSION'))")
+          expected=$(uv run --no-project --python 3.12 python -c "import sys; sys.path.insert(0, 'scripts'); from check_versions import normalize_version; print(normalize_version('$VERSION'))")
           printed=$(/usr/lib/RootMind/backend/rootmind-backend --version | awk '{print $NF}')
           if [ "$printed" != "$expected" ]; then
             echo "::error::the packaged backend says $printed, expected $expected"
