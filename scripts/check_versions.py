@@ -1,9 +1,10 @@
-"""Check that the backend and the desktop app carry the same version number.
+"""Check that the backend, the desktop app and the MCP Bundle carry the same version.
 
-The version lives in three files: ``backend/pyproject.toml``,
-``desktop/package.json`` (``tauri.conf.json`` reads it from there) and
-``desktop/src-tauri/Cargo.toml``. They are compared in their PEP 440 normal
-form, so the npm and Cargo spelling ``1.2.0-rc.1`` matches the Python spelling
+The version lives in four files: ``backend/pyproject.toml``,
+``desktop/package.json`` (``tauri.conf.json`` reads it from there),
+``desktop/src-tauri/Cargo.toml`` and ``packaging/mcpb/manifest.json`` (the
+Claude Desktop bundle). They are compared in their PEP 440 normal form, so the
+npm, Cargo and bundle spelling ``1.2.0-rc.1`` matches the Python spelling
 ``1.2.0rc1``. With ``--tag``, the release tag (``v`` plus the version) must
 name the same version as well.
 
@@ -98,16 +99,18 @@ def versions(root: Path = ROOT) -> dict[str, str]:
     pyproject = tomllib.loads((root / "backend/pyproject.toml").read_text(encoding="utf-8"))
     package = json.loads((root / "desktop/package.json").read_text(encoding="utf-8"))
     cargo = tomllib.loads((root / "desktop/src-tauri/Cargo.toml").read_text(encoding="utf-8"))
+    bundle = json.loads((root / "packaging/mcpb/manifest.json").read_text(encoding="utf-8"))
     return {
         "backend/pyproject.toml": pyproject["project"]["version"],
         "desktop/package.json": package["version"],
         "desktop/src-tauri/Cargo.toml": cargo["package"]["version"],
+        "packaging/mcpb/manifest.json": bundle["version"],
     }
 
 
 def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
     parser = argparse.ArgumentParser(
-        description="Check that the backend and the desktop app carry the same version."
+        description="Check that the backend, the desktop app and the MCP Bundle carry the same version."
     )
     parser.add_argument("--tag", help="release tag that must name the same version, like v1.2.0")
     args = parser.parse_args(argv)

@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Added
+
+- **RootMind for Claude Desktop.** Each release ships `rootmind.mcpb`, an MCP Bundle: double-click it and Claude Desktop installs RootMind's tools, with nothing to configure. A small bridge (Node.js standard library only, `packaging/mcpb`) asks `rootmind-backend.exe service status --json` for the MCP port and token file and forwards Claude Desktop's stdio messages to the service's MCP over HTTP on 127.0.0.1. When RootMind is not installed, MCP over HTTP is off, the service is stopped or belongs to another Windows account, its error says what to do; it follows the service to a new port. Needs RootMind with **Serve MCP over HTTP** on (the default). The bundle is in `SHA256SUMS.txt` and has an attestation like the other release files; `scripts/check_versions.py` also checks its manifest's version, and the workflow `mcpb.yml` tests, validates and packs it.
+
 ## [2.0.0] - 2026-10-13
 
 ### Breaking

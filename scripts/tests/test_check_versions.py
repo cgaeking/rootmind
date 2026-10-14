@@ -1,4 +1,4 @@
-"""scripts/check_versions.py: the three versions agree with each other and with the tag."""
+"""scripts/check_versions.py: the four versions agree with each other and with the tag."""
 
 from __future__ import annotations
 
@@ -67,10 +67,19 @@ def test_mismatch_names_every_file(make_repo, capsys):
     assert "backend/pyproject.toml: 1.2.0" in err
     assert "desktop/package.json: 1.2.0" in err
     assert "desktop/src-tauri/Cargo.toml: 1.1.0" in err
+    assert "packaging/mcpb/manifest.json: 1.2.0" in err
+
+
+def test_bundle_version_is_checked(make_repo, capsys):
+    root = make_repo(mcpb="1.1.0")
+    assert check_versions.main([], root=root) == 1
+    assert "packaging/mcpb/manifest.json: 1.1.0" in capsys.readouterr().err
 
 
 def test_prerelease_spellings_match(make_repo, capsys):
-    root = make_repo(backend="1.2.0rc1", package="1.2.0-rc.1", cargo="1.2.0-rc.1")
+    root = make_repo(
+        backend="1.2.0rc1", package="1.2.0-rc.1", cargo="1.2.0-rc.1", mcpb="1.2.0-rc.1"
+    )
     assert check_versions.main(["--tag", "v1.2.0-rc.1"], root=root) == 0
     out = capsys.readouterr().out
     assert "match: 1.2.0rc1" in out

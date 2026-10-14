@@ -37,7 +37,7 @@ The repository has two parts:
 
 ## Install
 
-Each [release](https://github.com/cgaeking/rootmind/releases/latest) has two
+Each [release](https://github.com/cgaeking/rootmind/releases/latest) has these
 downloads for Windows (x64):
 
 - **[RootMind-Setup-x64.exe](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-Setup-x64.exe)**,
@@ -49,6 +49,9 @@ downloads for Windows (x64):
 - **[rootmind-backend-windows-x64.zip](https://github.com/cgaeking/rootmind/releases/latest/download/rootmind-backend-windows-x64.zip)**,
   for the command line and servers: the backend alone, without the app (see
   [Install for developers and servers](#install-for-developers-and-servers)).
+- **[rootmind.mcpb](https://github.com/cgaeking/rootmind/releases/latest/download/rootmind.mcpb)**,
+  RootMind for Claude Desktop, to install after the app (see
+  [Use RootMind in Claude Desktop](#use-rootmind-in-claude-desktop)).
 
 Installing needs an administrator account. The service belongs to the account
 that installs RootMind, so the installer runs only as the account signed in to
@@ -152,7 +155,9 @@ security model.
 MCP clients get the same read-only tools as the app's agent and use their own
 model. Connect them to the service's MCP over HTTP: Settings → RootMind
 service shows the **MCP endpoint** and copies it and the token (**Copy
-token**). Claude Code:
+token**). For Claude Desktop there is a bundle that needs neither (see
+[Use RootMind in Claude Desktop](#use-rootmind-in-claude-desktop)). Claude
+Code:
 
 ```bash
 claude mcp add --transport http rootmind http://127.0.0.1:<port>/mcp \
@@ -163,9 +168,29 @@ The port is 3000 when it is free, otherwise one from 18400–18499. The token
 is kept across updates, and the server picks up folder changes without a
 restart.
 
-Claude Desktop starts only local (stdio) MCP servers from
-`claude_desktop_config.json`. To reach the HTTP endpoint from there, it needs
-a stdio-to-HTTP bridge, which RootMind does not include. The program in the
+### Use RootMind in Claude Desktop
+
+1. Download
+   [rootmind.mcpb](https://github.com/cgaeking/rootmind/releases/latest/download/rootmind.mcpb)
+   from the [latest release](https://github.com/cgaeking/rootmind/releases/latest).
+2. Double-click it. Claude Desktop opens it, shows RootMind's tools and
+   installs it once you confirm.
+
+There is nothing to configure. The extension finds the RootMind service on
+this computer, reads the MCP port and token from it and connects to MCP over
+HTTP on 127.0.0.1. It needs RootMind installed with **Serve MCP over HTTP**
+on (the default; Settings → RootMind service), and Claude Desktop must run
+under the Windows account that installed RootMind, since only that account
+can read the token. When something is missing, the extension's error says
+what to do, for example to install RootMind or to turn MCP over HTTP on;
+once that is fixed, the next request works without reinstalling the
+extension. After a repair it follows the service to a new port by itself. To
+update it, install the `rootmind.mcpb` of a newer release. The bundle is not
+signed yet, so Claude Desktop marks it as unsigned. Its source and how it
+works: [packaging/mcpb](packaging/mcpb/README.md).
+
+Claude Desktop starts only local (stdio) MCP servers; the extension is such
+a server and forwards to the service's HTTP endpoint. The program in the
 app's folder (`rootmind-backend.exe mcp`) cannot serve as a stdio server for
 the installed app: it cannot open the service's index. The stdio server is
 meant for a source or uv setup with its own `config.yaml` (see
@@ -531,6 +556,7 @@ desktop/
                            installer/ with the NSIS template and the service hooks
   scripts/                 installer smoke test
 packaging/winget/          winget manifest templates
+packaging/mcpb/            Claude Desktop bundle (rootmind.mcpb): stdio-to-HTTP bridge, manifest, tests
 scripts/                   version check, release notes, backend preparation, winget rendering,
                            NSIS template refresh
 .github/workflows/         CI and release
@@ -587,10 +613,11 @@ secrets. Only the release job can write to the repository:
 
 | Workflow | What it runs |
 |---|---|
-| [`backend.yml`](.github/workflows/backend.yml) | ruff check and format check; the version check across backend and desktop; the tests of the release scripts on Ubuntu and Windows; pytest with coverage on Ubuntu (Python 3.12 and 3.14) and Windows (Python 3.12); the dry retrieval regression |
+| [`backend.yml`](.github/workflows/backend.yml) | ruff check and format check; the version check across backend, desktop and the Claude Desktop bundle; the tests of the release scripts on Ubuntu and Windows; pytest with coverage on Ubuntu (Python 3.12 and 3.14) and Windows (Python 3.12); the dry retrieval regression |
 | [`backend-exe.yml`](.github/workflows/backend-exe.yml) | The PyInstaller onedir build on Windows, a smoke test of the executable (REST, MCP over HTTP and stdio, indexing of every file type) and its tree hash; then an end-to-end test of the Windows service on the elevated runner: install, permissions, tokens, read confinement, update and uninstall. On pull requests the service test runs only when service-related code changed |
 | [`desktop.yml`](.github/workflows/desktop.yml) | ESLint, TypeScript typecheck, vitest, Vite build, `cargo fmt`, `cargo clippy`, `cargo check`, `cargo test` on Windows |
-| [`release.yml`](.github/workflows/release.yml) | For a version tag `v*`: the backend through `backend-exe.yml`; the per-machine installer with that backend, a check that it updates an installed version in place without a reinstall page, and a smoke test on the elevated runner that installs, updates, reinstalls and uninstalls RootMind with its Windows services; the winget manifests validated against their schemas; then a GitHub Release with the installer, the backend zip, `SHA256SUMS.txt` and attestations. Manual runs and pull requests that change the packaging are dry runs that publish nothing |
+| [`release.yml`](.github/workflows/release.yml) | For a version tag `v*`: the backend through `backend-exe.yml`; the per-machine installer with that backend, a check that it updates an installed version in place without a reinstall page, and a smoke test on the elevated runner that installs, updates, reinstalls and uninstalls RootMind with its Windows services; the winget manifests validated against their schemas; `rootmind.mcpb` for Claude Desktop, tested, validated and packed; then a GitHub Release with the installer, the bundle, the backend zip, `SHA256SUMS.txt` and attestations. Manual runs and pull requests that change the packaging are dry runs that publish nothing |
+| [`mcpb.yml`](.github/workflows/mcpb.yml) | The Claude Desktop bundle: the bridge's `node:test` tests on Ubuntu and Windows, then the manifest validated and the bundle packed with the mcpb CLI |
 | [`secrets.yml`](.github/workflows/secrets.yml) | detect-secrets over all tracked files, against the audited baseline `.secrets.baseline` |
 
 Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) proposes

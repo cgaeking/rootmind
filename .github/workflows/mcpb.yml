@@ -1,0 +1,91 @@
+name: mcpb
+
+# The Claude Desktop bundle (packaging/mcpb): the bridge's tests with Node's
+# test runner, and the manifest validated and packed with the mcpb CLI.
+# release.yml builds rootmind.mcpb for a version tag the same way.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packaging/mcpb/**"
+      # The tests compare the manifest with the tool registry, the app's
+      # version and the app icon.
+      - "backend/src/rootmind/tools.py"
+      - "desktop/package.json"
+      - "desktop/src-tauri/icons/icon.png"
+      - ".github/workflows/mcpb.yml"
+  pull_request:
+    paths:
+      - "packaging/mcpb/**"
+      - "backend/src/rootmind/tools.py"
+      - "desktop/package.json"
+      - "desktop/src-tauri/icons/icon.png"
+      - ".github/workflows/mcpb.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcpb-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The mcpb CLI (https://github.com/modelcontextprotocol/mcpb); release.yml
+  # uses the same version.
+  MCPB_CLI: "@anthropic-ai/mcpb@2.1.2"
+
+jobs:
+  test:
+    name: Bridge tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # Node's standard library only: nothing to install.
+      - name: Tests
+        run: node --test "packaging/mcpb/test/*.test.mjs"
+
+  bundle:
+    name: Validate and pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Validate the manifest
+        run: npx --yes "$MCPB_CLI" validate packaging/mcpb/manifest.json
+
+      # Only manifest.json, icon.png and server/ may go into the bundle
+      # (.mcpbignore drops the tests and the README).
+      - name: Pack
+        run: |
+          npx --yes "$MCPB_CLI" pack packaging/mcpb "$RUNNER_TEMP/rootmind.mcpb"
+          contents=$(unzip -Z1 "$RUNNER_TEMP/rootmind.mcpb" | LC_ALL=C sort | tr '\n' ' ')
+          expected="icon.png manifest.json server/bridge.mjs server/index.mjs "
+          if [ "$contents" != "$expected" ]; then
+            echo "::error::unexpected bundle contents: $contents"
+            exit 1
+          fi
+          size=$(stat -c %s "$RUNNER_TEMP/rootmind.mcpb")
+          echo "rootmind.mcpb: $size bytes, $contents" >> "$GITHUB_STEP_SUMMARY"

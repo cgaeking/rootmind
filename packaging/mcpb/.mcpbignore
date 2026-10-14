@@ -1,0 +1,4 @@
+# Only manifest.json, icon.png and server/ go into rootmind.mcpb.
+README.md
+test/
+*.mcpb

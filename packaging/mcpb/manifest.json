@@ -1,0 +1,61 @@
+{
+  "manifest_version": "0.3",
+  "name": "rootmind",
+  "display_name": "RootMind",
+  "version": "2.0.0",
+  "description": "Search and read the documents that RootMind indexes on your Windows PC.",
+  "long_description": "Connects Claude Desktop to [RootMind](https://github.com/cgaeking/rootmind), a local document search for Windows. Claude gets RootMind's read-only tools: full-text and fuzzy search, a document list, reading a document or a part of it, and statistics. Answers can cite the page, slide or sheet.\n\nRequires RootMind 2.0 or later, installed from https://github.com/cgaeking/rootmind/releases/latest, with **Serve MCP over HTTP** turned on (RootMind → Settings → RootMind service; on by default). The bundle needs no configuration: it finds the RootMind service on this computer and connects to it on 127.0.0.1 with the service's token. Your documents stay on your computer; only what Claude reads through the tools goes into the conversation.",
+  "author": {
+    "name": "Christian Gäking",
+    "url": "https://github.com/cgaeking"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cgaeking/rootmind.git"
+  },
+  "homepage": "https://github.com/cgaeking/rootmind",
+  "documentation": "https://github.com/cgaeking/rootmind#use-rootmind-in-claude-desktop",
+  "support": "https://github.com/cgaeking/rootmind/issues",
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.mjs"],
+      "env": {}
+    }
+  },
+  "tools": [
+    {
+      "name": "search_documents",
+      "description": "Fast full-text search over all indexed documents, with snippets and the page, slide or sheet of each hit."
+    },
+    {
+      "name": "search_fuzzy",
+      "description": "Typo-tolerant search for when search_documents finds nothing or a term may be misspelled."
+    },
+    {
+      "name": "list_documents",
+      "description": "List indexed documents with metadata, optionally filtered by file type or name."
+    },
+    {
+      "name": "read_document",
+      "description": "Read the text of a document, or a character window of it."
+    },
+    {
+      "name": "get_statistics",
+      "description": "Statistics about the document collection: number of documents, file types, total size."
+    }
+  ],
+  "tools_generated": false,
+  "prompts_generated": false,
+  "keywords": ["documents", "search", "full-text", "local", "windows", "pdf", "office"],
+  "license": "MIT",
+  "compatibility": {
+    "platforms": ["win32"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}

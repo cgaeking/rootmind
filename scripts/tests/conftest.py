@@ -25,9 +25,11 @@ if str(SCRIPTS) not in sys.path:
 
 @pytest.fixture
 def make_repo(tmp_path):
-    """Build a minimal repository with the three files that carry the version."""
+    """Build a minimal repository with the four files that carry the version."""
 
-    def make(backend: str = "1.2.0", package: str = "1.2.0", cargo: str = "1.2.0") -> Path:
+    def make(
+        backend: str = "1.2.0", package: str = "1.2.0", cargo: str = "1.2.0", mcpb: str = "1.2.0"
+    ) -> Path:
         root = tmp_path / "repo"
         (root / "backend").mkdir(parents=True, exist_ok=True)
         (root / "desktop" / "src-tauri").mkdir(parents=True, exist_ok=True)
@@ -39,6 +41,11 @@ def make_repo(tmp_path):
         )
         (root / "desktop" / "src-tauri" / "Cargo.toml").write_text(
             f'[package]\nname = "rootmind-desktop"\nversion = "{cargo}"\n', encoding="utf-8"
+        )
+        (root / "packaging" / "mcpb").mkdir(parents=True, exist_ok=True)
+        (root / "packaging" / "mcpb" / "manifest.json").write_text(
+            json.dumps({"manifest_version": "0.3", "name": "rootmind", "version": mcpb}),
+            encoding="utf-8",
         )
         return root
 

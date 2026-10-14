@@ -82,7 +82,7 @@ describe("ServiceSection", () => {
     render(<ServiceSection />);
     expect(await screen.findByDisplayValue(MCP)).toBeTruthy();
     const toggle = screen.getByRole("checkbox", {
-      name: "Serve MCP over HTTP (for n8n and other remote agents)",
+      name: "Serve MCP over HTTP (for Claude Desktop, n8n and other agents)",
     }) as HTMLInputElement;
     expect(toggle.checked).toBe(true);
     expect(backend.serviceMcpToken).not.toHaveBeenCalled();
@@ -98,7 +98,7 @@ describe("ServiceSection", () => {
     render(<ServiceSection />);
     await screen.findByDisplayValue(MCP);
     fireEvent.click(
-      screen.getByRole("checkbox", { name: "Serve MCP over HTTP (for n8n and other remote agents)" }),
+      screen.getByRole("checkbox", { name: "Serve MCP over HTTP (for Claude Desktop, n8n and other agents)" }),
     );
     await waitFor(() => expect(backend.serviceSetMcp).toHaveBeenCalledWith(false));
     expect(await screen.findByText("Nothing was changed.")).toBeTruthy();
