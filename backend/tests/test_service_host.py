@@ -380,7 +380,139 @@ def test_logging_never_creates_the_folder(tmp_path, restore_process_state):
     assert not (tmp_path / "ProgramData").exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="checks the non-Windows message")
-def test_run_service_outside_windows(capsys):
+@pytest.mark.skipif(
+    sys.platform == "win32" or sys.platform.startswith("linux"),
+    reason="checks the message of other systems",
+)
+def test_run_service_outside_windows_and_linux(capsys):
     assert host.run_service("backend", 18000, "S-1-5-21-1") == 2
-    assert "Windows only" in capsys.readouterr().err
+    assert "Windows and Linux only" in capsys.readouterr().err
+
+
+# --- Linux: per-user runner and the systemd glue ------------------------------------------------
+
+
+def test_per_user_backend_needs_no_account_and_reads_unrestricted(home, monkeypatch):
+    """Linux: the service is the account; no SID, no access policy, owner-only files."""
+    monkeypatch.setenv("RLM_DISABLE_SCHEDULER", "1")
+
+    def no_policy(_sid):
+        raise AssertionError("the per-user service builds no access policy")
+
+    runner = host.ServiceRunner("backend", 0, home=home, per_user=True, access_factory=no_policy)
+    running = Running(runner)
+    try:
+        token = (home / "data" / "rest_token.txt").read_text().strip()
+        headers = {"Authorization": f"Bearer {token}"}
+        assert httpx.get(f"{running.url}/status", headers=headers).status_code == 200
+        assert os.environ["TMPDIR"] == str(home / "tmp")
+        # The ngrok authtoken is written owner-only (0600 on POSIX).
+        saved = httpx.post(
+            f"{running.url}/remote-access",
+            headers=headers,
+            json={"authtoken": "a" * 24},
+        )
+        assert saved.status_code == 200
+        authtoken = home / "data" / "ngrok_authtoken.txt"
+        assert authtoken.read_text() == "a" * 24
+        if sys.platform != "win32":
+            assert authtoken.stat().st_mode & 0o777 == 0o600
+    finally:
+        assert running.stop() is True
+
+
+def test_per_user_home_check_stops_the_start(home):
+    runner = host.ServiceRunner(
+        "backend", 0, home=home, per_user=True, home_check=lambda _path: ["data: owned by uid 0"]
+    )
+    with pytest.raises(host.ServiceConfigError) as raised:
+        runner.prepare()
+    assert "owned by uid 0" in str(raised.value)
+    assert runner.sock is None
+
+
+class FakeRunner:
+    def __init__(self, role, port, *, home, per_user, home_check, fail=None, serve=True):
+        self.role, self.port, self.home = role, port, home
+        assert per_user is True
+        self.home_check = home_check
+        self.fail = fail
+        self.serve_result = serve
+        self.port_in_use = 18555
+        self.stopped = False
+
+    def prepare(self):
+        if self.fail is not None:
+            raise self.fail
+
+    def serve(self):
+        return self.serve_result
+
+    def stop(self):
+        self.stopped = True
+
+
+def run_linux(tmp_path, monkeypatch, **runner_options):
+    import signal
+
+    monkeypatch.setattr(signal, "signal", lambda *_a: None)
+    sent = []
+    created = []
+
+    def factory(*args, **kwargs):
+        created.append(FakeRunner(*args, **kwargs, **runner_options))
+        return created[0]
+
+    code = host.run_linux_service(
+        "backend",
+        18555,
+        home=tmp_path,
+        runner_factory=factory,
+        notify=lambda message: sent.append(message) or True,
+        configure=lambda *_a: None,
+    )
+    return code, sent, created[0]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux service host")
+def test_linux_service_reports_ready_and_stops_cleanly(tmp_path, monkeypatch):
+    code, sent, runner = run_linux(tmp_path, monkeypatch)
+    assert code == 0
+    assert sent[0].startswith("READY=1\nMAINPID=")
+    assert "127.0.0.1:18555" in sent[0]
+    assert sent[1] == "STOPPING=1"
+    # The start check is the data folder check for this account.
+    assert runner.home_check(tmp_path / "missing")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux service host")
+def test_linux_service_config_error_is_not_restarted(tmp_path, monkeypatch):
+    code, sent, _runner = run_linux(tmp_path, monkeypatch, fail=host.ServiceConfigError("bad"))
+    assert code == 2 and sent == []
+    code, sent, _runner = run_linux(tmp_path, monkeypatch, fail=OSError("port in use"))
+    assert code == 1 and sent == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux service host")
+def test_linux_service_ending_on_its_own_is_restarted(tmp_path, monkeypatch):
+    code, _sent, _runner = run_linux(tmp_path, monkeypatch, serve=False)
+    assert code == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX datagram sockets")
+def test_sd_notify_sends_to_the_socket(tmp_path):
+    import socket
+
+    path = tmp_path / "notify"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as server:
+        server.bind(str(path))
+        assert host.sd_notify("READY=1", {"NOTIFY_SOCKET": str(path)}) is True
+        assert server.recv(100) == b"READY=1"
+    assert host.sd_notify("READY=1", {}) is False
+    assert host.sd_notify("READY=1", {"NOTIFY_SOCKET": str(tmp_path / "gone")}) is False
+
+
+def test_linux_home_is_next_to_the_program(monkeypatch):
+    exe = "/home/me/.local/share/rootmind/runtime/2.3.0-0a1b2c3d/rootmind-backend"
+    monkeypatch.setattr(sys, "executable", exe)
+    assert host.linux_home().as_posix() == "/home/me/.local/share/rootmind"

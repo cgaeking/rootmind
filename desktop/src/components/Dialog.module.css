@@ -110,3 +110,19 @@
   opacity: 0.6;
   cursor: default;
 }
+
+/* Diagnostics (service status and the end of install.log). */
+.pre {
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: ui-monospace, "Cascadia Code", "DejaVu Sans Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -5,15 +5,18 @@ name: release
 #
 #   meta       versions agree (and match the tag); the tag has release notes;
 #              the NSIS template is the one for the locked Tauri CLI
-#   backend    backend-exe.yml: onedir build, smoke test, service end-to-end test
+#   backend    backend-exe.yml: onedir builds (Windows, Linux), smoke tests,
+#              service end-to-end tests (Windows services, systemd user units)
 #   installer  the per-machine NSIS installer with exactly that backend, a
 #              check that it updates an installed version in place, and the
 #              installer smoke test (install with the Windows services,
 #              update, reinstall, uninstall) on the elevated runner
+#   linux-packages  .deb, .rpm and AppImage with the Linux backend; the .deb
+#              installs on the runner and both backends report the version
 #   winget     the winget manifests, rendered and validated against the schemas
 #   mcpb       rootmind.mcpb for Claude Desktop: the bridge's tests, then the
 #              bundle validated and packed with the mcpb CLI
-#   publish    tags only: backend zip, checksums, attestations, GitHub Release
+#   publish    tags only: backend archives, checksums, attestations, GitHub Release
 #
 # A manual run (workflow_dispatch) and pull requests that change the packaging
 # are dry runs: the same builds and checks, nothing is published. Every run
@@ -27,6 +30,7 @@ on:
   pull_request:
     paths:
       - "desktop/src-tauri/tauri.conf.json"
+      - "desktop/src-tauri/tauri.linux.conf.json"
       - "desktop/src-tauri/tauri.release.conf.json"
       - "desktop/src-tauri/installer/**"
       # The Tauri CLI locked here builds the installer.
@@ -256,6 +260,132 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  linux-packages:
+    name: Linux packages
+    needs: [meta, backend]
+    # The oldest supported glibc, like the backend build.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Tauri's Linux prerequisites (WebKitGTK 4.1). No dependency caches: a
+      # release build never restores a cache written by another run.
+      - name: System packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: desktop/package.json # pnpm version from "packageManager"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # The pinned compiler that desktop.yml tests with (RUST_TOOLCHAIN there).
+      - name: Rust toolchain
+        env:
+          RUST_TOOLCHAIN: "1.96.0"
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rootmind-backend-linux-x64
+          path: ${{ runner.temp }}/linux-backend
+
+      # The tested Linux build, checked against the tree hash backend-exe.yml
+      # reported, its size and --version (scripts/prepare_backend.py).
+      - name: Place the backend
+        env:
+          TREE_SHA256: ${{ needs.backend.outputs.linux-tree-sha256 }}
+        run: |
+          tar -xzf "$RUNNER_TEMP/linux-backend/rootmind-backend-linux-x64.tar.gz" -C "$RUNNER_TEMP/linux-backend"
+          python3 scripts/prepare_backend.py --from "$RUNNER_TEMP/linux-backend/rootmind-backend" \
+            --expect-tree-sha256 "$TREE_SHA256"
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: Check Cargo.lock
+        working-directory: desktop/src-tauri
+        run: cargo fetch --locked
+
+      # tauri.linux.conf.json (merged on Linux) selects .deb, .rpm and the
+      # AppImage; the release overlay adds the backend as resources.
+      - name: Build the packages
+        working-directory: desktop
+        run: |
+          echo "Toolchain: $(rustc -V), node $(node -v), pnpm $(pnpm -v)" >> "$GITHUB_STEP_SUMMARY"
+          pnpm tauri build --ci --config src-tauri/tauri.release.conf.json
+
+      # Stable names, so the README can link to the latest release.
+      - name: Release assets
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          bundle=desktop/src-tauri/target/release/bundle
+          out="$RUNNER_TEMP/linux-packages"
+          mkdir -p "$out"
+          for pattern in "deb/*.deb" "rpm/*.rpm" "appimage/*.AppImage"; do
+            # shellcheck disable=SC2086 # the pattern is meant to expand
+            set -- $bundle/$pattern
+            if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+              echo "::error::expected one file for $pattern, found $#"
+              exit 1
+            fi
+          done
+          cp "$bundle"/deb/*.deb "$out/RootMind-amd64.deb"
+          cp "$bundle"/rpm/*.rpm "$out/RootMind-x86_64.rpm"
+          cp "$bundle"/appimage/*.AppImage "$out/RootMind-x86_64.AppImage"
+          chmod +x "$out/RootMind-x86_64.AppImage"
+          for file in "$out"/*; do
+            echo "$(basename "$file"): $(du -m "$file" | cut -f1) MB, SHA-256 $(sha256sum "$file" | cut -d ' ' -f 1)" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      # The packages hold the backend and start it: the .deb installs on this
+      # runner, its backend reports the release version, and the AppImage's
+      # backend (which linuxdeploy rewrites) runs from the image.
+      - name: Check the packages
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          out="$RUNNER_TEMP/linux-packages"
+          dpkg-deb -I "$out/RootMind-amd64.deb"
+          sudo apt-get install -y -q "$out/RootMind-amd64.deb"
+          test -x /usr/bin/rootmind-desktop
+          test -f /usr/share/applications/RootMind.desktop
+          expected=$(python3 -c "import sys; sys.path.insert(0, 'scripts'); from check_versions import normalize_version; print(normalize_version('$VERSION'))")
+          printed=$(/usr/lib/RootMind/backend/rootmind-backend --version | awk '{print $NF}')
+          if [ "$printed" != "$expected" ]; then
+            echo "::error::the packaged backend says $printed, expected $expected"
+            exit 1
+          fi
+          sudo apt-get remove -y -q root-mind
+          cd "$RUNNER_TEMP"
+          "$out/RootMind-x86_64.AppImage" --appimage-extract > /dev/null
+          printed=$(squashfs-root/usr/lib/RootMind/backend/rootmind-backend --version | awk '{print $NF}')
+          if [ "$printed" != "$expected" ]; then
+            echo "::error::the AppImage's backend says $printed, expected $expected"
+            exit 1
+          fi
+          echo "Packages: the .deb installs and both backends report $expected" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rootmind-linux-packages
+          path: ${{ runner.temp }}/linux-packages/
+          if-no-files-found: error
+          retention-days: 30
+
   winget:
     name: winget manifests
     needs: [meta, installer]
@@ -354,7 +484,7 @@ jobs:
 
   publish:
     name: Publish the release
-    needs: [meta, backend, installer, winget, mcpb]
+    needs: [meta, backend, installer, linux-packages, winget, mcpb]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -385,12 +515,25 @@ jobs:
           name: rootmind-mcpb
           path: ${{ runner.temp }}/assets
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rootmind-linux-packages
+          path: ${{ runner.temp }}/assets
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rootmind-backend-linux-x64
+          path: ${{ runner.temp }}/assets
+
       # The zip holds the folder rootmind-backend/ with exactly the tested
-      # tree, files whose names start with a dot included. The bundle for
-      # Claude Desktop comes from the mcpb job.
-      - name: Backend zip and checksums
+      # tree, files whose names start with a dot included. The Linux archive
+      # (with the files' modes) comes from backend-exe.yml as it is, after the
+      # same check. The bundle for Claude Desktop comes from the mcpb job, the
+      # Linux packages from the linux-packages job.
+      - name: Backend archives and checksums
         env:
           TREE_SHA256: ${{ needs.backend.outputs.tree-sha256 }}
+          LINUX_TREE_SHA256: ${{ needs.backend.outputs.linux-tree-sha256 }}
         run: |
           hash=$(python3 scripts/prepare_backend.py --tree-hash "$RUNNER_TEMP/backend/rootmind-backend")
           if [ "$hash" != "$TREE_SHA256" ]; then
@@ -398,12 +541,20 @@ jobs:
             exit 1
           fi
           assets="$RUNNER_TEMP/assets"
+          mkdir -p "$RUNNER_TEMP/linux-check"
+          tar -xzf "$assets/rootmind-backend-linux-x64.tar.gz" -C "$RUNNER_TEMP/linux-check"
+          hash=$(python3 scripts/prepare_backend.py --tree-hash "$RUNNER_TEMP/linux-check/rootmind-backend")
+          if [ "$hash" != "$LINUX_TREE_SHA256" ]; then
+            echo "::error::Linux backend tree hash $hash, expected $LINUX_TREE_SHA256"
+            exit 1
+          fi
           (
             cd "$RUNNER_TEMP/backend"
             find rootmind-backend -type f | LC_ALL=C sort | zip -X -q "$assets/rootmind-backend-windows-x64.zip" -@
           )
           cd "$assets"
-          sha256sum RootMind-Setup-x64.exe rootmind.mcpb rootmind-backend-windows-x64.zip > SHA256SUMS.txt
+          sha256sum RootMind-Setup-x64.exe RootMind-amd64.deb RootMind-x86_64.rpm RootMind-x86_64.AppImage \
+            rootmind.mcpb rootmind-backend-windows-x64.zip rootmind-backend-linux-x64.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
           ls -l
 
@@ -411,8 +562,12 @@ jobs:
         with:
           subject-path: |
             ${{ runner.temp }}/assets/RootMind-Setup-x64.exe
+            ${{ runner.temp }}/assets/RootMind-amd64.deb
+            ${{ runner.temp }}/assets/RootMind-x86_64.rpm
+            ${{ runner.temp }}/assets/RootMind-x86_64.AppImage
             ${{ runner.temp }}/assets/rootmind.mcpb
             ${{ runner.temp }}/assets/rootmind-backend-windows-x64.zip
+            ${{ runner.temp }}/assets/rootmind-backend-linux-x64.tar.gz
             ${{ runner.temp }}/assets/SHA256SUMS.txt
 
       - name: Create the release
@@ -431,6 +586,10 @@ jobs:
           fi
           gh release create "$TAG" "${flags[@]}" \
             "$assets/RootMind-Setup-x64.exe" \
+            "$assets/RootMind-amd64.deb" \
+            "$assets/RootMind-x86_64.rpm" \
+            "$assets/RootMind-x86_64.AppImage" \
             "$assets/rootmind.mcpb" \
             "$assets/rootmind-backend-windows-x64.zip" \
+            "$assets/rootmind-backend-linux-x64.tar.gz" \
             "$assets/SHA256SUMS.txt"

@@ -1244,12 +1244,12 @@ def test_cli_status_reports_scm_errors_without_a_traceback(env):
     assert "Traceback" not in err
 
 
-def test_cli_windows_only(env):
+def test_cli_windows_and_linux_only(env):
     env.windows = False
     for argv in (["status"], ["install"], ["uninstall"]):
         code, _out, err = run_cli(argv, env)
         assert code == ExitCode.USAGE
-        assert "Windows only" in err
+        assert "Windows and Linux only" in err
 
 
 @pytest.mark.parametrize(
@@ -1325,6 +1325,7 @@ def test_cli_usage_errors(argv):
     assert raised.value.code == 2
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="on Linux the backend runs without a SID")
 def test_cli_run_backend_needs_the_account(env):
     code, _out, err = run_cli(["run", "backend", "--port", "18000"], env)
     assert code == ExitCode.USAGE
@@ -1335,13 +1336,13 @@ def test_cli_run_is_not_listed():
     assert "run" not in cli.build_parser().format_help().replace("Run RootMind", "")
 
 
-def test_rootmind_service_dispatch_outside_windows(monkeypatch):
-    """`rootmind service ...` reaches this package; elsewhere than Windows it exits 2."""
+def test_rootmind_service_dispatch_outside_windows_and_linux(monkeypatch):
+    """`rootmind service ...` reaches this package; elsewhere than Windows and Linux it exits 2."""
     from rootmind import main as main_module
 
-    if sys.platform == "win32":
-        pytest.skip("checks the non-Windows message")
+    if sys.platform == "win32" or sys.platform.startswith("linux"):
+        pytest.skip("checks the message of other systems")
     with pytest.raises(SystemExit) as raised, redirect_stderr(io.StringIO()) as err:
         main_module.main(["service", "status"])
     assert raised.value.code == 2
-    assert "Windows only" in err.getvalue()
+    assert "Windows and Linux only" in err.getvalue()

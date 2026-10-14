@@ -8,54 +8,15 @@ with the same methods instead.
 
 from __future__ import annotations
 
-import json
 import ntpath
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 from .. import __version__
 from . import APP_UNINSTALL_KEY, EXE_NAME, PROGRAM_DIR_NAME, layout, listeners, ports, scm
-
-HTTP_TIMEOUT_SECONDS = 5
-
-
-def http_request(
-    method: str,
-    url: str,
-    *,
-    token: str | None = None,
-    body: Any = None,
-    timeout: float = HTTP_TIMEOUT_SECONDS,
-) -> tuple[int, Any]:
-    """Send one request to a local service; returns ``(status, JSON body or None)``.
-
-    Status 0 means no answer (refused, reset or timed out). Proxy settings
-    from the environment are ignored: the target is always 127.0.0.1.
-    """
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    data = None
-    headers = {"Accept": "application/json"}
-    if body is not None:
-        data = json.dumps(body).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    if token is not None:
-        headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, data=data, method=method, headers=headers)  # noqa: S310 (loopback URL built by the caller)
-    try:
-        with opener.open(request, timeout=timeout) as response:
-            status, payload = response.status, response.read()
-    except urllib.error.HTTPError as e:
-        status, payload = e.code, e.read()
-    except (urllib.error.URLError, OSError, TimeoutError):
-        return 0, None
-    try:
-        return status, json.loads(payload) if payload else None
-    except ValueError:
-        return status, None
+from .common import HTTP_TIMEOUT_SECONDS, http_request  # noqa: F401 (kept importable here)
 
 
 class WindowsSystem:

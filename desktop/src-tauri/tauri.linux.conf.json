@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["deb", "rpm", "appimage"],
+    "category": "Productivity",
+    "shortDescription": "Search and chat over your local documents",
+    "longDescription": "RootMind indexes the folders you choose and answers questions about your documents with sources. Its background service runs as systemd user services of your account and serves MCP for agents."
+  }
+}

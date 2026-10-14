@@ -20,6 +20,17 @@ export type ConnState =
 export type ThemePref = "system" | "light" | "dark";
 
 /**
+ * A service change the app started on its own (Linux, state/autoSetup.ts):
+ * setting the service up on the first start, or updating it to the app's
+ * version. `message` says why it failed.
+ */
+export interface AutoServiceChange {
+  action: "setup" | "update";
+  status: "running" | "failed";
+  message: string | null;
+}
+
+/**
  * Which backend the UI uses: the RootMind service the installer set up
  * (`service`), or a backend at an address the user entered under Settings ›
  * Advanced (`custom`).
@@ -166,6 +177,10 @@ interface AppState {
   serviceProblem: ServiceProblem | null;
   setServiceProblem: (problem: ServiceProblem | null) => void;
 
+  /** The service change the app runs or ran on its own (Linux); null when there is none to show. */
+  autoService: AutoServiceChange | null;
+  setAutoService: (change: AutoServiceChange | null) => void;
+
   /**
    * True while a long-running question is in flight. The heartbeat pauses
    * while busy so a backend that is tied up answering the query isn't
@@ -213,6 +228,9 @@ export const useStore = create<AppState>()((set) => ({
   serviceProblem: null,
   setServiceProblem: (serviceProblem) =>
     set((s) => (s.serviceProblem === serviceProblem ? s : { serviceProblem })),
+
+  autoService: null,
+  setAutoService: (autoService) => set({ autoService }),
 
   busy: false,
   setBusy: (busy) => set({ busy }),

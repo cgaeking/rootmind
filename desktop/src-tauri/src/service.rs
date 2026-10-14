@@ -29,6 +29,18 @@
 // 4 port busy, 5 not elevated, 6 data folder refused, 7 health check failed,
 // 8 account mismatch, 9 no access context, 10 unsafe program folder); 1223
 // means the prompt was cancelled.
+//
+// Linux (linux/): the service is two systemd user units of the account that
+// runs the app (~/.config/systemd/user/rootmind-*.service), its data is in
+// ~/.local/share/rootmind and it runs from a program copy in its runtime/
+// folder. Reading uses the unit files, `systemctl --user show` (state and
+// main PID), /proc for the listener check and the owner-only token file.
+// Changes need no elevation: the backend that ships with the app (Tauri
+// resources: /usr/lib/RootMind/backend, or inside the AppImage) runs
+// `service install` as the account itself; switching MCP over HTTP runs the
+// registered copy. The app also sets the service up on its first start and
+// updates it when it is older than the app (src/state/autoSetup.ts); exit
+// code 11 means the account's systemd user manager cannot be reached.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -40,6 +52,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::app;
+// Windows only (the UAC prompt); Linux runs the backend directly.
+#[cfg_attr(target_os = "linux", allow(unused_imports))]
 use crate::args;
 use crate::imagepath::{self, ImagePath, Role};
 use crate::tcptable;
@@ -216,6 +230,7 @@ pub struct ScmStatus {
 }
 
 /// How an elevated program ended.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Elevated {
     /// It ran and exited with this code.
@@ -225,6 +240,7 @@ pub enum Elevated {
 }
 
 /// What the UI is told about an elevated change.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Succeeded,
@@ -240,6 +256,7 @@ pub const ERROR_CANCELLED: u32 = 1223;
 /// ERROR_ACCESS_DISABLED_BY_POLICY (1260), and the ERROR_SYSTEM_INTEGRITY_*
 /// range 4550-4599 (Smart App Control and WDAC, including the reputation
 /// checks). The same list is in src/state/service.ts.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub fn is_blocked_code(code: u32) -> bool {
     matches!(code, 225 | 226 | 1260 | 4550..=4599)
 }
@@ -250,6 +267,7 @@ pub const CODE_UNEXPECTED: u32 = 1;
 /// The service was installed, but the app could not connect to it.
 pub const CODE_HEALTH: u32 = 7;
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub fn classify(result: Elevated) -> Outcome {
     match result {
         Elevated::Exited(0) => Outcome::Succeeded,
@@ -304,6 +322,26 @@ pub fn repair_exe(
         .ok_or_else(|| "The backend that ships with the app is missing. Reinstall RootMind.".into())
 }
 
+/// Linux: `service install` on the existing units, as `update_args` without
+/// an account (the units belong to the account that runs it).
+#[cfg_attr(windows, allow(dead_code))]
+pub fn update_args_linux() -> Vec<String> {
+    ["service", "install", "--port", "auto", "--mcp-port", "auto"]
+        .map(String::from)
+        .to_vec()
+}
+
+/// How a `service install` the app ran unelevated (Linux) ended: its exit
+/// code, or `None` when it could not run, was killed or timed out.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn classify_exit(code: Option<i32>) -> Outcome {
+    match code {
+        Some(0) => Outcome::Succeeded,
+        Some(code) if code > 0 => Outcome::Failed(code as u32),
+        _ => Outcome::Failed(CODE_UNEXPECTED),
+    }
+}
+
 /// `service install` from the Program Files copy, switching MCP over HTTP.
 pub fn set_mcp_args(enabled: bool) -> Vec<String> {
     if enabled {
@@ -332,7 +370,30 @@ impl ServiceView {
         self.image.is_some()
     }
 
+    /// Build a view from a Linux unit file's text and its systemd state
+    /// (unitfile.rs): ours when the unit follows the contract and runs the
+    /// program copy below `data_root`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn from_unit(
+        text: Option<&str>,
+        status: Option<ScmStatus>,
+        role: Role,
+        data_root: Option<&Path>,
+    ) -> Self {
+        let image = match (text, data_root) {
+            (Some(text), Some(root)) => crate::unitfile::parse_unit(text)
+                .filter(|ip| ip.role == role && crate::unitfile::exe_is_ours(&ip.exe, root)),
+            _ => None,
+        };
+        Self {
+            present: text.is_some(),
+            image,
+            status,
+        }
+    }
+
     /// Build a view from the raw ImagePath and SCM status.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     pub fn from_parts(
         raw_image: Option<&str>,
         status: Option<ScmStatus>,
@@ -415,12 +476,12 @@ pub fn build_info(
         url: port(backend).map(|p| format!("http://127.0.0.1:{p}")),
         // Readable *and* this account's: with UAC off another administrator
         // can read the file, but the service reads with the first account's
-        // rights, so the app must not pick it.
+        // rights, so the app must not pick it. A Linux unit has no SID: it
+        // is the account's own (its user units).
         token_readable: matches!(token, TokenRead::Readable(_))
-            && backend
-                .image
-                .as_ref()
-                .is_some_and(|image| same_sid(image.user_sid.as_deref(), own_sid)),
+            && backend.image.as_ref().is_some_and(|image| {
+                image.user_sid.is_none() || same_sid(image.user_sid.as_deref(), own_sid)
+            }),
         can_elevate,
         blocked_reason: blocked_reason(supported, backend, mcp, own_sid, token, can_elevate),
         mcp: McpInfo {
@@ -484,9 +545,45 @@ mod platform {
     pub use crate::win::scm::{image_path, query};
     pub use crate::win::tcp::listeners;
     pub use crate::win::token::{can_elevate, current_user_sid};
+
+    /// The listener table (the PIDs come with it on Windows).
+    pub fn listeners_for(_pid: u32) -> std::io::Result<Vec<crate::tcptable::Listener>> {
+        listeners()
+    }
+
+    /// `%ProgramData%\RootMind`.
+    pub fn service_home() -> Option<std::path::PathBuf> {
+        program_data().ok().map(|p| p.join("RootMind"))
+    }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+mod platform {
+    use std::io;
+    use std::path::PathBuf;
+
+    pub use crate::linux::listeners_for;
+
+    /// `~/.local/share/rootmind`.
+    pub fn service_home() -> Option<PathBuf> {
+        crate::linux::data_root().ok()
+    }
+
+    /// The account changes its own user units: no elevation is needed.
+    pub fn can_elevate() -> bool {
+        true
+    }
+
+    /// Linux units carry no SID.
+    pub fn current_user_sid() -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no SID on Linux",
+        ))
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 mod platform {
     use std::io;
     use std::path::{Path, PathBuf};
@@ -522,24 +619,37 @@ mod platform {
     pub fn current_user_sid() -> io::Result<String> {
         Err(unsupported())
     }
+    pub fn listeners_for(_pid: u32) -> io::Result<Vec<Listener>> {
+        listeners()
+    }
+    pub fn service_home() -> Option<PathBuf> {
+        program_data().ok().map(|p| p.join("RootMind"))
+    }
 }
 
-/// `%ProgramData%\RootMind`.
+/// `%ProgramData%\RootMind` (Linux: `~/.local/share/rootmind`).
 fn service_home() -> Option<PathBuf> {
-    platform::program_data().ok().map(|p| p.join("RootMind"))
+    platform::service_home()
 }
 
-/// `%ProgramData%\RootMind\logs`.
+/// `%ProgramData%\RootMind\logs` (Linux: `~/.local/share/rootmind/logs`).
 fn service_log_dir() -> Option<PathBuf> {
     service_home().map(|h| h.join("logs"))
 }
 
+#[cfg(not(target_os = "linux"))]
 fn inspect(name: &str, role: Role) -> ServiceView {
     let raw = platform::image_path(name).ok().flatten();
     let status = platform::query(name).ok().flatten();
     let pf = platform::program_files().ok();
     let pf = pf.as_ref().and_then(|p| p.to_str());
     ServiceView::from_parts(raw.as_deref(), status, role, pf)
+}
+
+/// Linux: the user unit of `role` (the Windows service name is not used).
+#[cfg(target_os = "linux")]
+fn inspect(_name: &str, role: Role) -> ServiceView {
+    crate::linux::inspect(role)
 }
 
 fn rest_token() -> TokenRead {
@@ -550,7 +660,7 @@ fn rest_token() -> TokenRead {
 }
 
 fn collect_info() -> ServiceInfo {
-    let supported = cfg!(windows);
+    let supported = cfg!(windows) || cfg!(target_os = "linux");
     let backend = inspect(BACKEND_SERVICE, Role::Backend);
     let mcp = inspect(MCP_SERVICE, Role::McpHttp);
     let token = if backend.ours() {
@@ -571,11 +681,9 @@ fn collect_info() -> ServiceInfo {
 
 /// The listener check, then the token.
 fn connect() -> ServiceConnect {
-    connect_with(
-        &inspect(BACKEND_SERVICE, Role::Backend),
-        platform::listeners,
-        rest_token,
-    )
+    let backend = inspect(BACKEND_SERVICE, Role::Backend);
+    let pid = backend.status.map_or(0, |status| status.pid);
+    connect_with(&backend, || platform::listeners_for(pid), rest_token)
 }
 
 /// The order that keeps the token safe: our service, running, and its own
@@ -628,6 +736,7 @@ async fn connect_after_change() -> Option<BackendInfo> {
 }
 
 /// The window that owns the UAC prompt.
+#[cfg(not(target_os = "linux"))]
 fn main_hwnd(app: &AppHandle) -> isize {
     #[cfg(windows)]
     if let Some(window) = app.get_webview_window("main") {
@@ -641,6 +750,7 @@ fn main_hwnd(app: &AppHandle) -> isize {
 }
 
 /// Run `exe` elevated with `args` and classify the result.
+#[cfg(not(target_os = "linux"))]
 async fn elevate(app: &AppHandle, exe: PathBuf, args: Vec<String>) -> Result<Outcome, String> {
     let params = args::join_args(&args).map_err(|e| e.to_string())?;
     let hwnd = main_hwnd(app);
@@ -650,6 +760,20 @@ async fn elevate(app: &AppHandle, exe: PathBuf, args: Vec<String>) -> Result<Out
         Ok(elevated) => classify(elevated),
         Err(_) => Outcome::Failed(CODE_UNEXPECTED),
     })
+}
+
+/// Linux: run `exe` with `args` as this account (no elevation) and classify
+/// its exit code.
+#[cfg(target_os = "linux")]
+async fn elevate(_app: &AppHandle, exe: PathBuf, args: Vec<String>) -> Result<Outcome, String> {
+    let result = blocking(move || {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_captured(&exe, &args, ELEVATION_WAIT)
+    })
+    .await?;
+    Ok(classify_exit(
+        result.ok().and_then(|output| output.status.code()),
+    ))
 }
 
 /// The Program Files copy named in the backend service's ImagePath.
@@ -738,10 +862,15 @@ pub async fn service_update(app: AppHandle) -> Result<ServiceResult, String> {
     })
     .await?;
     let exe = repair_exe(app_backend.as_deref(), &[&views.0, &views.1], Path::is_file)?;
-    let sid = blocking(platform::current_user_sid)
-        .await?
-        .map_err(|e| format!("Could not read the account SID: {e}"))?;
-    let outcome = elevate(&app, exe, update_args(&sid)?).await?;
+    let args = if cfg!(target_os = "linux") {
+        update_args_linux()
+    } else {
+        let sid = blocking(platform::current_user_sid)
+            .await?
+            .map_err(|e| format!("Could not read the account SID: {e}"))?;
+        update_args(&sid)?
+    };
+    let outcome = elevate(&app, exe, args).await?;
     finish_change(outcome).await
 }
 
@@ -864,7 +993,11 @@ pub async fn service_details(app: AppHandle) -> Result<String, String> {
         }
         Err(e) => out.push_str(&e),
     }
-    out.push_str("\n\nlogs\\install.log:\n");
+    out.push_str(if cfg!(windows) {
+        "\n\nlogs\\install.log:\n"
+    } else {
+        "\n\nlogs/install.log:\n"
+    });
     let log = blocking(|| {
         let path = service_log_dir()?.join("install.log");
         Some(tail_lines(&path, INSTALL_LOG_LINES).map_err(|e| e.to_string()))
@@ -1379,6 +1512,123 @@ mod tests {
             Duration::from_millis(500),
         );
         assert_eq!(slow.unwrap_err().kind(), io::ErrorKind::TimedOut);
+    }
+
+    // Linux: the user units (unitfile.rs).
+
+    const LINUX_ROOT: &str = "/home/me/.local/share/rootmind";
+    const LINUX_EXE: &str =
+        "/home/me/.local/share/rootmind/runtime/2.3.0-0a1b2c3d/rootmind-backend";
+
+    fn linux_unit(role: &str, port: u16) -> String {
+        format!(
+            "{}
+[Service]
+Type=notify
+ExecStart=\"{LINUX_EXE}\" service run {role} --port {port}
+",
+            crate::unitfile::MARKER
+        )
+    }
+
+    fn linux_view(text: Option<&str>, status: Option<ScmStatus>, role: Role) -> ServiceView {
+        ServiceView::from_unit(text, status, role, Some(Path::new(LINUX_ROOT)))
+    }
+
+    #[test]
+    fn linux_units_are_ours_and_need_no_sid() {
+        let backend = linux_view(
+            Some(&linux_unit("backend", 8000)),
+            Some(RUNNING),
+            Role::Backend,
+        );
+        let mcp = linux_view(
+            Some(&linux_unit("mcp-http", 3000)),
+            Some(ScmStatus { state: 4, pid: 77 }),
+            Role::McpHttp,
+        );
+        assert!(backend.present && backend.ours());
+        let token = TokenRead::Readable("abc".into());
+        let info = build_info(true, &backend, &mcp, None, &token, true);
+        let value = serde_json::to_value(&info).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "supported": true, "installed": true, "ours": true, "state": "running",
+                "port": 8000, "url": "http://127.0.0.1:8000", "tokenReadable": true,
+                "canElevate": true, "blockedReason": null,
+                "mcp": {"installed": true, "state": "running", "port": 3000,
+                        "url": "http://127.0.0.1:3000/mcp"}
+            })
+        );
+        // The MCP unit under the backend's name, a foreign file and a copy
+        // outside the data folder are not ours.
+        assert!(!linux_view(Some(&linux_unit("mcp-http", 3000)), None, Role::Backend).ours());
+        let foreign = linux_view(
+            Some(
+                "[Service]
+ExecStart=/bin/true
+",
+            ),
+            None,
+            Role::Backend,
+        );
+        assert!(foreign.present && !foreign.ours());
+        assert_eq!(
+            blocked_reason(
+                true,
+                &foreign,
+                &ServiceView::default(),
+                None,
+                &TokenRead::Missing,
+                true
+            ),
+            Some(BlockedReason::ForeignService)
+        );
+        let elsewhere = ServiceView::from_unit(
+            Some(&linux_unit("backend", 8000)),
+            None,
+            Role::Backend,
+            Some(Path::new("/home/other/.local/share/rootmind")),
+        );
+        assert!(!elsewhere.ours());
+        assert!(!linux_view(None, None, Role::Backend).present);
+    }
+
+    #[test]
+    fn linux_connect_uses_the_main_pid() {
+        let backend = linux_view(
+            Some(&linux_unit("backend", 8000)),
+            Some(RUNNING),
+            Role::Backend,
+        );
+        let own = || Ok(vec![listener([127, 0, 0, 1], 8000, 4242)]);
+        let (result, read) = try_connect(&backend, own(), TokenRead::Readable("t".into()));
+        assert!(read);
+        assert!(matches!(result, ServiceConnect::Connected { .. }));
+        // A socket of another process shows PID 0 on Linux (procnet.rs).
+        let other = Ok(vec![
+            listener([127, 0, 0, 1], 8000, 4242),
+            listener([0, 0, 0, 0], 8000, 0),
+        ]);
+        let (result, read) = try_connect(&backend, other, TokenRead::Readable("t".into()));
+        assert!(!read);
+        assert_eq!(failure(&result), Some(ConnectFailure::ListenerMismatch));
+    }
+
+    #[test]
+    fn linux_changes() {
+        assert_eq!(
+            args::join_args(&update_args_linux()).unwrap(),
+            "service install --port auto --mcp-port auto"
+        );
+        assert_eq!(classify_exit(Some(0)), Outcome::Succeeded);
+        for code in [2, 3, 4, 6, 7, 8, 10, 11] {
+            assert_eq!(classify_exit(Some(code)), Outcome::Failed(code as u32));
+        }
+        // Killed (no code), or a negative code: unexpected.
+        assert_eq!(classify_exit(None), Outcome::Failed(CODE_UNEXPECTED));
+        assert_eq!(classify_exit(Some(-1)), Outcome::Failed(CODE_UNEXPECTED));
     }
 
     #[test]

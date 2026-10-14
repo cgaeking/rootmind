@@ -29,3 +29,37 @@ describe("labels", () => {
     }
   });
 });
+
+describe("the Linux wording", () => {
+  it("only replaces texts that exist, with the same parameters", () => {
+    for (const labels of [en, de]) {
+      const all = new Set(shape(labels).filter((p) => !p.startsWith("linux.")));
+      const replaced = shape(labels.linux);
+      expect(replaced.length).toBeGreaterThan(10);
+      expect(replaced.filter((p) => !all.has(p))).toEqual([]);
+    }
+  });
+
+  it("is used for Linux and nowhere else", async () => {
+    const { labelsFor, overlay } = await import("./labels");
+    expect(labelsFor("en", "windows").service.desc).toBe(en.service.desc);
+    expect(labelsFor("en", "other").service.desc).toBe(en.service.desc);
+    const linux = labelsFor("en", "linux");
+    expect(linux.service.desc).toBe(en.linux.service.desc);
+    expect(linux.service.desc).toMatch(/systemd user services/);
+    // Untouched texts stay, deep inside a replaced section too.
+    expect(linux.service.title).toBe(en.service.title);
+    expect(linux.service.problems.portBusy).toEqual(en.service.problems.portBusy);
+    expect(linux.service.codes.cancelled).toBe(en.service.codes.cancelled);
+    expect(labelsFor("de", "linux").chat.openFolderTitle).toBe("Ordner im Dateimanager öffnen");
+    expect(labelsFor("en", "linux")).toBe(linux); // built once
+    expect(overlay({ a: 1, b: { c: 2, d: 3 } }, { b: { c: 9 }, x: 1 })).toEqual({ a: 1, b: { c: 9, d: 3 } });
+  });
+
+  it("no Linux text names Windows, UAC or administrators", () => {
+    for (const labels of [en, de]) {
+      const texts = JSON.stringify(labels.linux);
+      expect(texts).not.toMatch(/Windows|UAC|Administrator|administrator|%ProgramData%/);
+    }
+  });
+});

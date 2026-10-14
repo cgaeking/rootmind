@@ -13,6 +13,12 @@
 // runs from, and refuses to copy from a folder that non-administrators can
 // change. Only when this backend is missing does Repair use the service's
 // registered copy instead.
+//
+// On Linux the backend ships in the packages' resource folder
+// (/usr/lib/RootMind/backend/ for the .deb and .rpm; inside the AppImage's
+// temporary mount for the AppImage) and the app runs `service install` from
+// there as the account itself, which copies it into
+// ~/.local/share/rootmind/runtime/ for the systemd user units.
 
 use std::path::PathBuf;
 
@@ -26,23 +32,37 @@ const BACKEND_EXE: &str = "rootmind-backend.exe";
 #[cfg(not(windows))]
 const BACKEND_EXE: &str = "rootmind-backend";
 
-/// `{version, dev}` over IPC.
+/// `{version, dev, platform}` over IPC.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppMode {
     pub version: String,
     pub dev: bool,
+    /// `windows`, `linux` or `other`: the UI words the service accordingly.
+    pub platform: &'static str,
+}
+
+pub fn platform() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "other"
+    }
 }
 
 pub fn app_mode_info() -> AppMode {
     AppMode {
         version: env!("CARGO_PKG_VERSION").to_string(),
         dev: cfg!(debug_assertions),
+        platform: platform(),
     }
 }
 
 /// `<resource_dir>\backend\rootmind-backend.exe`, installed with the app
-/// (release builds only; `cargo build` and `pnpm tauri dev` have none).
+/// (release builds only; `cargo build` and `pnpm tauri dev` have none); on
+/// Linux `<resource_dir>/backend/rootmind-backend`.
 pub fn bundled_exe<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     Ok(dir.join(BACKEND_DIR).join(BACKEND_EXE))
@@ -62,7 +82,11 @@ mod tests {
         let value = serde_json::to_value(app_mode_info()).unwrap();
         assert_eq!(
             value,
-            serde_json::json!({"version": env!("CARGO_PKG_VERSION"), "dev": cfg!(debug_assertions)})
+            serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "dev": cfg!(debug_assertions),
+                "platform": if cfg!(windows) { "windows" } else if cfg!(target_os = "linux") { "linux" } else { "other" },
+            })
         );
     }
 }

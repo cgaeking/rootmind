@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { labels } from "../i18n/labels";
-import { inTauri, serviceUpdate } from "../api/backend";
+import { commandError, inTauri, serviceDetails, serviceUpdate } from "../api/backend";
 import { recheck } from "../hooks/useBackend";
 import { useServiceInfo } from "../hooks/useServiceInfo";
 import { DEFAULT_BASE_URL, readStoredBackend, useStore } from "../state/store";
@@ -16,9 +16,15 @@ import { Dialog, dialogStyles as styles } from "../components/Dialog";
  */
 function ServicePanel({ onOther }: { onOther: () => void }) {
   const problem = useStore((s) => s.serviceProblem) ?? "noAnswer";
+  // Linux: the set-up the app runs on its own (state/autoSetup.ts).
+  const auto = useStore((s) => s.autoService);
   const { info } = useServiceInfo();
-  const [busy, setBusy] = useState<"repair" | "check" | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [localBusy, setBusy] = useState<"repair" | "check" | null>(null);
+  const [localMessage, setMessage] = useState<string | null>(null);
+  const [details, setDetails] = useState<string | null>(null);
+  const autoRunning = auto?.status === "running";
+  const busy = localBusy ?? (autoRunning ? "repair" : null);
+  const message = localMessage ?? (auto?.status === "failed" ? auto.message : null);
 
   const repairable = canRepair(problem, info);
   // "Set up" for a service that was never set up, else "Repair".
@@ -30,12 +36,21 @@ function ServicePanel({ onOther }: { onOther: () => void }) {
   async function repair() {
     setBusy("repair");
     setMessage(null);
+    setDetails(null);
     try {
       // The dialog stays open (no "switching") so the outcome can be shown.
       const outcome = await runServiceChange(serviceUpdate, { switching: false });
       setMessage(changeMessage(outcome)?.text ?? null);
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function loadDetails() {
+    try {
+      setDetails(await serviceDetails());
+    } catch (e) {
+      setDetails(labels.service.detailsFailed(commandError(e)));
     }
   }
 
@@ -74,8 +89,20 @@ function ServicePanel({ onOther }: { onOther: () => void }) {
     >
       <p className={styles.text}>{labels.service.problems[problem].text}</p>
       {needsAdmin && <p className={styles.text}>{labels.service.repairNeedsAdmin}</p>}
-      {busy === "repair" && <p className={styles.text}>{labels.service[repairText.busy]}</p>}
+      {busy === "repair" && (
+        <p className={styles.text}>
+          {autoRunning && !localBusy
+            ? labels.service[auto?.action === "setup" ? "autoSetup" : "autoUpdate"]
+            : labels.service[repairText.busy]}
+        </p>
+      )}
       {message && <p className={styles.text}>{message}</p>}
+      {message && !busy && !details && inTauri() && (
+        <button type="button" className={styles.link} onClick={() => void loadDetails()}>
+          {labels.service.details}
+        </button>
+      )}
+      {details && <pre className={styles.pre}>{details}</pre>}
     </Dialog>
   );
 }

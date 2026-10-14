@@ -1,4 +1,4 @@
-"""The service host: ``service run backend|mcp-http``, started by the SCM.
+"""The service host: ``service run backend|mcp-http``, started by the SCM or systemd.
 
 The ImagePath runs the executable with ``service run <role> --port <P>
 [--user-sid <SID>]``. The host hands a pywin32 ``ServiceFramework`` class to
@@ -22,6 +22,16 @@ A config, token or access error stops the service cleanly with the
 service-specific exit code 2, which the failure actions do not restart. Any
 other failure ends the process without reporting a stop, so the SCM restarts
 it (after 5, 30 and 60 seconds).
+
+On Linux systemd starts the same command from the account's user unit
+(:mod:`.systemd`); :func:`run_linux_service` runs the runner in the foreground
+instead of the SCM glue. The service runs as the account itself
+(``per_user``): its home is the data folder next to its program copy, it
+reads folders with the account's own rights (``UNRESTRICTED``) and writes the
+remote-access files owner-only. It checks the data folder's owner and modes
+first, tells systemd it is ready (``sd_notify``) once it has bound its port,
+and ends with exit code 2 on a config, token or folder error, which the unit
+does not restart (``RestartPreventExitStatus=2``).
 """
 
 from __future__ import annotations
@@ -30,10 +40,12 @@ import io
 import logging
 import logging.handlers
 import os
+import signal
+import socket
 import sys
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -196,6 +208,11 @@ class ServiceRunner:
         remote_access_factory: Builds the MCP server's remote access from
             the home and the bound port (default:
             :class:`~rootmind.remote_access.RemoteAccessManager`).
+        per_user: The service runs as the account itself (Linux): no
+            ``user_sid``, no folder access policy, owner-only remote-access
+            files.
+        home_check: Returns why the home must not be used (Linux: owner and
+            modes); a non-empty list stops the service (no restart).
     """
 
     def __init__(
@@ -208,6 +225,8 @@ class ServiceRunner:
         access_factory: Callable[[str], Any] | None = None,
         protection_factory: Callable[[], Any] | None = None,
         remote_access_factory: Callable[[Path, int], Any] | None = None,
+        per_user: bool = False,
+        home_check: Callable[[Path], list[str]] | None = None,
     ) -> None:
         if role not in SERVICE_BY_ROLE:
             raise ValueError(f"unknown role {role!r}")
@@ -218,6 +237,8 @@ class ServiceRunner:
         self._access_factory = access_factory or _default_access_factory
         self._protection_factory = protection_factory or _default_protection_factory
         self._remote_access_factory = remote_access_factory or _default_remote_access_factory
+        self.per_user = per_user
+        self._home_check = home_check
         self.remote_access: Any = None
         self._stop_requested = False
         self._lock = threading.Lock()
@@ -236,6 +257,8 @@ class ServiceRunner:
             os.environ.pop("RLM_DISABLE_SCHEDULER", None)
             temp = self.home / "tmp"
             os.environ["TEMP"] = os.environ["TMP"] = str(temp)
+            if self.per_user:
+                os.environ["TMPDIR"] = str(temp)
             tempfile.tempdir = None
         os.chdir(self.home)
 
@@ -249,6 +272,13 @@ class ServiceRunner:
         from .. import auth
         from .. import config as config_module
 
+        if self._home_check is not None:
+            problems = self._home_check(self.home)
+            if problems:
+                raise ServiceConfigError(
+                    f"{self.home} is not protected: {'; '.join(problems[:10])}. "
+                    "Run service install again to repair it."
+                )
         self.prepare_environment()
         config_module.reset_config()
         try:
@@ -269,7 +299,7 @@ class ServiceRunner:
             )
 
         if self.role == ROLE_BACKEND:
-            if not self.user_sid:
+            if not self.user_sid and not self.per_user:
                 raise ServiceConfigError("the backend service needs --user-sid")
             try:
                 token, source = auth.resolve_token(
@@ -277,21 +307,31 @@ class ServiceRunner:
                 )
             except (auth.TokenError, OSError) as e:
                 raise ServiceConfigError(str(e)) from None
-            from ..winaccess import AccessContextError
-
-            try:
-                access = self._access_factory(self.user_sid)
-            except AccessContextError as e:
-                raise ServiceConfigError(
-                    f"cannot check folder access for {self.user_sid}: {e}"
-                ) from None
             from ..api.app import create_app
-            from ..remote_access import RemoteAccessFiles
+            from ..remote_access import PrivateFiles, RemoteAccessFiles
 
+            access: Any
+            protection: Any
+            if self.per_user:
+                # Linux: the service is the account; files are owner-only.
+                from ..access import UNRESTRICTED
+
+                access = UNRESTRICTED
+                protection = PrivateFiles()
+            else:
+                from ..winaccess import AccessContextError
+
+                try:
+                    access = self._access_factory(self.user_sid or "")
+                except AccessContextError as e:
+                    raise ServiceConfigError(
+                        f"cannot check folder access for {self.user_sid}: {e}"
+                    ) from None
+                protection = self._protection_factory()
             app = create_app(
                 api_token=token,
                 folder_access=access,
-                remote_access_files=RemoteAccessFiles(self.home, self._protection_factory()),
+                remote_access_files=RemoteAccessFiles(self.home, protection),
             )
         else:
             from .. import mcp_http
@@ -453,8 +493,10 @@ def run_service(role: str, port: int, user_sid: str | None) -> int:
     Returns:
         0 after a normal stop, 2 when the process was not started by the SCM.
     """
+    if sys.platform.startswith("linux"):
+        return run_linux_service(role, port)
     if sys.platform != "win32":
-        print("error: the background service is Windows only", file=sys.stderr)
+        print("error: the background service runs on Windows and Linux only", file=sys.stderr)
         return ExitCode.USAGE
     from .layout import data_root
 
@@ -482,4 +524,111 @@ def run_service(role: str, port: int, user_sid: str | None) -> int:
     return ExitCode.OK
 
 
-__all__ = ["ROLE_BACKEND", "ROLE_MCP", "ServiceConfigError", "ServiceRunner", "run_service"]
+# --- systemd glue (Linux) ----------------------------------------------------------------
+
+
+def sd_notify(message: str, environ: Mapping[str, str] | None = None) -> bool:
+    """Send ``message`` to systemd's notification socket; False without one.
+
+    The socket is ``$NOTIFY_SOCKET``: a path, or an abstract name starting
+    with ``@``.
+    """
+    address = (os.environ if environ is None else environ).get("NOTIFY_SOCKET")
+    if not address or not hasattr(socket, "AF_UNIX"):
+        return False
+    if address.startswith("@"):
+        address = "\0" + address[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:  # type: ignore[attr-defined]
+            sock.connect(address)
+            sock.sendall(message.encode("utf-8"))
+    except OSError as e:
+        logger.warning("Cannot notify systemd: %s", e)
+        return False
+    return True
+
+
+def linux_home() -> Path:
+    """The data folder of the service: next to its program copy, else the XDG default."""
+    from . import linux_layout
+
+    return linux_layout.home_of_program(sys.executable) or linux_layout.data_root()
+
+
+def run_linux_service(
+    role: str,
+    port: int,
+    *,
+    home: Path | None = None,
+    runner_factory: Callable[..., Any] = ServiceRunner,
+    notify: Callable[[str], bool] = sd_notify,
+    configure: Callable[[Path, str], Any] = configure_logging,
+) -> int:
+    """``service run <role>`` on Linux, started by systemd from the user unit.
+
+    Returns:
+        0 after a stop that systemd (SIGTERM) or Ctrl+C asked for, 2 on a
+        config, token or folder error (not restarted), 1 on any other failure
+        (restarted).
+    """
+    from . import linux_layout
+
+    home = home or linux_home()
+    name = SERVICE_BY_ROLE[role]
+    configure(home / "logs" / role, role)
+    logger.info("Starting %s (port %d)", name, port)
+    uid = os.geteuid()  # type: ignore[attr-defined]
+    runner = runner_factory(
+        role,
+        port,
+        home=home,
+        per_user=True,
+        home_check=lambda path: linux_layout.check_service_home(path, uid),
+    )
+    signalled = threading.Event()
+
+    def on_signal(signum, _frame) -> None:
+        logger.info("Stop requested (signal %d)", signum)
+        signalled.set()
+        runner.stop()
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, on_signal)
+    try:
+        runner.prepare()
+    except ServiceConfigError as e:
+        logger.error("%s cannot start: %s", name, e)
+        logging.shutdown()
+        return SERVICE_SPECIFIC_CONFIG_ERROR
+    except BaseException:
+        logger.exception("%s failed to start", name)
+        logging.shutdown()
+        return 1
+    notify(f"READY=1\nMAINPID={os.getpid()}\nSTATUS=Listening on 127.0.0.1:{runner.port_in_use}")
+    try:
+        stopped = runner.serve()
+    except BaseException:
+        logger.exception("%s failed", name)
+        logging.shutdown()
+        return 1
+    notify("STOPPING=1")
+    # uvicorn handles SIGTERM itself and raises it again afterwards; either way
+    # a signal means systemd (or Ctrl+C) asked for the stop.
+    if not (stopped or signalled.is_set()):
+        logger.error("%s stopped unexpectedly; systemd restarts it", name)
+        logging.shutdown()
+        return 1
+    logger.info("%s stopped", name)
+    logging.shutdown()
+    return ExitCode.OK
+
+
+__all__ = [
+    "ROLE_BACKEND",
+    "ROLE_MCP",
+    "ServiceConfigError",
+    "ServiceRunner",
+    "run_linux_service",
+    "run_service",
+    "sd_notify",
+]

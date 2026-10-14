@@ -71,7 +71,7 @@ export const labels = {
     problems: {
       unsupported: {
         title: "Der RootMind-Dienst ist nicht verfügbar",
-        text: "Der RootMind-Dienst läuft nur unter Windows. Verbinde dich stattdessen mit einem RootMind-Backend unter einer anderen Adresse.",
+        text: "Der RootMind-Dienst läuft nur unter Windows und Linux. Verbinde dich stattdessen mit einem RootMind-Backend unter einer anderen Adresse.",
       },
       notInstalled: {
         title: "Der RootMind-Dienst ist noch nicht eingerichtet",
@@ -123,6 +123,8 @@ export const labels = {
         "Der Programmordner von RootMind kann von Konten ohne Administratorrechte geändert werden, daher wurde der Dienst nicht eingerichtet. Installiere RootMind mit dem offiziellen Installationsprogramm (es nutzt immer den Ordner Programme).",
       blocked:
         "Die Windows-Sicherheit hat den RootMind-Dienst blockiert. Smart App Control oder eine Antivirensoftware blockieren eventuell nicht signierte Apps.",
+      noUserManager:
+        "Der systemd-Benutzermanager deines Kontos ist nicht erreichbar. Starte RootMind aus deiner Desktop-Sitzung (nicht über su oder sudo) und versuche es erneut.",
     },
     failed: (msg: string) => `Die Änderung ist fehlgeschlagen: ${msg}`,
     details: "Details",
@@ -131,6 +133,8 @@ export const labels = {
     updateBanner: (service: string, app: string) =>
       `Der RootMind-Dienst läuft in Version ${service}; diese App hat Version ${app}.`,
     updateService: "Dienst aktualisieren",
+    autoSetup: "Der RootMind-Dienst wird für dein Konto eingerichtet …",
+    autoUpdate: "Der RootMind-Dienst wird auf die Version dieser App aktualisiert …",
     mcpToggle: "MCP über HTTP anbieten (für Claude Desktop, n8n und andere Agenten)",
     mcpUrlLabel: "MCP-Endpunkt",
     copyToken: "Token kopieren",
@@ -325,5 +329,57 @@ export const labels = {
     errorPrefix: (msg: string) => `Fehler: ${msg}\n\nPrüfe ggf. deinen LLM-API-Key in den Einstellungen.`,
     openFileFailed: (msg: string) => `Datei konnte nicht geöffnet werden: ${msg}`,
     openFolderFailed: (msg: string) => `Ordner konnte nicht geöffnet werden: ${msg}`,
+  },
+  // Linux (systemd-Benutzerdienste, keine Administrator-Abfrage): diese Texte
+  // ersetzen die obigen, wenn die App unter Linux läuft (labels.ts). Jeder
+  // Schlüssel hier gibt es oben auch.
+  linux: {
+    service: {
+      desc: "RootMind läuft als Hintergrunddienst deines Kontos (zwei systemd-Benutzerdienste), den die App beim ersten Start einrichtet. Er hält deinen Index aktuell, während die App geschlossen ist, und startet, wenn du dich anmeldest. Er liest die Ordner, die dein Konto öffnen kann.",
+      problems: {
+        notInstalled: {
+          title: "Der RootMind-Dienst ist noch nicht eingerichtet",
+          text: "RootMind hält deinen Index in einem Hintergrunddienst deines Kontos (systemd-Benutzerdienste). Die App richtet ihn beim ersten Start ein; das hat nicht geklappt. Einrichten versucht es erneut; Details unter Einstellungen › RootMind-Dienst zeigt den Grund.",
+        },
+        foreign: {
+          title: "Ein anderer Dienst ist im Weg",
+          text: "Es gibt einen systemd-Benutzerdienst namens rootmind-backend oder rootmind-mcp-http, den RootMind nicht eingerichtet hat. Entferne ihn aus ~/.config/systemd/user, führe systemctl --user daemon-reload aus und wähle dann Erneut prüfen.",
+        },
+        otherAccount: {
+          title: "Der RootMind-Dienst kann nicht genutzt werden",
+          text: "Dieses Konto kann das Token des RootMind-Dienstes in ~/.local/share/rootmind nicht lesen. Prüfe, wem der Ordner gehört, oder entferne ihn und starte RootMind erneut.",
+        },
+        notRunning: {
+          title: "Der RootMind-Dienst läuft nicht",
+          text: "Der Dienst ist eingerichtet, aber angehalten. Reparieren startet ihn wieder. Hilft das nicht, sieh dir die Details unter Einstellungen › RootMind-Dienst an.",
+        },
+        noAnswer: {
+          title: "Der RootMind-Dienst antwortet nicht",
+          text: "Der Dienst läuft, reagiert aber nicht. Reparieren startet ihn neu. Hilft das nicht, sieh dir die Details unter Einstellungen › RootMind-Dienst an.",
+        },
+      },
+      repairNeedsAdmin: "Dieses Konto kann den RootMind-Dienst nicht reparieren.",
+      repairing: "Wird repariert …",
+      settingUp: "Der Dienst wird eingerichtet …",
+      applying: "Änderung wird übernommen …",
+      codes: {
+        foreignService:
+          "Es gibt einen systemd-Benutzerdienst mit RootMinds Namen, den RootMind nicht eingerichtet hat. Entferne ihn zuerst.",
+        notElevated: "Die Änderung konnte für dieses Konto nicht vorgenommen werden.",
+        dataFolderRefused:
+          "~/.local/share/rootmind existiert, ist aber nicht geschützt: Der Ordner muss deinem Konto gehören und darf für niemanden sonst beschreibbar sein. Korrigiere oder entferne ihn und versuche es erneut.",
+        accountMismatch: "Starte RootMind mit deinem eigenen Konto, nicht als root.",
+        programFolderUnsafe:
+          "Der Programmordner von RootMind kann von anderen Konten geändert werden, daher wurde der Dienst nicht eingerichtet. Installiere RootMind aus dem .deb-, .rpm- oder AppImage-Paket.",
+        blocked: "Das System hat den RootMind-Dienst blockiert.",
+      },
+    },
+    settings: {
+      designHint: "System folgt der Einstellung des Desktops.",
+      languageHint: "System folgt der Sprache des Desktops.",
+    },
+    chat: {
+      openFolderTitle: "Ordner im Dateimanager öffnen",
+    },
   },
 } as const;

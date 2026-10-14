@@ -40,11 +40,16 @@ def can_bind(port: int, host: str = "127.0.0.1") -> bool:
 
     On Windows the test socket is exclusive (``SO_EXCLUSIVEADDRUSE``), like the
     service's own socket, so a port that another process has bound fails.
+    Elsewhere it uses ``SO_REUSEADDR`` like the service's socket: a port with
+    only closed connections waiting (TIME_WAIT, after a restart) is free, a
+    port another socket listens on is not.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         if sys.platform == "win32":
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
     except OSError:
         return False

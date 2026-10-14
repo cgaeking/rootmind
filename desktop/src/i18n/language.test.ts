@@ -92,3 +92,15 @@ describe("stored language", () => {
     expect(i18n.labels).toBe(de);
   });
 });
+
+describe("platform wording", () => {
+  it("switches the live labels to the Linux texts and back", () => {
+    useLanguageStore.getState().setPref("en");
+    useLanguageStore.getState().setPlatform("linux");
+    expect(i18n.labels.service.desc).toBe(en.linux.service.desc);
+    useLanguageStore.getState().setPref("de");
+    expect(i18n.labels.service.desc).toBe(de.linux.service.desc);
+    useLanguageStore.getState().setPlatform("windows");
+    expect(i18n.labels.service.desc).toBe(de.service.desc);
+  });
+});

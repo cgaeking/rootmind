@@ -11,8 +11,12 @@ Prerequisites:
 
 - Backend: [uv](https://docs.astral.sh/uv/) (installs Python 3.12 if needed).
 - Desktop: Node 24, pnpm 11 (the version is pinned in `package.json`), Rust
-  1.96 or newer, and on Windows the MSVC build tools and WebView2. The desktop
-  app is only built and tested on Windows.
+  1.96 or newer, and on Windows the MSVC build tools and WebView2. On Linux,
+  Tauri's prerequisites: on Debian and Ubuntu
+  `sudo apt install build-essential libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`
+  (other distributions: see Tauri's prerequisites for WebKitGTK 4.1). CI
+  builds and tests the desktop app on Windows and its Rust shell on
+  Ubuntu 22.04.
 
 Backend:
 
@@ -55,7 +59,10 @@ cargo test         # unit tests and the opener scope test
 ```
 
 CI runs the same commands (`.github/workflows/backend.yml` and
-`.github/workflows/desktop.yml`).
+`.github/workflows/desktop.yml`). The backend tests run on Windows and Linux;
+tests of Windows permissions, and of Linux file modes, are skipped on the
+other system, while the install logic of both platforms runs everywhere with
+fake service managers.
 
 ### Running the desktop app during development
 
@@ -79,14 +86,16 @@ The connection to the service, **Repair** and the MCP over HTTP switch only
 work in a release build installed by the installer (see
 [Build the installer yourself](README.md#build-the-installer-yourself)). Try
 them in a virtual machine or Windows Sandbox, not on a machine where you use
-RootMind.
+RootMind. On Linux the same goes for the release packages: a release build
+sets up the systemd user services of the account that starts it, so try it
+under a test account or in a virtual machine.
 
 ### Ports for local testing
 
 - Unit tests use FastAPI's `TestClient` or port 0; they never need a free
   port.
 - The smoke test of a backend build uses 18765 and 18766 by default, and the
-  service end-to-end test in CI 18080 and 18081. The installer smoke test
+  service end-to-end tests in CI (Windows and Linux) 18080 and 18081. The installer smoke test
   lets the installer choose the ports, as it does for users: 8000 and 3000
   when free, otherwise 18300–18399 and 18400–18499.
 - Do not point tests or a development build at a port where a RootMind
@@ -104,7 +113,22 @@ uv sync                                   # back to the development environment
 ```
 
 The smoke test works with Windows PowerShell 5.1 and PowerShell 7 and writes
-only below `-WorkDir`.
+only below `-WorkDir`. The same commands build the Linux backend on Linux
+(`pwsh -File packaging/smoke-test.ps1 ...` with PowerShell 7). Build it on the
+oldest glibc you want to support (CI and releases use Ubuntu 22.04); the spec
+replaces the symbolic links PyInstaller creates there with copies.
+
+Linux packages, with the Linux backend build in `backend/dist/`:
+
+```bash
+python scripts/prepare_backend.py           # copies and checks the build (rootmind-backend, no .exe)
+cd desktop
+pnpm tauri build --config src-tauri/tauri.release.conf.json
+# -> src-tauri/target/release/bundle/{deb,rpm,appimage}/
+```
+
+`tauri.linux.conf.json` is merged automatically on Linux and selects the three
+formats; building the AppImage downloads linuxdeploy from GitHub.
 
 Installing the Windows services, the approval prompts and the installer are
 tested in CI on GitHub's Windows runners, which run elevated. Both scripts
@@ -134,6 +158,15 @@ change the machine and need an elevated process:
 On your own machine, `rootmind service status` and an unelevated
 `rootmind service install` (which stops before it changes anything) are safe
 to run. For the rest, use a virtual machine or Windows Sandbox.
+
+On Linux, `backend/tests/e2e/service_e2e_linux.py` installs, checks, updates
+and removes the systemd user units of the account that runs it with a Linux
+backend build (refusals, file modes, tokens, indexing, restarts, MCP over
+HTTP off and on, uninstall). It needs a running user manager for the account
+(CI: `sudo loginctl enable-linger "$USER"` and `XDG_RUNTIME_DIR`), refuses to
+run as root, unless `CI=true` (or `--force`), and when
+`~/.local/share/rootmind` or a `rootmind-*` unit exists. A container with
+systemd as PID 1 and a lingering test account works too.
 
 ## Rules
 
@@ -236,8 +269,10 @@ rejected.
 
 A tag `vX.Y.Z` makes `.github/workflows/release.yml` build the backend and
 the installer, test both, render the winget manifests and publish a GitHub
-Release with `RootMind-Setup-x64.exe`, `rootmind.mcpb` (Claude Desktop),
-`rootmind-backend-windows-x64.zip`, `SHA256SUMS.txt` and attestations. The release notes are the version's
+Release with `RootMind-Setup-x64.exe`, the Linux packages
+`RootMind-amd64.deb`, `RootMind-x86_64.rpm` and `RootMind-x86_64.AppImage`,
+`rootmind.mcpb` (Claude Desktop), `rootmind-backend-windows-x64.zip`,
+`rootmind-backend-linux-x64.tar.gz`, `SHA256SUMS.txt` and attestations. The release notes are the version's
 section of `CHANGELOG.md` plus a fixed part about the downloads and how to
 verify them.
 
@@ -264,7 +299,8 @@ verify them.
    release → Run workflow). Every job except "Publish the release" must pass.
    The run's summary shows the release notes, the installer's size and its
    SHA-256; the artifacts are `rootmind-installer-windows-x64`,
-   `rootmind-backend-windows-x64`, `winget-manifests` and `rootmind-mcpb`.
+   `rootmind-backend-windows-x64`, `rootmind-backend-linux-x64`,
+   `rootmind-linux-packages`, `winget-manifests` and `rootmind-mcpb`.
 5. **Manual checks** in Windows Sandbox or a throwaway virtual machine, with
    the installer from the dry run:
    - a first install by double-click, including the SmartScreen warning and
@@ -313,7 +349,17 @@ verify them.
    - uninstalling from Windows Settings → Apps, interactively with and
      without **Delete the application data**, and with `/S`: the services are
      removed, and `%ProgramData%\RootMind` is deleted only when the box was
-     ticked.
+     ticked;
+   - on Linux desktops (a virtual machine or a test account; for example
+     Ubuntu 24.04 with GNOME and Fedora with KDE): the .deb, the .rpm and the
+     AppImage start, the first start sets up the user services without a
+     question and the app connects; Settings → **RootMind service** shows
+     them running, **Serve MCP over HTTP** switches without a prompt; after
+     installing a newer package the app updates the service on its own;
+     `systemctl --user stop rootmind-backend` leads to **Repair**; the
+     AppImage keeps the service running after it is closed and deleted;
+     `loginctl enable-linger` keeps the services running after logout; the
+     uninstall steps in the README leave no unit behind.
 6. **Tag** the merged release commit on `main` and push the tag:
 
    ```bash

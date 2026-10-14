@@ -1,15 +1,16 @@
 # RootMind desktop
 
-Tauri 2 app (React + TypeScript UI, Rust shell) for chatting with and searching your indexed documents. It does not start a backend of its own: it is a client of the RootMind Windows service, which the installer sets up, and talks to it over its REST API.
+Tauri 2 app (React + TypeScript UI, Rust shell) for Windows and Linux, for chatting with and searching your indexed documents. It does not start a backend of its own: it is a client of the RootMind service and talks to it over its REST API. On Windows the service is a Windows service that the installer sets up; on Linux it is two systemd user services of the account, which the app sets up on its first start and updates after an update of the app (`src/state/autoSetup.ts`).
 
 - **RootMind service** (default): the app reads the service's state and port from Windows, checks that the service's own process listens on that port, and only then reads the token from `%ProgramData%\RootMind\data\rest_token.txt`. Settings → **RootMind service** shows its state, address and version, offers **Repair** and **Update service**, and switches MCP over HTTP; each change needs administrator approval.
+- **On Linux** the app reads the units `rootmind-backend.service` and `rootmind-mcp-http.service` from `~/.config/systemd/user/` and their state and main PID from `systemctl --user show`, checks the listener in `/proc`, and reads the token from `~/.local/share/rootmind/data/rest_token.txt`. Set up, Repair, Update service and the MCP switch run `service install` as the account, without a prompt (`src-tauri/src/linux/`, `unitfile.rs`, `procnet.rs`). The texts say "background service" and systemd where Windows says Windows service (the `linux` sections of the label files).
 - **Custom backend**: Settings → **Advanced** connects to a backend at another address, with an optional token. **Use the RootMind service** there returns to the service.
 
 The Rust side also stores chat history as JSON files in the app data folder. [Deployment modes](../ARCHITECTURE.md#deployment-modes) describes how the app chooses a backend, and [Interfaces between the parts](../ARCHITECTURE.md#interfaces-between-the-parts) the commands between the UI and Rust.
 
 ## Prerequisites
 
-Node 24, pnpm 11, Rust 1.96 or newer (on Windows with the MSVC build tools) and WebView2, which ships with Windows 10/11.
+Node 24, pnpm 11, Rust 1.96 or newer (on Windows with the MSVC build tools) and WebView2, which ships with Windows 10/11. On Linux, WebKitGTK 4.1 and Tauri's other prerequisites (Debian and Ubuntu: `sudo apt install build-essential libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`).
 
 ## Develop
 
@@ -40,12 +41,12 @@ On every start, `decideBackend()` in `src/state/bootstrap.ts` decides:
 
 ## Checks
 
-These are the same checks that `.github/workflows/desktop.yml` runs:
+These are the same checks that `.github/workflows/desktop.yml` runs (on Windows; on Ubuntu 22.04 it runs `pnpm build`, `cargo clippy` and `cargo test` for the Linux build of the Rust shell):
 
 ```bash
 pnpm lint          # ESLint: JS/TS recommended rules and React hooks rules
 pnpm typecheck     # tsc for the app, vite.config.ts and vitest.config.ts
-pnpm test          # vitest with happy-dom: backend choice, store, client, backend dialog, connection check, stale-data guards, service section and messages, settings, labels, language, paths, folders, LLM key
+pnpm test          # vitest with happy-dom: backend choice, store, client, backend dialog, connection check, stale-data guards, service section and messages, the Linux set-up, settings, labels (with the Linux wording), language, paths, folders, LLM key
 pnpm build         # tsc + vite build; the Rust build embeds dist/
 
 cd src-tauri
@@ -69,9 +70,11 @@ Settings has these sections:
 
 The Folders screen marks a folder the service cannot read ("Not accessible to the RootMind service: …").
 
+On Linux the same section shows the user services: **Set up**, **Repair**, **Update service** and **Serve MCP over HTTP** run `service install` without a prompt; while the app sets the service up or updates it on its own, the section and the backend dialog say so, and a failure is shown there with **Details** (`service status --json` and the end of `~/.local/share/rootmind/logs/install.log`).
+
 ## Language
 
-The UI speaks English and German. Settings → Appearance → Language offers *System* (the default), *English* and *Deutsch*; *System* follows the Windows display language as the webview reports it (`navigator.language`), German for any German locale and English otherwise. The choice is stored per user in `localStorage` (`rlm.language`, absent for *System*) and applies at once, without a restart. All strings live in `src/i18n/labels.en.ts` and `src/i18n/labels.de.ts`, which must have identical keys; the type checker and `src/i18n/labels.test.ts` enforce it. `src/i18n/labels.ts` explains how a language change reaches every screen.
+The UI speaks English and German. Settings → Appearance → Language offers *System* (the default), *English* and *Deutsch*; *System* follows the display language as the webview reports it (`navigator.language`), German for any German locale and English otherwise. The choice is stored per user in `localStorage` (`rlm.language`, absent for *System*) and applies at once, without a restart. All strings live in `src/i18n/labels.en.ts` and `src/i18n/labels.de.ts`, which must have identical keys; the type checker and `src/i18n/labels.test.ts` enforce it. `src/i18n/labels.ts` explains how a language change reaches every screen.
 
 ## Installer
 
@@ -91,6 +94,8 @@ Without the overlay, `pnpm tauri build` produces an app without a backend, which
 - after copying, run `"$INSTDIR\backend\rootmind-backend.exe" service install --port auto --mcp-port auto --user-sid <installing account>` (as SYSTEM for an update: without `--user-sid`). If it is skipped or fails, the app stays installed and the installer exits with 0; the cause goes to the details list (and a message, when the installer is not silent and someone is signed in), and the uninstall entry records `RootMindServiceSetup` (`installed`, `skipped`, `failed`), `RootMindServiceSetupReason` and `RootMindServiceSetupCode`;
 - on uninstall, run `service uninstall` with the service's own copy under `%ProgramFiles%\RootMind Service\`, with `--purge` when **Delete the application data** is ticked. A silent uninstall (`/S`) removes the services but never deletes data; an uninstall that is part of an update (`/UPDATE`) keeps the services.
 
+**Linux packages.** On Linux the same command builds a .deb, an .rpm and an AppImage: `src-tauri/tauri.linux.conf.json` is merged automatically and selects them, and the `linux` section of `tauri.conf.json` adds `Recommends: systemd`; Tauri adds WebKitGTK and GTK as dependencies, the desktop entry and the icons. The backend lands in `/usr/lib/RootMind/backend/`. The packages set up no service: the app does that for each account on its first start. `scripts/prepare_backend.py` recognizes the Linux build (`rootmind-backend` without `.exe`).
+
 The full build order is in the [README](../README.md#build-the-installer-yourself). Releases are built by `.github/workflows/release.yml`, which also runs the installer smoke test `desktop/scripts/installer-smoke.ps1` on the elevated runner. Installers are not code-signed, so Windows SmartScreen shows a warning.
 
 ## Security notes
@@ -100,7 +105,7 @@ The app renders model output, which can carry prompt injection from indexed docu
 - **CSP** (`src-tauri/tauri.conf.json`): scripts and images only from the app itself (styles may also be inline); no plugins, `<base>` or form posts; network requests only to the Tauri IPC and to `localhost`/`127.0.0.1` (the backend). Remote images in answers are blocked, which closes the usual exfiltration channel. A backend on another host would need a CSP change. Tauri applies the CSP to production builds only; `pnpm tauri dev` loads the page from the Vite server without it.
 - **Markdown**: `react-markdown` without raw HTML. Links open in the system browser and only for `http`, `https` and `mailto`; the webview itself never navigates or opens a popup.
 - **Capabilities** (`src-tauri/capabilities/default.json`): no `core:default` set, only the APIs the UI calls (window theme, folder picker, open link, reveal in Explorer, open file). Opening files is limited to the document types the backend indexes, so the webview cannot launch executables, scripts or shortcuts. `tests/opener_scope.rs` checks this.
-- **Commands**: the UI can query and connect to the RootMind service and run a fixed set of service actions (set up, repair or update, MCP over HTTP on or off, details). Rust builds every program path and argument; the webview cannot choose them. Elevated commands go through the Windows approval prompt.
+- **Commands**: the UI can query and connect to the RootMind service and run a fixed set of service actions (set up, repair or update, MCP over HTTP on or off, details). Rust builds every program path and argument; the webview cannot choose them. Elevated commands go through the Windows approval prompt; on Linux they run as the account itself, without a prompt.
 - **Tokens**: the service's REST token is read only after the listener check, and its MCP token only when you copy it. A custom backend's token is kept in `localStorage`.
 
 See [SECURITY.md](../SECURITY.md) for the full threat model.

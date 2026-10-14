@@ -63,7 +63,7 @@ beforeEach(() => {
     token: "v",
     conn: "online",
     version: "1.3.0",
-    appMode: { version: "1.3.0", dev: false },
+    appMode: { version: "1.3.0", dev: false, platform: "windows" },
   });
   vi.mocked(backend.serviceInfo).mockResolvedValue(ours);
   vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: true, url: SERVICE, token: "v" });

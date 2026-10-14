@@ -1,4 +1,4 @@
-"""Windows background service for the RootMind backend.
+"""Background service for the RootMind backend (Windows services, systemd user units).
 
 ``rootmind-backend.exe service install | uninstall | status`` manages two
 Windows services, hosted by the same executable (``service run <role>``):
@@ -21,7 +21,16 @@ and the data lives in ``%ProgramData%\\RootMind``. Modules:
 - :mod:`.host`: the service host (``service run``);
 - :mod:`.imagepath`, :mod:`.ports`: the ImagePath contract and port choice;
 - :mod:`.scm`, :mod:`.layout`, :mod:`.system`: the Windows adapters (Service
-  Control Manager, folders and ACLs, process token).
+  Control Manager, folders and ACLs, process token);
+- :mod:`.common`: helpers both platforms share.
+
+On Linux the same commands manage two systemd **user** units of the account
+that runs them (``rootmind-backend.service`` and ``rootmind-mcp-http.service``
+under ``~/.config/systemd/user/``), without root: :mod:`.linux` (install,
+uninstall, status), :mod:`.systemd` (unit files and ``systemctl --user``),
+:mod:`.linux_layout` (the data folder ``~/.local/share/rootmind`` with its
+modes, and the program copy in its ``runtime/``) and :mod:`.procnet` (who
+listens on a port). The Windows modules are never imported there.
 """
 
 import re
@@ -60,13 +69,22 @@ DEFAULT_MCP_PORT = 3000
 API_FALLBACK_PORTS = range(18300, 18400)
 MCP_FALLBACK_PORTS = range(18400, 18500)
 
+# Linux: systemd user units, the data folder and the program copy.
+UNIT_BY_ROLE = {ROLE_BACKEND: "rootmind-backend.service", ROLE_MCP: "rootmind-mcp-http.service"}
+LINUX_EXE_NAME = "rootmind-backend"
+# $XDG_DATA_HOME/rootmind (default ~/.local/share/rootmind)
+LINUX_DATA_DIR_NAME = "rootmind"
+# <data>/runtime/<version>-<8 hex>/rootmind-backend
+RUNTIME_DIR_NAME = "runtime"
+
 RELEASES_URL = "https://github.com/cgaeking/rootmind/releases"
 RELEASE_ZIP_URL = RELEASES_URL + "/download/v{tag}/rootmind-backend-windows-x64.zip"
+RELEASE_LINUX_URL = RELEASES_URL + "/download/v{tag}/rootmind-backend-linux-x64.tar.gz"
 _RELEASE_VERSION = re.compile(r"(\d+\.\d+\.\d+)(?:(a|b|rc)(\d+))?")
 _PRERELEASE_LABELS = {"a": "alpha", "b": "beta", "rc": "rc"}
 
 
-def release_zip_url(version: str) -> str:
+def release_zip_url(version: str, template: str = RELEASE_ZIP_URL) -> str:
     """Download address of the release build for ``version`` (PEP 440 form).
 
     Release tags spell prereleases the npm way (``1.2.0rc1`` is tag
@@ -79,7 +97,12 @@ def release_zip_url(version: str) -> str:
     tag = match[1]
     if match[2]:
         tag += f"-{_PRERELEASE_LABELS[match[2]]}.{match[3]}"
-    return RELEASE_ZIP_URL.format(tag=tag)
+    return template.format(tag=tag)
+
+
+def release_linux_url(version: str) -> str:
+    """Download address of the Linux release build for ``version`` (see :func:`release_zip_url`)."""
+    return release_zip_url(version, RELEASE_LINUX_URL)
 
 
 # The app's uninstall entry (NSIS). Since 2.0 the app is installed per machine
@@ -96,7 +119,7 @@ class ExitCode(IntEnum):
 
     OK = 0
     UNEXPECTED = 1
-    USAGE = 2  # wrong usage, not Windows, or not the release build
+    USAGE = 2  # wrong usage, not Windows or Linux, or not the release build
     FOREIGN_SERVICE = 3  # a service with our name exists that we did not install
     PORT_BUSY = 4
     NOT_ELEVATED = 5
@@ -108,6 +131,9 @@ class ExitCode(IntEnum):
     # running rootmind-backend.exe, _internal included) can be changed by
     # accounts other than administrators.
     UNSAFE_PROGRAM_FOLDER = 10
+    # Linux: ``systemctl --user`` cannot reach the account's service manager
+    # (no systemd, or no user session, as under ``su`` or ``sudo``).
+    NO_USER_MANAGER = 11
 
 
 class ServiceCommandError(Exception):

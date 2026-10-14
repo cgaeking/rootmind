@@ -1,14 +1,16 @@
 """Put the packaged backend where the release build of the app picks it up.
 
 The release overlay ``desktop/src-tauri/tauri.release.conf.json`` maps
-``desktop/src-tauri/binaries/rootmind-backend/`` to ``$INSTDIR\\backend\\``.
-This script copies a PyInstaller onedir build (``rootmind-backend.exe`` and
-``_internal/``) there and checks that the copy is the build that was tested:
+``desktop/src-tauri/binaries/rootmind-backend/`` to the app's ``backend``
+folder (``$INSTDIR\\backend\\`` on Windows, ``/usr/lib/RootMind/backend/``
+in the Linux packages). This script copies a PyInstaller onedir build
+(``rootmind-backend.exe``, on Linux ``rootmind-backend``, and ``_internal/``)
+there and checks that the copy is the build that was tested:
 
 - the tree hash of the copy equals the source's, and ``--expect-tree-sha256``
   when given (the hash ``backend-exe.yml`` reports for its build);
 - the tree is not a placeholder: at least ``--min-size-mb`` megabytes;
-- ``rootmind-backend.exe --version`` runs and prints the version in
+- ``rootmind-backend[.exe] --version`` runs and prints the version in
   ``backend/pyproject.toml``.
 
 The tree hash is SHA-256 over the sorted lines ``<relative path>\\t<sha256 of
@@ -34,6 +36,7 @@ from pathlib import Path
 from check_versions import ROOT, VersionError, normalize_version
 
 EXE_NAME = "rootmind-backend.exe"
+LINUX_EXE_NAME = "rootmind-backend"
 DEFAULT_SOURCE = ROOT / "backend" / "dist" / "rootmind-backend"
 DEFAULT_DEST = ROOT / "desktop" / "src-tauri" / "binaries" / "rootmind-backend"
 # A real build is about 80 MB; anything far below that is a placeholder or a
@@ -73,12 +76,19 @@ def _is_link(path: Path) -> bool:
     return path.is_symlink() or getattr(os.path, "isjunction", lambda _p: False)(path)
 
 
+def exe_name(root: Path) -> str:
+    """The executable's name in the build ``root``: Windows' if present, else Linux'."""
+    if (root / EXE_NAME).is_file() or not (root / LINUX_EXE_NAME).is_file():
+        return EXE_NAME
+    return LINUX_EXE_NAME
+
+
 def check_tree(root: Path) -> tuple[int, int]:
     """Check that ``root`` is a onedir build without links; returns (files, bytes)."""
     if not root.is_dir() or _is_link(root):
         raise PrepareError(f"{root} is not a folder")
-    if not (root / EXE_NAME).is_file():
-        raise PrepareError(f"{root} has no {EXE_NAME}")
+    if not (root / exe_name(root)).is_file():
+        raise PrepareError(f"{root} has no {EXE_NAME} (Linux: {LINUX_EXE_NAME})")
     if not (root / "_internal").is_dir():
         raise PrepareError(f"{root} is not a onedir build (no _internal folder)")
     count = size = 0
@@ -132,8 +142,11 @@ def replace_destination(dest: Path) -> None:
         return
     if not dest.is_dir():
         raise PrepareError(f"{dest} exists and is not a folder")
-    if any(dest.iterdir()) and not (dest / EXE_NAME).is_file():
-        raise PrepareError(f"{dest} is not empty and holds no {EXE_NAME}; refusing to replace it")
+    if any(dest.iterdir()) and not (dest / exe_name(dest)).is_file():
+        raise PrepareError(
+            f"{dest} is not empty and holds no {EXE_NAME} (Linux: {LINUX_EXE_NAME}); refusing "
+            "to replace it"
+        )
     shutil.rmtree(dest)
 
 
@@ -164,13 +177,14 @@ def prepare(
             f"the copy at {dest} has tree hash {copied_hash}, the source {source_hash}"
         )
 
-    printed = exe_version(dest / EXE_NAME)
+    name = exe_name(dest)
+    printed = exe_version(dest / name)
     try:
         matches = normalize_version(printed) == version
     except VersionError:
         matches = False
     if not matches:
-        raise PrepareError(f"{EXE_NAME} --version printed {printed!r}, expected {version}")
+        raise PrepareError(f"{name} --version printed {printed!r}, expected {version}")
 
     print(f"Copied {count} files ({size / 1_000_000:.1f} MB) to {dest}")
     print(f"Tree SHA-256: {copied_hash}")

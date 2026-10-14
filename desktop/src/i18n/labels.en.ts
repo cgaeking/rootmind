@@ -71,7 +71,7 @@ export const labels = {
     problems: {
       unsupported: {
         title: "The RootMind service is not available",
-        text: "The RootMind service runs on Windows only. Connect to a RootMind backend at another address instead.",
+        text: "The RootMind service runs on Windows and Linux only. Connect to a RootMind backend at another address instead.",
       },
       notInstalled: {
         title: "The RootMind service is not set up yet",
@@ -123,6 +123,8 @@ export const labels = {
         "RootMind's program folder can be changed by accounts without administrator rights, so the service was not set up. Install RootMind with the official installer (it always uses Program Files).",
       blocked:
         "Windows security blocked the RootMind service. Smart App Control or antivirus software may block apps that are not signed.",
+      noUserManager:
+        "The systemd user manager of your account cannot be reached. Start RootMind from your desktop session (not through su or sudo) and try again.",
     },
     failed: (msg: string) => `The change failed: ${msg}`,
     details: "Details",
@@ -131,6 +133,8 @@ export const labels = {
     updateBanner: (service: string, app: string) =>
       `The RootMind service runs version ${service}; this app is version ${app}.`,
     updateService: "Update service",
+    autoSetup: "Setting up the RootMind service for your account …",
+    autoUpdate: "Updating the RootMind service to this app's version …",
     mcpToggle: "Serve MCP over HTTP (for Claude Desktop, n8n and other agents)",
     mcpUrlLabel: "MCP endpoint",
     copyToken: "Copy token",
@@ -322,5 +326,57 @@ export const labels = {
     errorPrefix: (msg: string) => `Error: ${msg}\n\nCheck your LLM API key in Settings if needed.`,
     openFileFailed: (msg: string) => `Could not open file: ${msg}`,
     openFolderFailed: (msg: string) => `Could not open folder: ${msg}`,
+  },
+  // Linux (systemd user services, no administrator prompt): these texts
+  // replace the ones above when the app runs on Linux (labels.ts). Every key
+  // here exists above.
+  linux: {
+    service: {
+      desc: "RootMind runs as a background service of your account (two systemd user services) that the app sets up on its first start. It keeps your index up to date while the app is closed and starts when you log in. It reads the folders your account can open.",
+      problems: {
+        notInstalled: {
+          title: "The RootMind service is not set up yet",
+          text: "RootMind keeps your index in a background service of your account (systemd user services). The app sets it up on its first start, which did not work. Set up tries again; Details in Settings › RootMind service shows why it failed.",
+        },
+        foreign: {
+          title: "Another service is in the way",
+          text: "A systemd user service named rootmind-backend or rootmind-mcp-http exists that RootMind did not set up. Remove it from ~/.config/systemd/user, run systemctl --user daemon-reload, then choose Check again.",
+        },
+        otherAccount: {
+          title: "The RootMind service cannot be used",
+          text: "This account cannot read the token of the RootMind service in ~/.local/share/rootmind. Check who owns that folder, or remove it and start RootMind again.",
+        },
+        notRunning: {
+          title: "The RootMind service is not running",
+          text: "The service is set up but stopped. Repair starts it again. If that does not help, see Details in Settings › RootMind service.",
+        },
+        noAnswer: {
+          title: "The RootMind service does not answer",
+          text: "The service runs but does not respond. Repair restarts it. If that does not help, see Details in Settings › RootMind service.",
+        },
+      },
+      repairNeedsAdmin: "This account cannot repair the RootMind service.",
+      repairing: "Repairing …",
+      settingUp: "Setting up the service …",
+      applying: "Applying the change …",
+      codes: {
+        foreignService:
+          "A systemd user service with RootMind's name exists that RootMind did not set up. Remove it first.",
+        notElevated: "The change could not be made for this account.",
+        dataFolderRefused:
+          "~/.local/share/rootmind exists but is not protected: it must belong to your account and be writable by nobody else. Fix or remove it, then try again.",
+        accountMismatch: "Run RootMind as your own account, not as root.",
+        programFolderUnsafe:
+          "RootMind's program folder can be changed by other accounts, so the service was not set up. Install RootMind from its .deb, .rpm or AppImage.",
+        blocked: "The system blocked the RootMind service.",
+      },
+    },
+    settings: {
+      designHint: "System follows the desktop setting.",
+      languageHint: "System follows the language of the desktop.",
+    },
+    chat: {
+      openFolderTitle: "Open folder in the file manager",
+    },
   },
 } as const;

@@ -3,9 +3,10 @@
     Smoke test of the packaged RootMind backend (the PyInstaller onedir folder).
 
 .DESCRIPTION
-    Runs the frozen rootmind-backend.exe the way MCP clients and the CLI do
-    (the Windows service runs the same code; backend/tests/e2e/service_e2e.ps1
-    tests it), and fails on the first problem:
+    Runs the frozen rootmind-backend.exe (on Linux rootmind-backend) the way
+    MCP clients and the CLI do (the background service runs the same code;
+    backend/tests/e2e/service_e2e.ps1 and service_e2e_linux.sh test it), and
+    fails on the first problem:
 
     - --version prints the package version;
     - api with a token: /health 200, /status 401 without and 200 with the
@@ -21,7 +22,8 @@
     - mcp-http: 401 without and 200 with the token, the five tools;
     - mcp over stdio: initialize and tools/list, with JSON-only stdout.
 
-    Works with Windows PowerShell 5.1 and PowerShell 7. Everything is written
+    Works with Windows PowerShell 5.1 and PowerShell 7 (also on Linux, for
+    the Linux build). Everything is written
     below -WorkDir; no API key or network access is needed. The time until
     the API is healthy goes to the GitHub step summary when there is one.
 
@@ -75,13 +77,15 @@ foreach ($port in @($ApiPort, $McpPort)) {
 if ($ApiPort -eq $McpPort) { Fail "-ApiPort and -McpPort must differ" }
 
 $ExeDir = (Resolve-Path -LiteralPath $ExeDir).Path
-$Exe = Join-Path $ExeDir "rootmind-backend.exe"
+# $IsLinux does not exist in Windows PowerShell 5.1 (and strict mode refuses it).
+$OnUnix = [Environment]::OSVersion.Platform -eq [PlatformID]::Unix
+$Exe = Join-Path $ExeDir $(if ($OnUnix) { "rootmind-backend" } else { "rootmind-backend.exe" })
 if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) { Fail "$Exe not found" }
 if (-not (Test-Path -LiteralPath (Join-Path $ExeDir "_internal") -PathType Container)) {
     Fail "$ExeDir is not a onedir build (no _internal folder)"
 }
 $BackendDir = Split-Path -Parent $PSScriptRoot
-$Corpus = Join-Path $BackendDir "evals\corpus"
+$Corpus = Join-Path (Join-Path $BackendDir "evals") "corpus"
 if (-not $ExpectedVersion) {
     $match = Select-String -LiteralPath (Join-Path $BackendDir "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"' |
         Select-Object -First 1

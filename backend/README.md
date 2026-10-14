@@ -69,11 +69,12 @@ HTTP instead (`RootMind-MCP-HTTP`, see
 Client configuration examples for a source or uv setup are in the
 [root README](../README.md#3-use-the-tools-from-an-mcp-client).
 
-## Windows background service
+## Background service (Windows and Linux)
 
 `service` manages the Windows services `RootMind-Backend` (REST API and indexer) and
 `RootMind-MCP-HTTP` (MCP over HTTP on 127.0.0.1, bearer token). `install` and `uninstall`
-need an elevated prompt; `status` does not.
+need an elevated prompt; `status` does not. On Linux the same commands manage two systemd
+user units of the account that runs them (see below).
 
 ```powershell
 rootmind-backend.exe service install [--port N|auto] [--mcp-http | --no-mcp-http] [--mcp-port N|auto]
@@ -102,6 +103,19 @@ its ports, MCP setting, tokens and data. The exit codes, the folders and the sec
 are described in
 [ARCHITECTURE.md](../ARCHITECTURE.md#background-service) and
 [SECURITY.md](../SECURITY.md#background-service).
+
+**Linux.** `rootmind-backend service install` (from `rootmind-backend-linux-x64.tar.gz`, or
+`/usr/lib/RootMind/backend/` of the packages) writes `rootmind-backend.service` and
+`rootmind-mcp-http.service` to `~/.config/systemd/user/`, copies the program into
+`~/.local/share/rootmind/runtime/<version>-<id>/` and keeps the data in
+`~/.local/share/rootmind` (folders 0700, tokens and `config.yaml` 0600). It runs as the
+account, never as root (exit 8), and needs the account's systemd user manager (exit 11
+without one, for example under `su` or `sudo`). `--user-sid` does not apply. `uninstall`
+removes the units and the program copy and keeps the data unless `--purge`.
+`loginctl enable-linger` keeps the units running without a login. The desktop app runs
+`install` on its own on its first start. Details:
+[ARCHITECTURE.md](../ARCHITECTURE.md#background-service) and
+[SECURITY.md](../SECURITY.md#background-service-on-linux).
 
 ## Development
 

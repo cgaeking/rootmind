@@ -4,6 +4,23 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-14
+
+### Added
+
+- **RootMind for Linux** (#21). Each release ships `RootMind-amd64.deb` (Ubuntu, Debian), `RootMind-x86_64.rpm` (Fedora, openSUSE Tumbleweed) and `RootMind-x86_64.AppImage` (other distributions), built with Tauri on Ubuntu 22.04 (glibc 2.35 or later, x86-64). The app, its window, chat, search, folders, settings, remote access and MCP over HTTP work as on Windows; the texts name systemd user services where Windows names a Windows service.
+- **The background service on Linux runs as two systemd user services of your account**, `rootmind-backend.service` (REST API and indexing) and `rootmind-mcp-http.service` (MCP over HTTP, on by default), in `~/.config/systemd/user/`. No root, no system-wide daemon and no administrator prompt: the app sets them up on its first start and updates them when the app is newer than the service (after a package update), with **Set up** and **Repair** in Settings › RootMind service as the fallback and the error shown when that fails. The services start when you log in; `loginctl enable-linger` keeps them running without a login (for example for n8n).
+- `rootmind-backend service install | uninstall | status [--json]` on Linux, with the same options (except `--user-sid`), the same `status --json` shape (plus `unit_dir` and `data_dir`) and the same exit codes where they apply; 11 means that the account's systemd user manager cannot be reached (for example under `su` or `sudo`), and 8 that it runs as root. The data folder is `$XDG_DATA_HOME/rootmind` (default `~/.local/share/rootmind`) with the same layout as on Windows: folders 0700 and token, authtoken and config files 0600, created with those modes; an existing folder is used only when it belongs to the account and nobody else can change it (else exit 6), and the service checks the folder and its secret files again when it starts. `service install` copies the program into `runtime/<version>-<id>/` of the data folder (an AppImage runs from a temporary mount), points the units there and deletes older copies once the new one runs; it refuses to copy from a folder another account can change (exit 10). It writes `service.json` (where the copy is; no secret) for the Claude Desktop bundle. `uninstall` removes the units and the program copies and keeps the data unless `--purge`.
+- The service reports ready to systemd once it listens (`Type=notify`). A config, token or folder error ends it with exit code 2, which systemd does not restart; any other failure is restarted after 5 seconds. Like on Windows, `service install` and the app send a token only after checking that the unit's own process listens on the port (Linux: `/proc/net/tcp` and the process's sockets).
+- `rootmind-backend-linux-x64.tar.gz`: the Linux backend on its own, for the command line and servers.
+- The Claude Desktop bundle (`rootmind.mcpb`) also runs on Linux: it asks the program copy named in `~/.local/share/rootmind/service.json` (else `/usr/lib/RootMind/backend/rootmind-backend`) for `service status --json`, looks it up again for every connection, and words its hints for Linux.
+- CI: the Linux backend build with its smoke test (PowerShell 7) and an end-to-end test that installs, checks, updates and removes the systemd user units on GitHub's Ubuntu runner (`backend-exe.yml`); a Linux build and test of the desktop app's Rust shell (`desktop.yml`); the Linux packages in the release, checked by installing the .deb and running both packaged backends, with checksums and attestations (`release.yml`).
+
+### Changed
+
+- The `service` commands say "runs on Windows and Linux only" elsewhere (exit code 2). The Windows service, its installer and their behavior are unchanged.
+- Release notes list the Linux downloads.
+
 ## [2.2.0] - 2026-10-14
 
 ### Added
