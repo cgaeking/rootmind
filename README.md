@@ -54,12 +54,25 @@ downloads for Windows (x64):
   [Use RootMind in Claude Desktop](#use-rootmind-in-claude-desktop)).
 
 Installing needs an administrator account. The service belongs to the account
-that installs RootMind, so the installer runs only as the account signed in to
-Windows: if an administrator approves the prompt while a standard account is
-signed in, the installer stops without changing anything. The install folder
-is always `%ProgramFiles%\RootMind`, a folder that only administrators can
-change; the installer refuses another one (for example with `/D=`, exit code
-10).
+that uses RootMind, so the installer sets it up only when it runs as the
+account signed in to Windows. The install folder is always
+`%ProgramFiles%\RootMind`, a folder that only administrators can change; the
+installer refuses another one (for example with `/D=`, exit code 10).
+
+**Silent and managed installs.** winget, Intune, Configuration Manager and
+similar tools often run the installer silently (`/S`) as SYSTEM. Then, and
+when an administrator approves the prompt while another account is signed in,
+the installer installs the app but not the service, and exits with 0. The
+service is set up when the account that uses RootMind first opens it: RootMind
+says "The RootMind service is not set up yet", and **Set up** sets it up for
+that account with one administrator approval. A standard account cannot set it
+up; it needs an administrator account that uses RootMind itself. If the
+installer could not set the service up for another reason, it also exits with
+0 and RootMind shows the problem and **Repair**. The outcome is recorded in
+the uninstall entry `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\RootMind`
+(`RootMindServiceSetup`: `installed`, `skipped` or `failed`, with
+`RootMindServiceSetupReason` and, for a failure, `RootMindServiceSetupCode`).
+Updates run as SYSTEM update an existing service in place.
 
 The installer is not code-signed yet. Windows SmartScreen may show "Windows
 protected your PC": choose **More info**, then **Run anyway**. If Smart App
@@ -121,8 +134,9 @@ the data later, remove `%ProgramData%\RootMind` from an elevated prompt.
 RootMind's backend runs as the Windows service `RootMind-Backend`. It keeps
 the index up to date while the app is closed and starts with Windows; the app
 is a client of it. Settings → **RootMind service** shows its state, address
-and version, and offers **Repair** when it is stopped or does not answer
-(one administrator approval). When the service runs an older version than
+and version, offers **Set up** when the service is not set up yet (after a
+silent or managed install) and **Repair** when it is stopped or does not
+answer (one administrator approval each). When the service runs an older version than
 the app, **Update service** brings it to the app's version. Both run the
 backend installed with the app in `%ProgramFiles%\RootMind\backend`, which
 only administrators can change.
@@ -678,7 +692,7 @@ secrets. Only the release job can write to the repository:
 | [`backend.yml`](.github/workflows/backend.yml) | ruff check and format check; the version check across backend, desktop and the Claude Desktop bundle; the tests of the release scripts on Ubuntu and Windows; pytest with coverage on Ubuntu (Python 3.12 and 3.14) and Windows (Python 3.12); the dry retrieval regression |
 | [`backend-exe.yml`](.github/workflows/backend-exe.yml) | The PyInstaller onedir build on Windows, a smoke test of the executable (REST, MCP over HTTP and stdio, indexing of every file type) and its tree hash; then an end-to-end test of the Windows service on the elevated runner: install, permissions, tokens, read confinement, update and uninstall. On pull requests the service test runs only when service-related code changed |
 | [`desktop.yml`](.github/workflows/desktop.yml) | ESLint, TypeScript typecheck, vitest, Vite build, `cargo fmt`, `cargo clippy`, `cargo check`, `cargo test` on Windows |
-| [`release.yml`](.github/workflows/release.yml) | For a version tag `v*`: the backend through `backend-exe.yml`; the per-machine installer with that backend, a check that it updates an installed version in place without a reinstall page, and a smoke test on the elevated runner that installs, updates, reinstalls and uninstalls RootMind with its Windows services; the winget manifests validated against their schemas; `rootmind.mcpb` for Claude Desktop, tested, validated and packed; then a GitHub Release with the installer, the bundle, the backend zip, `SHA256SUMS.txt` and attestations. Manual runs and pull requests that change the packaging are dry runs that publish nothing |
+| [`release.yml`](.github/workflows/release.yml) | For a version tag `v*`: the backend through `backend-exe.yml`; the per-machine installer with that backend, a check that it updates an installed version in place without a reinstall page, and a smoke test on the elevated runner that installs, updates, reinstalls and uninstalls RootMind with its Windows services, and installs it silently as SYSTEM (app only), sets the service up as the app does and updates it as SYSTEM; the winget manifests validated against their schemas; `rootmind.mcpb` for Claude Desktop, tested, validated and packed; then a GitHub Release with the installer, the bundle, the backend zip, `SHA256SUMS.txt` and attestations. Manual runs and pull requests that change the packaging are dry runs that publish nothing |
 | [`mcpb.yml`](.github/workflows/mcpb.yml) | The Claude Desktop bundle: the bridge's `node:test` tests on Ubuntu and Windows, then the manifest validated and the bundle packed with the mcpb CLI |
 | [`secrets.yml`](.github/workflows/secrets.yml) | detect-secrets over all tracked files, against the audited baseline `.secrets.baseline` |
 

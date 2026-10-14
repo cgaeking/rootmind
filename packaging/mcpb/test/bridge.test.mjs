@@ -432,7 +432,7 @@ describe("failures answer requests with what to do", () => {
     const machine = makeMachine();
     machine.setStatus({ installed: false, ours: false, state: null }, { installed: false, state: null, port: null });
     const { response, request } = await firstAnswer({ statusCommand: machine.statusCommand });
-    assertFriendlyError(response, request.id, "service_missing", "Repair", RELEASES_URL);
+    assertFriendlyError(response, request.id, "service_missing", "not set up yet", "Set up", RELEASES_URL);
   });
 
   test("MCP over HTTP is turned off", async () => {

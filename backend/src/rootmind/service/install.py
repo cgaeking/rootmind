@@ -9,6 +9,8 @@ Install (and update, when our services already exist):
 
 1. Preconditions: Windows and the release build (2), elevated (5), the
    account is the approving one (8), its access check can be built (9).
+   Run as LocalSystem (a deployment tool), it only updates our existing
+   backend service for the account it is registered for (else 8).
    When the program will be copied (step 6), the folder it is copied from
    must be one that only administrators can change (10).
 2. A service with our name that we did not install: exit 3, untouched. Our
@@ -306,11 +308,41 @@ def _wait_deleted(env, manager, name: str, report: Report) -> None:
 class _Plan:
     update: bool
     user_sid: str
+    approver_sid: str  # the account this command runs as (LocalSystem for an update only)
     api_port: int
     mcp_enabled: bool
     mcp_port: int | None
     current: dict[str, scm.ServiceStatus | None]
     images: dict[str, ImagePath]
+
+
+def _system_update_account(env, options: InstallOptions, manager) -> str:
+    """The account of the service that LocalSystem may update, else exit 8.
+
+    Deployment tools (Intune, Configuration Manager, a package manager's test
+    machine) run installers as LocalSystem. No account approved such a run, so
+    it never sets a service up for anyone; it only updates our existing backend
+    service for the account that service is registered for. ``--user-sid`` may
+    name that account, no other.
+    """
+    status = manager.query(BACKEND_SERVICE)
+    registered = _ours(status, env.program_files())
+    if status is not None and registered is None:
+        raise _foreign(BACKEND_SERVICE)
+    if registered is None or registered.user_sid is None:
+        raise ServiceCommandError(
+            ExitCode.ACCOUNT_MISMATCH,
+            "Run as LocalSystem, this command only updates an existing RootMind service. Set "
+            "the service up from the Windows account that uses RootMind (it must be an "
+            "administrator): open RootMind and choose Set up.",
+        )
+    if options.user_sid is not None and not _same_sid(options.user_sid, registered.user_sid):
+        raise ServiceCommandError(
+            ExitCode.ACCOUNT_MISMATCH,
+            f"Run as LocalSystem, this command only updates the RootMind service for its "
+            f"account ({registered.user_sid}), not for {options.user_sid}.",
+        )
+    return registered.user_sid
 
 
 def _plan(env, options: InstallOptions, manager, report: Report) -> _Plan:
@@ -319,7 +351,9 @@ def _plan(env, options: InstallOptions, manager, report: Report) -> _Plan:
     user_sid = options.user_sid or me
     if not imagepath.is_sid(user_sid):
         raise ServiceCommandError(ExitCode.USAGE, f"--user-sid {user_sid!r} is not a SID")
-    if not _same_sid(user_sid, me):
+    if _same_sid(me, layout.SYSTEM):
+        user_sid = _system_update_account(env, options, manager)
+    elif not _same_sid(user_sid, me):
         raise ServiceCommandError(
             ExitCode.ACCOUNT_MISMATCH,
             f"The account that approved this command ({me}) is not the account {user_sid}. "
@@ -398,6 +432,7 @@ def _plan(env, options: InstallOptions, manager, report: Report) -> _Plan:
     return _Plan(
         update=bool(images),
         user_sid=user_sid,
+        approver_sid=me,
         api_port=api_port,
         mcp_enabled=mcp_enabled,
         mcp_port=mcp_port,
@@ -419,7 +454,7 @@ def _check_source(env, plan: _Plan) -> None:
     if registered is not None and env.same_path(env.executable, registered):
         return
     folder = ntpath.dirname(env.executable)
-    problems = env.program_source_problems(folder, plan.user_sid)
+    problems = env.program_source_problems(folder, plan.approver_sid)
     if problems:
         detail = "".join(f"\n  {p}" for p in problems[:20])
         raise ServiceCommandError(

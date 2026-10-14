@@ -20,6 +20,7 @@ import {
   isOlderVersion,
   n8nSnippet,
   problemFromInfo,
+  repairLabels,
 } from "../state/service";
 import type { ServiceProblem } from "../state/service";
 import { openExternal } from "../utils/openExternal";
@@ -53,8 +54,9 @@ function Labeled({ label, hint, children }: { label: string; hint?: string; chil
 
 /**
  * Settings › "RootMind service": the service the installer set up, read-only
- * (state, address, version), with Repair when it does not work, and MCP over
- * HTTP (on by default; switching it needs administrator approval).
+ * (state, address, version), with Set up when it was never set up, Repair
+ * when it does not work, and MCP over HTTP (on by default; switching it needs
+ * administrator approval).
  */
 export function ServiceSection() {
   const kind = useStore((s) => s.kind);
@@ -82,6 +84,8 @@ export function ServiceSection() {
   else if (kind === "service" && conn === "offline") problem = checkedProblem ?? "noAnswer";
 
   const repairable = !!problem && canRepair(problem, info);
+  // "Set up" for a service that was never set up, else "Repair".
+  const repairText = repairLabels(problem ?? "noAnswer");
   const needsAdmin =
     !!problem && !repairable && !!info && !info.canElevate && canRepair(problem, { ...info, canElevate: true });
 
@@ -158,7 +162,7 @@ export function ServiceSection() {
   const mcpUrl = showMcp && info.mcp.installed ? info.mcp.url : null;
 
   let statusText: string | null = null;
-  if (busy === "repair") statusText = labels.service.repairing;
+  if (busy === "repair") statusText = labels.service[repairText.busy];
   else if (busy === "mcp") statusText = labels.service.applying;
   else if (custom) statusText = labels.service.customInUse;
   else if (kind === "service" && !connected && !problem) statusText = labels.service.connecting;
@@ -195,7 +199,7 @@ export function ServiceSection() {
           <Row>
             {repairable && (
               <Button variant="primary" onClick={() => void run("repair", serviceUpdate)} disabled={!!busy}>
-                {labels.service.repair}
+                {labels.service[repairText.action]}
               </Button>
             )}
             <Button onClick={() => void checkAgain()} disabled={!!busy}>

@@ -57,12 +57,28 @@ diese Downloads für Windows (x64):
   [RootMind in Claude Desktop nutzen](#rootmind-in-claude-desktop-nutzen)).
 
 Zur Installation brauchst du ein Administratorkonto. Der Dienst gehört dem
-Konto, das RootMind installiert, deshalb läuft der Installer nur als das bei
-Windows angemeldete Konto: Bestätigt ein Administrator die Abfrage, während
-ein Standardkonto angemeldet ist, bricht der Installer ab, ohne etwas zu
-ändern. Der Installationsordner ist immer `%ProgramFiles%\RootMind`, ein
-Ordner, den nur Administratoren ändern können; einen anderen (etwa mit `/D=`)
-lehnt der Installer mit Exit-Code 10 ab.
+Konto, das RootMind nutzt, deshalb richtet der Installer ihn nur ein, wenn er
+als das bei Windows angemeldete Konto läuft. Der Installationsordner ist immer
+`%ProgramFiles%\RootMind`, ein Ordner, den nur Administratoren ändern können;
+einen anderen (etwa mit `/D=`) lehnt der Installer mit Exit-Code 10 ab.
+
+**Stille und verwaltete Installationen.** winget, Intune, Configuration
+Manager und ähnliche Werkzeuge führen den Installer oft still (`/S`) als
+SYSTEM aus. Dann, und wenn ein Administrator die Abfrage bestätigt, während
+ein anderes Konto angemeldet ist, installiert der Installer die App, aber
+nicht den Dienst, und endet mit 0. Der Dienst wird eingerichtet, wenn das
+Konto, das RootMind nutzt, die App zum ersten Mal öffnet: RootMind meldet „Der
+RootMind-Dienst ist noch nicht eingerichtet“, und **Einrichten** richtet ihn
+mit einer Bestätigung als Administrator für dieses Konto ein. Ein
+Standardkonto kann ihn nicht einrichten; dafür braucht es ein
+Administratorkonto, das RootMind selbst nutzt. Konnte der Installer den
+Dienst aus einem anderen Grund nicht einrichten, endet er ebenfalls mit 0, und
+RootMind zeigt das Problem und **Reparieren**. Das Ergebnis steht im
+Deinstallationseintrag `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\RootMind`
+(`RootMindServiceSetup`: `installed`, `skipped` oder `failed`, dazu
+`RootMindServiceSetupReason` und bei einem Fehler `RootMindServiceSetupCode`).
+Updates, die als SYSTEM laufen, aktualisieren einen vorhandenen Dienst an Ort
+und Stelle.
 
 Der Installer ist noch nicht codesigniert. Windows SmartScreen zeigt eventuell
 „Der Computer wurde durch Windows geschützt“: Wähle **Weitere Informationen**
@@ -134,9 +150,10 @@ ebenfalls, löscht aber nie Daten. Um die Daten später zu löschen, entferne
 Das Backend von RootMind läuft als Windows-Dienst `RootMind-Backend`. Er hält
 den Index aktuell, während die App geschlossen ist, und startet mit Windows;
 die App ist ein Client dieses Dienstes. Einstellungen → **RootMind-Dienst**
-zeigt seinen Zustand, seine Adresse und Version und bietet **Reparieren** an,
-wenn er gestoppt ist oder nicht antwortet (eine Bestätigung als
-Administrator). Läuft der Dienst in einer älteren Version als die App,
+zeigt seinen Zustand, seine Adresse und Version, bietet **Einrichten** an,
+wenn der Dienst noch nicht eingerichtet ist (nach einer stillen oder
+verwalteten Installation), und **Reparieren**, wenn er gestoppt ist oder nicht
+antwortet (je eine Bestätigung als Administrator). Läuft der Dienst in einer älteren Version als die App,
 bringt **Dienst aktualisieren** ihn auf die Version der App. Beides startet
 das mit der App installierte Backend in `%ProgramFiles%\RootMind\backend`,
 das nur Administratoren ändern können.
@@ -726,7 +743,7 @@ Secrets. Nur der Release-Job darf in das Repository schreiben:
 | [`backend.yml`](.github/workflows/backend.yml) | ruff check und Format-Prüfung; die Versionsprüfung über Backend, Desktop und das Bundle für Claude Desktop; die Tests der Release-Skripte unter Ubuntu und Windows; pytest mit Coverage unter Ubuntu (Python 3.12 und 3.14) und Windows (Python 3.12); den Such-Regressionstest im Dry-Modus |
 | [`backend-exe.yml`](.github/workflows/backend-exe.yml) | Den PyInstaller-onedir-Build unter Windows, einen Smoke-Test der Programmdatei (REST, MCP über HTTP und stdio, Indizierung jedes Dateityps) und ihren Tree-Hash; danach einen End-to-End-Test des Windows-Dienstes auf dem Runner mit Administratorrechten: Installation, Berechtigungen, Tokens, Lese-Beschränkung, Update und Deinstallation. Bei Pull Requests läuft der Dienst-Test nur, wenn sich dienstbezogener Code geändert hat |
 | [`desktop.yml`](.github/workflows/desktop.yml) | ESLint, TypeScript-Typprüfung, vitest, Vite-Build, `cargo fmt`, `cargo clippy`, `cargo check`, `cargo test` unter Windows |
-| [`release.yml`](.github/workflows/release.yml) | Für einen Versions-Tag `v*`: das Backend über `backend-exe.yml`; den Installer für alle Benutzer mit diesem Backend, eine Prüfung, dass er eine installierte Version ohne Neuinstallations-Seite an Ort und Stelle aktualisiert, und einen Smoke-Test auf dem Runner mit Administratorrechten, der RootMind mit seinen Windows-Diensten installiert, aktualisiert, neu installiert und deinstalliert; die winget-Manifeste, gegen ihre Schemas geprüft; `rootmind.mcpb` für Claude Desktop, getestet, geprüft und gepackt; dann ein GitHub-Release mit Installer, Bundle, Backend-Zip, `SHA256SUMS.txt` und Attestierungen. Manuelle Läufe und Pull Requests, die das Packaging ändern, sind Probeläufe, die nichts veröffentlichen |
+| [`release.yml`](.github/workflows/release.yml) | Für einen Versions-Tag `v*`: das Backend über `backend-exe.yml`; den Installer für alle Benutzer mit diesem Backend, eine Prüfung, dass er eine installierte Version ohne Neuinstallations-Seite an Ort und Stelle aktualisiert, und einen Smoke-Test auf dem Runner mit Administratorrechten, der RootMind mit seinen Windows-Diensten installiert, aktualisiert, neu installiert und deinstalliert und es still als SYSTEM installiert (nur die App), den Dienst wie die App einrichtet und ihn als SYSTEM aktualisiert; die winget-Manifeste, gegen ihre Schemas geprüft; `rootmind.mcpb` für Claude Desktop, getestet, geprüft und gepackt; dann ein GitHub-Release mit Installer, Bundle, Backend-Zip, `SHA256SUMS.txt` und Attestierungen. Manuelle Läufe und Pull Requests, die das Packaging ändern, sind Probeläufe, die nichts veröffentlichen |
 | [`mcpb.yml`](.github/workflows/mcpb.yml) | Das Bundle für Claude Desktop: die `node:test`-Tests der Brücke unter Ubuntu und Windows, dann das Manifest mit der mcpb-CLI geprüft und das Bundle gepackt |
 | [`secrets.yml`](.github/workflows/secrets.yml) | detect-secrets über alle versionierten Dateien, gegen die geprüfte Baseline `.secrets.baseline` |
 

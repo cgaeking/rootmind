@@ -74,8 +74,8 @@ export const labels = {
         text: "The RootMind service runs on Windows only. Connect to a RootMind backend at another address instead.",
       },
       notInstalled: {
-        title: "The RootMind service is not installed",
-        text: "RootMind needs its Windows service, which the installer sets up. Repair sets it up again; Windows asks for administrator approval. You can also run the RootMind installer again.",
+        title: "The RootMind service is not set up yet",
+        text: "RootMind keeps your index in a Windows service that works for the Windows account using RootMind. It was not set up during the installation, for example because a deployment tool or another account installed RootMind. Set up installs it for this account; Windows asks for administrator approval.",
       },
       foreign: {
         title: "Another service is in the way",
@@ -102,6 +102,8 @@ export const labels = {
       "Repairing needs an administrator account. Ask an administrator to repair RootMind or to run the installer again.",
     repair: "Repair",
     repairing: "Repairing … approve the administrator prompt.",
+    setUp: "Set up",
+    settingUp: "Setting up the service … approve the administrator prompt.",
     applying: "Applying the change … approve the administrator prompt.",
     codes: {
       cancelled: "Nothing was changed.",

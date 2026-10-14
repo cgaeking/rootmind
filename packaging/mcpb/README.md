@@ -43,7 +43,7 @@ token. The bridge connects the two:
 | `not_installed` | No `rootmind-backend.exe` under `%ProgramFiles%\RootMind\backend` | install RootMind from the latest release |
 | `too_old` | The status has no `mcp_http` | install the latest release |
 | `status_failed` | The status command fails or prints no JSON | open Settings → RootMind service or reinstall |
-| `service_missing` | No RootMind service | choose Repair or reinstall |
+| `service_missing` | No RootMind service (not set up yet) | choose Set up in RootMind, or reinstall |
 | `mcp_off` | MCP over HTTP is off | turn on **Serve MCP over HTTP** |
 | `mcp_not_ours` | A `RootMind-MCP-HTTP` service RootMind did not install | remove it and reinstall |
 | `mcp_stopped` | The MCP service is stopped | switch **Serve MCP over HTTP** off and on, or restart Windows |

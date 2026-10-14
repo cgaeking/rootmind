@@ -118,15 +118,18 @@ change the machine and need an elevated process:
   folder exists.
 - `desktop/scripts/installer-smoke.ps1` installs the per-machine installer
   silently, checks the services it sets up, updates and reinstalls over it
-  and uninstalls it. It refuses unless `CI=true` or `-Force` and an elevated
+  and uninstalls it. Then it installs it silently as SYSTEM through a one-off
+  scheduled task (the app without a service, the skipped service step
+  recorded in the uninstall entry), sets the service up for the runner
+  account with `service install` as the app's Set up does, updates it as
+  SYSTEM and uninstalls again. It refuses unless `CI=true` or `-Force` and an elevated
   process, and whenever RootMind is installed (per machine, or 1.x for the
   current account), a RootMind service exists, or one of these folders
   exists: `%ProgramFiles%\RootMind`, `%ProgramFiles%\RootMind Service`,
   `%ProgramData%\RootMind`, or the app data folder
   `%LOCALAPPDATA%\<identifier>` named by `-Identifier`, which release.yml
-  takes from `tauri.conf.json`. It does not cover the refusal of an installer
-  approved by another account than the signed-in one (the runner has a
-  single account).
+  takes from `tauri.conf.json`. It does not cover an installer approved by
+  another account than the signed-in one (the runner has a single account).
 
 On your own machine, `rootmind service status` and an unelevated
 `rootmind service install` (which stops before it changes anything) are safe
@@ -269,7 +272,15 @@ verify them.
      connects to the service and Settings → **RootMind service** shows it
      running;
    - a standard account signed in and an administrator approving the prompt:
-     the installer stops with a message and changes nothing;
+     the installer installs the app, says that the service will be set up
+     from the app, exits with 0, and the uninstall entry records
+     `RootMindServiceSetup = skipped` with the reason; the standard account's
+     app then shows "The RootMind service is not set up yet" with the note
+     that an administrator account is needed, and no **Set up**;
+   - a silent install as SYSTEM (`psexec -s` or a scheduled task) while an
+     administrator account is signed in: exit code 0, no message, no service;
+     that account opens RootMind, sees "The RootMind service is not set up
+     yet", chooses **Set up**, approves the prompt, and the app connects;
    - an upgrade over RootMind 1.x installed for the same account, once with
      and once without the 1.x background service: the 1.x installation is
      gone, chats stay, and a 1.x service keeps its folders and index;
