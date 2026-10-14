@@ -64,3 +64,12 @@ indexer:
 api:
   host: 127.0.0.1
   port: 8000
+
+# Remote access: a public HTTPS address for MCP over HTTP through ngrok, for
+# assistants that run in the cloud. Only the RootMind service runs the tunnel
+# (in its MCP over HTTP service); set it in the app under Settings → RootMind
+# service. The ngrok authtoken is stored in data/ngrok_authtoken.txt, never in
+# this file. Anyone with the MCP token can then read every indexed document.
+remote_access:
+  enabled: false
+  domain: null        # a reserved ngrok domain such as name.ngrok-free.app

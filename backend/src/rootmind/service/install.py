@@ -26,7 +26,8 @@ Install (and update, when our services already exist):
 7. Config: a default config when there is none; the database is moved into
    ``data\\db`` when it lies elsewhere.
 8. Tokens: ``data\\rest_token.txt``; with MCP ``data\\api_token.txt``
-   (``--mcp-token-from``, or kept, or created).
+   (``--mcp-token-from``, or kept, or created) and the remote-access status
+   file. Without MCP, remote access is turned off in the config.
 9. Register the services; ``--no-mcp-http`` removes the MCP service.
 10. Start them and check health and authentication (failure: 7). A token is
     sent only once the service's own process owns the listening socket.
@@ -598,6 +599,37 @@ def _start_and_check(env, manager, plan: _Plan, root: Path, tokens: dict[str, st
     )
 
 
+def _ensure_status_file(path: Path) -> None:
+    """Create the remote-access status file (``layout.INITIAL_STATUS``) when it is missing."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
+    except FileExistsError:
+        return
+    with os.fdopen(fd, "wb") as f:
+        f.write(layout.INITIAL_STATUS)
+
+
+def _turn_remote_access_off(config_file: Path, report: Report) -> None:
+    """Without MCP over HTTP there is no tunnel: turn remote access off in the config.
+
+    Otherwise turning MCP over HTTP on again later would open the public
+    address again without asking. The authtoken is kept.
+    """
+    try:
+        data = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return  # the service reports an unreadable config
+    section = data.get("remote_access") if isinstance(data, dict) else None
+    if not isinstance(section, dict) or section.get("enabled") is not True:
+        return
+    section["enabled"] = False
+    _write_atomic(
+        config_file,
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False),
+    )
+    report.info("Remote access was turned off with MCP over HTTP.")
+
+
 def _database_in_service_folder(config_file: Path, root: Path) -> bool:
     """Whether the config's ``database.path`` lies in ``<root>\\data\\db``.
 
@@ -658,7 +690,12 @@ def _prepare_files(
             tokens["mcp"] = mcp_token
         else:
             tokens["mcp"] = _ensure_token(mcp_token_file)
-    # The token files exist now; give them their entries (M may read api_token.txt).
+        # The MCP account may write this file, but cannot create it.
+        _ensure_status_file(root / "data" / "remote_access.json")
+    else:
+        _turn_remote_access_off(config_file, report)
+    # The files exist now; give them their entries (M may read api_token.txt
+    # and the ngrok authtoken, and write remote_access.json).
     env.normalize_data(root, plan.user_sid, plan.mcp_enabled)
     return exe, new_folder, tokens
 
@@ -818,6 +855,9 @@ def _uninstall(env, purge: bool, report: Report) -> None:
     mcp_token = root / "data" / "api_token.txt"
     if not purge and mcp_token.exists():
         report.info(f"The MCP token was kept in {mcp_token}")
+    authtoken = root / "data" / "ngrok_authtoken.txt"
+    if not purge and authtoken.exists():
+        report.info(f"The ngrok authtoken for remote access was kept in {authtoken}")
 
 
 def uninstall(env, purge: bool = False, out=print, err=None) -> int:

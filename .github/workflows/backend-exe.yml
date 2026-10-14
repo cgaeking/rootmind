@@ -160,7 +160,7 @@ jobs:
           if ($env:EVENT_NAME -eq "pull_request") {
             $changed = @(git diff --name-only "$env:BASE_SHA...$env:HEAD_SHA")
             if ($LASTEXITCODE -ne 0) { throw "git diff failed" }
-            $pattern = '^backend/src/rootmind/(service/|winaccess\.py|access\.py|auth\.py|main\.py|config\.py|connectors/|api/|mcp_http\.py)|^backend/(pyproject\.toml|uv\.lock)$|^backend/packaging/|^backend/tests/e2e/|^\.github/workflows/backend-exe\.yml$'
+            $pattern = '^backend/src/rootmind/(service/|winaccess\.py|access\.py|auth\.py|main\.py|config\.py|connectors/|api/|mcp_http\.py|remote_access\.py)|^backend/(pyproject\.toml|uv\.lock)$|^backend/packaging/|^backend/tests/e2e/|^\.github/workflows/backend-exe\.yml$'
             $relevant = @($changed | Where-Object { $_ -match $pattern })
             if ($relevant.Count -eq 0) { $run = "false" }
             "Service-relevant changes: $($relevant.Count)"

@@ -69,6 +69,27 @@ def test_data_layout_gives_mcp_only_its_entries():
     assert without["tmp"].protected and without[""].protected
 
 
+def test_the_ngrok_authtoken_is_readable_only_by_system_administrators_and_mcp():
+    with_mcp = layout.data_layout(USER, MCP)[layout.NGROK_AUTHTOKEN]
+    assert with_mcp.protected and not with_mcp.is_dir
+    assert with_mcp.dacl_sddl() == (
+        f"D:P(A;;0x1f01ff;;;S-1-5-18)(A;;0x1f01ff;;;S-1-5-32-544)(A;;0x120089;;;{MCP})"
+    )
+    assert USER not in with_mcp.dacl_sddl()  # the installing account: nothing
+    without = layout.data_layout(USER, None)[layout.NGROK_AUTHTOKEN]
+    assert without.dacl_sddl() == "D:P(A;;0x1f01ff;;;S-1-5-18)(A;;0x1f01ff;;;S-1-5-32-544)"
+
+
+def test_mcp_may_write_the_remote_access_status_in_place():
+    entry = layout.data_layout(USER, MCP)[layout.REMOTE_STATUS]
+    assert not entry.protected  # inherits: whoever reads the data folder may read it
+    assert entry.dacl_sddl() == f"D:(A;;0x12019f;;;{MCP})"
+    # Read and write, but no delete, no permission or owner change.
+    assert layout.READ_WRITE & 0x00010000 == 0  # DELETE
+    assert layout.READ_WRITE & (0x00040000 | 0x00080000) == 0  # WRITE_DAC, WRITE_OWNER
+    assert layout.data_layout(USER, None)[layout.REMOTE_STATUS].dacl_sddl() == "D:"
+
+
 def test_write_grants_ignores_deny_and_read_entries():
     security = layout.Security(
         owner=layout.ADMINISTRATORS,
@@ -250,6 +271,8 @@ def owned_root(tmp_path, me):
     (root / "config.yaml").write_text("database:\n  path: ./data/db/index.db\n")
     (root / "data" / "rest_token.txt").write_text("rest")
     (root / "data" / "api_token.txt").write_text("mcp")
+    (root / "data" / "ngrok_authtoken.txt").write_text("ngrok")
+    (root / "data" / "remote_access.json").write_bytes(layout.INITIAL_STATUS)
     (root / "data" / "db" / "index.db").write_bytes(b"db")
     yield root
     # The account owns everything, so it can always restore its own access.
@@ -383,7 +406,21 @@ def test_normalize_applies_the_layout(owned_root, me):
     assert MCP not in {sid for *_rest, sid in rest.aces}
     assert MCP in inherited_sids(owned_root / "config.yaml")  # M reads the config
     assert explicit(owned_root / "logs" / "mcp-http") == {(0x3, layout.MODIFY, MCP)}
+    authtoken = layout.read_security(owned_root / "data" / "ngrok_authtoken.txt")
+    assert authtoken.protected
+    assert {(mask, sid) for _t, _f, mask, sid in authtoken.aces} == {
+        (layout.FULL_CONTROL, layout.SYSTEM),
+        (layout.FULL_CONTROL, layout.ADMINISTRATORS),
+        (layout.READ, MCP),
+    }  # the account (me) has no entry: only its ownership lets the test go on
+    remote_status = owned_root / "data" / "remote_access.json"
+    assert explicit(remote_status) == {(0x0, layout.READ_WRITE, MCP)}
+    assert me in inherited_sids(remote_status)
     assert validate(owned_root, me) == []
+    # Ownership lets the account read and change the access list by name, but
+    # not open a handle (CreateFile adds SYNCHRONIZE); the service runs with
+    # full control. Give the account its entry back for the second pass.
+    set_dacl(owned_root / "data" / "ngrok_authtoken.txt", "D:" + full_control(me), protected=False)
 
     # MCP off: every entry of M goes away.
     layout.normalize_data_tree(owned_root, me, None, set_owner=False)
@@ -548,3 +585,79 @@ def test_install_program_removes_an_unprotected_copy(tmp_path, plain_folders, mo
     with pytest.raises(layout.LayoutError, match="not protected after the copy"):
         layout.install_program(source, base, "1.2.0")
     assert list(base.iterdir()) == []
+
+
+@windows
+def test_mcp_may_write_only_the_status_file_of_the_data_folder(owned_root, me):
+    write = f"D:(A;;0x12019f;;;{MCP})"
+    set_dacl(owned_root / "data" / "remote_access.json", write, protected=False)
+    assert validate(owned_root, me) == []
+    set_dacl(owned_root / "data" / "ngrok_authtoken.txt", write, protected=False)
+    assert validate(owned_root, me) == [f"data/ngrok_authtoken.txt: {MCP} may change it"]
+
+
+@windows
+def test_write_protected_file_has_its_permissions_from_the_start(tmp_path, me):
+    folder = tmp_path / "data"
+    folder.mkdir()
+    # The folder would pass "Users: read" on; the protected file must not inherit it.
+    set_dacl(folder, "D:" + full_control(me) + "(A;OICI;0x1200a9;;;BU)", protected=True)
+    entry = layout.Entry(
+        (
+            layout.Ace("", layout.FULL_CONTROL, layout.SYSTEM),
+            layout.Ace("", layout.FULL_CONTROL, me),
+            layout.Ace("", layout.READ, MCP),
+        ),
+        protected=True,
+        is_dir=False,
+    )
+    target = folder / "ngrok_authtoken.txt"
+    target.write_text("old")  # replaced, with its permissions
+    layout.write_protected_file(target, b"new-token", entry)
+    assert target.read_bytes() == b"new-token"
+    security = layout.read_security(target)
+    assert security.protected
+    assert {(mask, sid) for _t, _f, mask, sid in security.aces} == {
+        (layout.FULL_CONTROL, layout.SYSTEM),
+        (layout.FULL_CONTROL, me),
+        (layout.READ, MCP),
+    }
+    assert [p.name for p in folder.iterdir()] == ["ngrok_authtoken.txt"]  # no temporary file
+
+
+@windows
+def test_data_file_protection(tmp_path, me):
+    data = tmp_path / "data"
+    data.mkdir()
+    set_dacl(data, "D:" + full_control(me) + "(A;OICI;0x1200a9;;;BU)", protected=True)
+    extra = (layout.Ace("", layout.FULL_CONTROL, me),)
+    mcp_on = [True]
+    protection = layout.DataFileProtection(lambda: mcp_on[0], mcp=MCP, extra=extra)
+
+    secret = data / "ngrok_authtoken.txt"
+    protection.write_secret(secret, "token-1")
+    assert secret.read_text() == "token-1"
+    security = layout.read_security(secret)
+    assert security.protected
+    sids = {sid for *_rest, sid in security.aces}
+    assert sids == {layout.SYSTEM, layout.ADMINISTRATORS, MCP, me}
+    assert layout.USERS not in sids
+
+    status_file = data / "remote_access.json"
+    protection.share_status(status_file)
+    assert status_file.read_bytes() == layout.INITIAL_STATUS
+    explicit = {
+        (mask, sid)
+        for _t, flags, mask, sid in layout.read_security(status_file).aces
+        if not flags & 0x10
+    }
+    assert (layout.READ_WRITE, MCP) in explicit
+    status_file.write_text('{"state": "connected"}')
+    protection.share_status(status_file)  # kept, only the permissions are set
+    assert status_file.read_text() == '{"state": "connected"}'
+
+    mcp_on[0] = False  # MCP over HTTP off: no entries for its account
+    protection.write_secret(secret, "token-2")
+    assert MCP not in {sid for *_rest, sid in layout.read_security(secret).aces}
+    protection.share_status(status_file)
+    assert MCP not in {sid for *_rest, sid in layout.read_security(status_file).aces}

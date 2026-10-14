@@ -790,6 +790,53 @@ def test_turning_mcp_off_removes_the_service_and_its_entries(env):
     assert ("normalize_data", USER_SID, False) in env.events
 
 
+def test_mcp_gets_the_remote_access_status_file(env):
+    code, _out, err = run_install(env, mcp=True)
+    assert code == 0, err
+    # The MCP account may write it but cannot create it: install creates it.
+    assert (env.root / "data" / "remote_access.json").read_bytes() == layout.INITIAL_STATUS
+    assert not (env.root / "data" / "ngrok_authtoken.txt").exists()
+
+
+def test_an_update_keeps_the_remote_access_status_and_authtoken(env):
+    install_existing(env, mcp_port=3000)
+    (env.root / "data" / "remote_access.json").write_text('{"state": "connected"}')
+    (env.root / "data" / "ngrok_authtoken.txt").write_text("kept")
+    code, _out, err = run_install(env)
+    assert code == 0, err
+    assert (env.root / "data" / "remote_access.json").read_text() == '{"state": "connected"}'
+    assert (env.root / "data" / "ngrok_authtoken.txt").read_text() == "kept"
+
+
+def test_turning_mcp_off_turns_remote_access_off(env):
+    install_existing(env, mcp_port=3000, folder="1.2.0-0a1b2c3d")
+    config = {
+        "database": {"path": "./data/db/index.db"},
+        "connectors": [{"name": "docs", "type": "local", "path": "C:/docs"}],
+        "remote_access": {"enabled": True, "domain": "rootmind-test.ngrok-free.app"},
+    }
+    (env.root / "config.yaml").write_text(yaml.safe_dump(config))
+    (env.root / "data" / "ngrok_authtoken.txt").write_text("kept")
+    env.executable = program_exe("1.2.0-0a1b2c3d")
+    code, out, err = run_install(env, mcp=False)
+    assert code == 0, err
+    saved = yaml.safe_load((env.root / "config.yaml").read_text())
+    assert saved["remote_access"] == {"enabled": False, "domain": "rootmind-test.ngrok-free.app"}
+    assert saved["connectors"] == config["connectors"]
+    assert "Remote access was turned off" in out
+    assert (env.root / "data" / "ngrok_authtoken.txt").read_text() == "kept"
+
+
+def test_remote_access_stays_on_while_mcp_stays_on(env):
+    install_existing(env, mcp_port=3000)
+    config = {"database": {"path": "./data/db/index.db"}, "remote_access": {"enabled": True}}
+    (env.root / "config.yaml").write_text(yaml.safe_dump(config))
+    code, out, err = run_install(env)
+    assert code == 0, err
+    assert yaml.safe_load((env.root / "config.yaml").read_text()) == config
+    assert "Remote access" not in out
+
+
 def test_update_with_only_the_mcp_service_left(env):
     env.manager.add(
         MCP_SERVICE,
@@ -1007,7 +1054,17 @@ def test_uninstall_removes_services_and_the_rest_token_only(env):
     assert (env.root / "config.yaml").exists()
     assert ("remove_all_programs",) in env.events
     assert "The MCP token was kept in" in out
+    assert "ngrok authtoken" not in out
     assert "uninstall: exit 0" in (env.root / "logs" / "install.log").read_text()
+
+
+def test_uninstall_keeps_the_ngrok_authtoken_and_says_so(env):
+    install_existing(env, mcp_port=3000)
+    (env.root / "data" / "ngrok_authtoken.txt").write_text("kept")
+    code, out, err = run_uninstall(env)
+    assert code == 0, err
+    assert (env.root / "data" / "ngrok_authtoken.txt").read_text() == "kept"
+    assert "The ngrok authtoken for remote access was kept in" in out
 
 
 def test_uninstall_does_not_log_into_an_unchecked_folder(env):

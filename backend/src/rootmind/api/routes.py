@@ -13,11 +13,21 @@ from ..config import (
     DEFAULT_MODEL,
     LlmProvider,
     active_config_path,
+    app_home,
     check_api_key,
     get_config,
     is_masked,
+    load_config,
     mask_secret,
     save_config,
+)
+from ..remote_access import (
+    RemoteAccessFiles,
+    check_authtoken,
+    effective_status,
+    normalize_domain,
+    redact,
+    sdk_info,
 )
 from ..rlm_engine.engine import (
     LLMConfigError,
@@ -177,6 +187,20 @@ class ConfigBody(BaseModel):
     llm: LlmConfigBody
     connectors: list[ConnectorBody] = Field(default_factory=list)
     indexer: IndexerBody = Field(default_factory=IndexerBody)
+
+
+class RemoteAccessUpdate(BaseModel):
+    """Changes to remote access (``POST /remote-access``); omitted fields stay as they are.
+
+    ``authtoken`` is write-only: a value saves it, ``""`` or null removes it
+    (which also turns remote access off). ``domain``: ``""`` or null removes it.
+    The values are checked in the route, so an invalid authtoken is never
+    echoed in a validation error.
+    """
+
+    enabled: bool | None = None
+    domain: str | None = None
+    authtoken: str | None = None
 
 
 class LlmModelsRequest(BaseModel):
@@ -629,5 +653,112 @@ def create_router(app_state: Any) -> APIRouter:
         except Exception as e:
             raise _llm_http_error(provider_error(e, provider), "Listing models") from e
         return {"provider": provider, "models": models}
+
+    # Remote access (an ngrok tunnel run by the MCP over HTTP service)
+
+    def remote_access_files() -> RemoteAccessFiles:
+        files = getattr(app_state, "remote_access_files", None)
+        return files if files is not None else RemoteAccessFiles(app_home())
+
+    def remote_access_state(files: RemoteAccessFiles) -> dict[str, Any]:
+        settings = load_config(active_config_path()).remote_access
+        available, sdk_version = sdk_info()
+        return {
+            "enabled": settings.enabled,
+            "domain": settings.domain,
+            "authtoken_saved": files.authtoken_saved(),
+            "sdk": {"available": available, "version": sdk_version},
+            "status": effective_status(settings.enabled, files.read_status()),
+        }
+
+    @router.get("/remote-access", tags=["Remote access"])
+    def get_remote_access():
+        """Remote access settings and the tunnel's status.
+
+        ``status.state``: ``off``, ``connecting``, ``connected`` (with ``url``),
+        ``error`` (with ``error``) or ``unavailable`` (the MCP over HTTP
+        service does not report: stopped, turned off or not updated). The
+        ngrok authtoken is never returned, only whether one is saved.
+        """
+        return remote_access_state(remote_access_files())
+
+    @router.post("/remote-access", tags=["Remote access"])
+    def update_remote_access(body: RemoteAccessUpdate):
+        """Change remote access: turn it on or off, save or remove the authtoken, set the domain.
+
+        The authtoken goes to its own file in ``data`` (in the RootMind
+        service readable only by SYSTEM, Administrators and the MCP service
+        account); ``enabled`` and ``domain`` go to ``config.yaml``, which the
+        MCP service checks every few seconds. Turning it on needs a saved
+        authtoken (400 otherwise).
+        """
+        from .app import config_update_lock
+
+        fields = body.model_fields_set
+        files = remote_access_files()
+        with config_update_lock:
+            current = load_config(active_config_path()).remote_access
+            enabled = current.enabled
+            domain = current.domain
+            new_token: str | None = None
+            clear_token = False
+            try:
+                if "domain" in fields:
+                    domain = normalize_domain(body.domain)
+                if "authtoken" in fields:
+                    if body.authtoken and body.authtoken.strip():
+                        new_token = check_authtoken(body.authtoken)
+                    else:
+                        clear_token = True
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from None
+            if "enabled" in fields and body.enabled is not None:
+                enabled = body.enabled
+            if clear_token:
+                if "enabled" in fields and body.enabled:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Remote access needs an ngrok authtoken; it cannot be removed "
+                        "while turning remote access on",
+                    )
+                enabled = False
+            token_saved = new_token is not None or (not clear_token and files.authtoken_saved())
+            if enabled and not token_saved:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Save an ngrok authtoken before turning remote access on",
+                )
+
+            changes = []
+            try:
+                # The authtoken first, so the MCP service finds it when it
+                # sees remote access turned on.
+                if new_token is not None:
+                    files.save_authtoken(new_token)
+                    changes.append("authtoken saved")
+                if enabled:
+                    files.prepare_status()
+                saved = save_config(
+                    {"remote_access": {"enabled": enabled, "domain": domain}},
+                    active_config_path(),
+                )
+                if clear_token:
+                    files.clear_authtoken()
+                    changes.append("authtoken removed")
+            except Exception as e:  # OSError, or pywintypes.error from the permissions
+                logger.error(
+                    "Saving the remote access settings failed: %s", redact(str(e), new_token)
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Saving the remote access settings failed; see the backend log",
+                ) from None
+            get_config().remote_access = saved.remote_access
+        if enabled != current.enabled:
+            changes.append("turned on" if enabled else "turned off")
+        if domain != current.domain:
+            changes.append(f"domain {domain or 'removed'}")
+        logger.info("Remote access: %s", ", ".join(changes) or "no change")
+        return remote_access_state(files)
 
     return router

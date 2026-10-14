@@ -175,7 +175,9 @@ das nur Administratoren ändern können.
   mit einem eigenen Bearer-Token bereit (siehe
   [MCP-Clients verbinden](#mcp-clients-verbinden)). Er ist standardmäßig
   eingeschaltet; der Haken bei **MCP über HTTP anbieten** schaltet ihn aus und
-  wieder ein (eine Bestätigung als Administrator).
+  wieder ein (eine Bestätigung als Administrator). Darunter gibt ihm
+  **Fernzugriff (ngrok)** eine öffentliche HTTPS-Adresse für
+  Cloud-Assistenten (standardmäßig aus; siehe [Fernzugriff](#fernzugriff)).
 - Die Dienste laufen aus einer eigenen Kopie des Programms unter
   `%ProgramFiles%\RootMind Service\`, die nur Administratoren ändern können,
   und halten ihre Daten in `%ProgramData%\RootMind`.
@@ -259,7 +261,8 @@ Tool)** kopiert sie mitsamt Token:
   lauscht, die der Container erreicht, und an `127.0.0.1:<port>` weiterleitet,
   und halte diese Adresse für andere Rechner geschlossen.
 - **n8n auf einem anderen Rechner:** nur über einen Reverse Proxy mit
-  TLS-Terminierung oder einen Tunnel vor `127.0.0.1:<port>`. Gib den
+  TLS-Terminierung oder einen Tunnel (etwa den [Fernzugriff](#fernzugriff))
+  vor `127.0.0.1:<port>`. Gib den
   unverschlüsselten HTTP-Port nie frei: Der Server spricht reines HTTP, und
   wer das Token hat, kann jedes indizierte Dokument lesen. Siehe
   [RootMind aus Cloud-Assistenten erreichen](#rootmind-aus-cloud-assistenten-erreichen).
@@ -269,12 +272,54 @@ Tool)** kopiert sie mitsamt Token:
 Assistenten, die auf fremden Servern laufen, etwa Grok Bot, ein in der Cloud
 gehostetes n8n oder andere Web-Agenten, erreichen `127.0.0.1` auf deinem
 Rechner nicht. Sie brauchen eine öffentliche HTTPS-Adresse, die an den
-MCP-Endpunkt weiterleitet; die liefert ein Tunnel auf deinem Rechner. An
-RootMind selbst änderst du nichts: Der Tunnel leitet an den **MCP-Endpunkt**
-weiter, den Einstellungen → RootMind-Dienst anzeigt, und der Client schickt
-dasselbe Token.
+MCP-Endpunkt weiterleitet; die liefert ein Tunnel auf deinem Rechner: der
+eingebaute **Fernzugriff** von RootMind (ngrok) oder ein Tunnel, den du selbst
+betreibst (Tailscale Funnel, der ngrok-Agent). In beiden Fällen leitet der
+Tunnel nur an MCP über HTTP weiter, und der Client schickt dasselbe Token.
 
-**Mit ngrok** (kostenloses Konto, eine feste kostenlose Domain):
+#### Fernzugriff
+
+RootMind kann den Tunnel selbst betreiben. Der MCP-Server des RootMind-Dienstes
+(`RootMind-MCP-HTTP`) öffnet ihn mit dem quelloffenen SDK von ngrok; ein
+ngrok-Programm musst du nicht installieren. Standardmäßig ist er aus.
+
+1. Lege bei [ngrok.com](https://ngrok.com) ein kostenloses Konto an und
+   kopiere deinen Authtoken aus dem Dashboard (**Your Authtoken**). Unter
+   **Domains** kannst du eine feste kostenlose Domain reservieren; ohne sie
+   vergibt ngrok eine Adresse, die sich ändern kann.
+2. Füge in Einstellungen → RootMind-Dienst unter **Fernzugriff (ngrok)** den
+   Authtoken und, falls vorhanden, die Domain ein und wähle **Speichern**. Der
+   Authtoken wird nie wieder angezeigt: Das Feld zeigt danach nur
+   **Gespeichert** (**Ersetzen** und **Entfernen** ändern ihn).
+3. Setze den Haken bei **MCP über ngrok aus dem Internet erreichbar machen**
+   und bestätige. Der Status wechselt zu **Verbunden** und zeigt den
+   **Öffentlichen MCP-Endpunkt** (`https://<domain>/mcp`) mit **Kopieren**.
+   Nutze ihn mit dem MCP-Token (**Token kopieren**) im Assistenten, siehe
+   [Im Assistenten](#im-assistenten).
+
+Der Fernzugriff braucht **MCP über HTTP anbieten**; schaltest du das aus, ist
+auch der Fernzugriff aus. Änderungen brauchen keine Bestätigung als
+Administrator, wirken nach wenigen Sekunden und überstehen Neustarts und
+Updates: Der Tunnel startet mit dem Dienst. Entfernst du den Haken, ist die
+öffentliche Adresse sofort geschlossen. Bricht die Verbindung zu ngrok ab,
+verbindet sich der Dienst neu; eine abgelehnte Verbindung (ein falscher
+Authtoken, eine Domain, die nicht dir gehört oder schon belegt ist) erscheint
+mit der Meldung von ngrok im Status und wird mit wachsenden Pausen (bis zu
+fünf Minuten) erneut versucht.
+
+- ngrok erlaubt einen Endpunkt pro Domain. Betreibst du schon einen eigenen
+  ngrok-Tunnel auf derselben Domain, beende ihn, bevor du den Fernzugriff
+  einschaltest.
+- Der Authtoken liegt in `%ProgramData%\RootMind\data\ngrok_authtoken.txt`,
+  das nur SYSTEM, Administratoren und das Konto des MCP-Dienstes lesen können;
+  er steht nie in `config.yaml`, wird von der API der App nie zurückgegeben
+  und nie protokolliert. Eine Deinstallation ohne **Lösche die
+  Anwendungsdaten** behält ihn.
+- Kostenlose ngrok-Konten haben Volumengrenzen; siehe die Preisseite von ngrok.
+
+#### Eigener Tunnel
+
+**Mit dem ngrok-Agent** (kostenloses Konto, eine feste kostenlose Domain):
 
 1. Lege bei [ngrok.com](https://ngrok.com) ein Konto an, installiere den Agent
    und hinterlege deinen Authtoken:
@@ -306,8 +351,9 @@ Der Befehl zeigt die öffentliche Adresse (`https://<rechner>.<tailnet>.ts.net`)
 und lässt den Funnel im Hintergrund weiterlaufen, auch nach einem Neustart.
 Beim ersten Mal fragt er, ob Funnel für dein Tailnet erlaubt werden soll.
 
-**Im Assistenten** fügst du einen eigenen MCP-Connector hinzu (oder in n8n den
-MCP Client Tool) mit:
+#### Im Assistenten
+
+Füge einen eigenen MCP-Connector hinzu (oder in n8n den MCP Client Tool) mit:
 
 | Feld | Wert |
 |---|---|
@@ -321,7 +367,8 @@ schicken können, lassen sich so nicht verbinden.
 Beachte:
 
 - Wer das Token hat, kann über den Tunnel jedes indizierte Dokument lesen.
-  Halte es geheim; wenn du den Tunnel beendest, ist der öffentliche Zugang zu.
+  Halte es geheim; wenn du den Tunnel beendest (oder den Fernzugriff
+  ausschaltest), ist der öffentliche Zugang zu.
 - Was ein Cloud-Assistent über RootMind liest (Suchtreffer und Dokumenttext),
   geht an den Anbieter dieses Assistenten.
 - RootMind lehnt Anfragen ab, die eine Webseite aus einem Browser schickt
@@ -763,7 +810,9 @@ monatlich Abhängigkeits-Updates für alle vier Ökosysteme vor.
   Konto ohne Administratorrechte lesen kann. Installieren und Reparieren
   brauchen eine Bestätigung als Administrator.
 - Der MCP-HTTP-Server ist standardmäßig eingeschaltet; er verlangt ein
-  Bearer-Token und bindet an 127.0.0.1.
+  Bearer-Token und bindet an 127.0.0.1. Der Fernzugriff (ngrok) ist
+  standardmäßig aus; eingeschaltet kann jeder mit dem MCP-Token über die
+  öffentliche Adresse jedes indizierte Dokument lesen.
 - Die Indizierung bleibt auf deinem Rechner. Beim Beantworten einer Frage
   gehen die Frage, Such-Snippets und Dokumentauszüge an den konfigurierten
   LLM-Anbieter.

@@ -80,3 +80,23 @@
   gap: 14px;
   padding-left: 24px;
 }
+
+.remote {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.saved {
+  align-self: center;
+  font-size: 13px;
+  color: var(--text-muted);
+}

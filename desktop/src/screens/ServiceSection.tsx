@@ -25,6 +25,7 @@ import {
 import type { ServiceProblem } from "../state/service";
 import { openExternal } from "../utils/openExternal";
 import { Badge, Banner, Button, Row, Section, TextInput } from "../components/ui";
+import { RemoteAccess } from "./RemoteAccess";
 import styles from "./ServiceSection.module.css";
 
 type Busy = "repair" | "mcp" | "check" | null;
@@ -55,8 +56,9 @@ function Labeled({ label, hint, children }: { label: string; hint?: string; chil
 /**
  * Settings › "RootMind service": the service the installer set up, read-only
  * (state, address, version), with Set up when it was never set up, Repair
- * when it does not work, and MCP over HTTP (on by default; switching it needs
- * administrator approval).
+ * when it does not work, MCP over HTTP (on by default; switching it needs
+ * administrator approval) and, below it, remote access through ngrok (through
+ * the service's REST API, no approval).
  */
 export function ServiceSection() {
   const kind = useStore((s) => s.kind);
@@ -284,6 +286,8 @@ export function ServiceSection() {
               </Row>
             </>
           )}
+
+          {connected && <RemoteAccess mcpEnabled={!!mcpUrl} />}
         </div>
       )}
     </Section>

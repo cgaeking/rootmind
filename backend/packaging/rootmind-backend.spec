@@ -30,9 +30,11 @@ binaries = []
 hiddenimports = []
 
 # Packages with data files, dynamic libraries or lazy imports PyInstaller can
-# miss. Both LLM SDKs are needed: openai also serves the xAI provider. Source
-# files are left out (include_py_files=False); the bytecode is enough.
-for pkg in ("anthropic", "openai", "apscheduler", "pydantic"):
+# miss. Both LLM SDKs are needed: openai also serves the xAI provider. The
+# ngrok SDK (remote access, imported only when it is turned on) is a native
+# extension (ngrok/ngrok.pyd) plus its package metadata, which the API reports.
+# Source files are left out (include_py_files=False); the bytecode is enough.
+for pkg in ("anthropic", "openai", "apscheduler", "pydantic", "ngrok"):
     d, b, h = collect_all(pkg, include_py_files=False)
     datas += d
     binaries += b

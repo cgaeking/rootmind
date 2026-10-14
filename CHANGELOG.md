@@ -4,6 +4,18 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-14
+
+### Added
+
+- **Remote access (ngrok)** for cloud assistants (Grok Bot, a cloud-hosted n8n, other web agents), off by default (#27). Settings → RootMind service → **Remote access (ngrok)** takes an ngrok authtoken (write-only: once saved only "Saved" is shown) and an optional reserved domain; one checkbox, after a confirmation that anyone with the MCP token can read every indexed document and that what a cloud assistant reads goes to its provider, gives MCP over HTTP a public HTTPS address. The status (off, connecting, connected with the public MCP endpoint and **Copy**, or ngrok's error) is shown in the same place. The tunnel runs inside the `RootMind-MCP-HTTP` service with ngrok's open-source Python SDK (no ngrok program is installed), forwards only to the MCP server, starts with the service, survives updates, reconnects with growing pauses, and closes within seconds when turned off. Requests through it still need the MCP token and pass the `Origin` check. Disabled while MCP over HTTP is off; turning MCP over HTTP off also turns remote access off. No administrator approval is needed.
+- REST API: `GET /remote-access` and `POST /remote-access` (bearer token). The authtoken is stored in `%ProgramData%\RootMind\data\ngrok_authtoken.txt`, readable only by SYSTEM, Administrators and the MCP service account, never in `config.yaml`, never returned and never logged; `enabled` and `domain` go to `config.yaml` (`remote_access`). The MCP service reports the tunnel's state in `data\remote_access.json`, the one file in the data folder it may write.
+- The smoke test checks that the packaged backend imports the ngrok SDK and that remote access is off by default; the service end-to-end test checks the new files' permissions.
+
+### Changed
+
+- Docs: "Reach RootMind from cloud assistants" now starts with the built-in remote access; your own tunnel (Tailscale Funnel, the ngrok agent) remains the alternative. SECURITY.md describes the threat model of the public address and how the authtoken is stored.
+
 ## [2.1.1] - 2026-10-14
 
 ### Added

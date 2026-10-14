@@ -16,6 +16,8 @@
       without errors, and every format is listed by the API;
     - POST /llm/models for anthropic and openai with a dummy key against a
       closed port answers "could not reach", not a missing module;
+    - GET /remote-access: the ngrok SDK (a native extension) imports in the
+      build, and remote access is off by default (no tunnel is opened);
     - mcp-http: 401 without and 200 with the token, the five tools;
     - mcp over stdio: initialize and tools/list, with JSON-only stdout.
 
@@ -289,6 +291,15 @@ try {
         }
         Pass "POST /llm/models ($provider) -> 502 could not reach the provider"
     }
+    $remote = Invoke-Http GET "$url/remote-access" -Token $token
+    Assert-Status $remote 200 "GET /remote-access"
+    if (-not $remote.Json.sdk.available -or -not $remote.Json.sdk.version) {
+        Fail "the ngrok SDK cannot be imported from the build: $($remote.Text)"
+    }
+    if ($remote.Json.enabled -or $remote.Json.status.state -ne "off") {
+        Fail "remote access is not off by default: $($remote.Text)"
+    }
+    Pass "the ngrok SDK $($remote.Json.sdk.version) is bundled; remote access is off by default"
     Stop-Backend $api
 
     # --- mcp-http -----------------------------------------------------------------------------
