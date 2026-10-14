@@ -244,7 +244,72 @@ Tool)** kopiert sie mitsamt Token:
 - **n8n auf einem anderen Rechner:** nur über einen Reverse Proxy mit
   TLS-Terminierung oder einen Tunnel vor `127.0.0.1:<port>`. Gib den
   unverschlüsselten HTTP-Port nie frei: Der Server spricht reines HTTP, und
-  wer das Token hat, kann jedes indizierte Dokument lesen.
+  wer das Token hat, kann jedes indizierte Dokument lesen. Siehe
+  [RootMind aus Cloud-Assistenten erreichen](#rootmind-aus-cloud-assistenten-erreichen).
+
+### RootMind aus Cloud-Assistenten erreichen
+
+Assistenten, die auf fremden Servern laufen, etwa Grok Bot, ein in der Cloud
+gehostetes n8n oder andere Web-Agenten, erreichen `127.0.0.1` auf deinem
+Rechner nicht. Sie brauchen eine öffentliche HTTPS-Adresse, die an den
+MCP-Endpunkt weiterleitet; die liefert ein Tunnel auf deinem Rechner. An
+RootMind selbst änderst du nichts: Der Tunnel leitet an den **MCP-Endpunkt**
+weiter, den Einstellungen → RootMind-Dienst anzeigt, und der Client schickt
+dasselbe Token.
+
+**Mit ngrok** (kostenloses Konto, eine feste kostenlose Domain):
+
+1. Lege bei [ngrok.com](https://ngrok.com) ein Konto an, installiere den Agent
+   und hinterlege deinen Authtoken:
+
+   ```powershell
+   winget install ngrok.ngrok
+   ngrok config add-authtoken <dein-ngrok-authtoken>
+   ```
+
+2. Notiere im ngrok-Dashboard unter **Domains** deine kostenlose Domain und
+   starte den Tunnel zum MCP-Port (3000, außer die Einstellungen zeigen einen
+   anderen):
+
+   ```powershell
+   ngrok http 3000 --url https://<deine-kostenlose-domain>
+   ```
+
+   Damit er nach einem Neustart weiterläuft, lege den Tunnel in der
+   Konfigurationsdatei von ngrok an und installiere ihn als Dienst
+   (`ngrok service install`; siehe die Doku von ngrok).
+
+**Mit Tailscale Funnel** (kostenloses Tailscale-Konto und App):
+
+```powershell
+tailscale funnel --bg 3000
+```
+
+Der Befehl zeigt die öffentliche Adresse (`https://<rechner>.<tailnet>.ts.net`)
+und lässt den Funnel im Hintergrund weiterlaufen, auch nach einem Neustart.
+Beim ersten Mal fragt er, ob Funnel für dein Tailnet erlaubt werden soll.
+
+**Im Assistenten** fügst du einen eigenen MCP-Connector hinzu (oder in n8n den
+MCP Client Tool) mit:
+
+| Feld | Wert |
+|---|---|
+| URL | `https://<deine-öffentliche-adresse>/mcp` |
+| Transport | HTTP Streamable |
+| Authentifizierung | Header `Authorization: Bearer <token>` (Einstellungen → RootMind-Dienst → **Token kopieren**) |
+
+Clients, die nur eine Anmeldung per OAuth anbieten und kein Bearer-Token
+schicken können, lassen sich so nicht verbinden.
+
+Beachte:
+
+- Wer das Token hat, kann über den Tunnel jedes indizierte Dokument lesen.
+  Halte es geheim; wenn du den Tunnel beendest, ist der öffentliche Zugang zu.
+- Was ein Cloud-Assistent über RootMind liest (Suchtreffer und Dokumenttext),
+  geht an den Anbieter dieses Assistenten.
+- RootMind lehnt Anfragen ab, die eine Webseite aus einem Browser schickt
+  (Anfragen mit nicht-lokalem `Origin`-Header); Anfragen von Server zu Server,
+  wie sie der Assistent stellt, sind davon nicht betroffen.
 
 ## So funktioniert es
 

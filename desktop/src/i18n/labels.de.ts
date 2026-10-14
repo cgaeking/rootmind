@@ -134,7 +134,7 @@ export const labels = {
     copyToken: "Token kopieren",
     tokenFailed: (msg: string) => `Das Token konnte nicht gelesen werden: ${msg}`,
     n8nLabel: "n8n (MCP Client Tool)",
-    n8nHint: "Trage diese Werte im MCP-Client-Tool-Knoten von n8n ein; Kopieren fügt das Token ein.",
+    n8nHint: "Trage diese Werte im MCP-Client-Tool-Knoten von n8n ein; Kopieren fügt das Token ein. Läuft n8n auf einem anderen Rechner oder in der Cloud, nimm statt 127.0.0.1 die öffentliche Adresse deines Tunnels.",
     mcpDocs: "MCP von n8n aus erreichen",
   },
   settings: {
