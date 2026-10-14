@@ -128,20 +128,31 @@ permissions. The installer sets it up with `rootmind-backend.exe service
 install`; on a machine without the app, the same command from the release zip
 in an elevated prompt does it.
 
-**Who can install it.** Installing RootMind needs one administrator approval
-(UAC), and the account signed in to Windows must be the account that
-approves it. Before anything is copied, the installer compares the account it
-runs as with the user of its Windows session. If they differ, for example
-when an administrator approves the prompt while a standard account is signed
-in ("over the shoulder"), it stops with exit code 8 and changes nothing.
-Without a signed-in session (a deployment tool in session 0, SSH) there is
-nothing to compare, and the service is set up for the account the installer
-runs as. `service install` checks on its own that the approving account is
-the account it sets the service up for, and it never takes over a service
-that belongs to another account (exit code 8): to move RootMind to another
-account, uninstall it and install it from that account. A standard account
-cannot get the service, because its REST API and its document parsers run as
-SYSTEM: a parser bug would then lift a standard account to SYSTEM.
+**Who can install it.** Setting the service up needs one administrator
+approval (UAC) by the account that will use it. The installer compares the
+account it runs as (from its process token) with the user of its Windows
+session and sets the service up only for a user account that is the signed-in
+one, or that runs it in a session without a user (SSH, a CI runner). When it
+runs as SYSTEM or another service account (Intune, Configuration Manager,
+winget's validation machines), or as another account than the signed-in one
+(an administrator approving the prompt for a standard account, "over the
+shoulder"), it installs only the app, never a service for an account it
+cannot identify, records why in its uninstall entry and exits with 0. The app
+then offers **Set up**, which runs `service install` elevated for the
+signed-in account. Only an update run as SYSTEM may touch the service:
+`service install` as LocalSystem updates our existing service for the
+account it is registered for and refuses everything else (exit code 8),
+including setting up a service for an account no one approved. A 1.x
+installation in the user's profile is removed only when the signed-in
+account runs the installer, never as SYSTEM. `service install` checks on its
+own that the approving account is the account it sets the service up for,
+and it never takes over a service that belongs to another account (exit
+code 8): to move RootMind to another account, uninstall it and install it
+from that account. A standard account cannot get the service, because its
+REST API and its document parsers run as SYSTEM: a parser bug would then
+lift a standard account to SYSTEM. The installer still refuses another
+install folder than `%ProgramFiles%\RootMind` (exit code 10), whoever runs
+it.
 
 **Reads are confined to the account's unelevated rights.** The service reads
 only what the installing account can read **without administrator rights**
@@ -256,13 +267,14 @@ Remove or rename it from an elevated prompt, then try again." A folder
 created by hand inherits "Users: create" from ProgramData and is refused.
 
 **Elevated commands from the app.** The webview can call only a fixed set of
-commands; the Rust side builds every program path and argument. Repair and
-"Update service" elevate `service install` with the backend installed with the
-app, `%ProgramFiles%\RootMind\backend\`; only when that is missing do they use the
+commands; the Rust side builds every program path and argument. Set up,
+Repair and "Update service" elevate `service install --user-sid <the signed-in
+account>` with the backend installed with the app, `%ProgramFiles%\RootMind\backend\`; only when that is missing do they use the
 service's registered copy under `%ProgramFiles%\RootMind Service\`. Switching MCP
 over HTTP on or off elevates the registered copy, after checking that the
-registered path lies under `%ProgramFiles%\RootMind Service\`. Installing
-and removing the service is the installer's job.
+registered path lies under `%ProgramFiles%\RootMind Service\`. Removing the
+service is the uninstaller's job; the app sets it up only when the installer
+did not (Set up).
 
 **Token handoff.** Before the app reads the service's token, it checks that
 the process that listens on the service's port is the service itself: the

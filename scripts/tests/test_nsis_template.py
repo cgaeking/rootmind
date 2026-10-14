@@ -110,31 +110,73 @@ def test_conf_installs_per_machine():
     assert conf["bundle"]["windows"]["nsis"]["installMode"] == "perMachine"
 
 
-def test_hooks_check_the_account_before_anything_changes():
+def test_hooks_refuse_only_another_install_folder():
     text = HOOKS.read_bytes().decode("ascii")
     preinstall = _macro(text, "NSIS_HOOK_PREINSTALL").strip().splitlines()
-    assert preinstall[0].strip() == "!insertmacro ROOTMIND_REQUIRE_SIGNED_IN_ACCOUNT"
-    check = _macro(text, "ROOTMIND_REQUIRE_SIGNED_IN_ACCOUNT")
-    assert "SetErrorLevel 8" in check and "Abort" in check
-    # Then the install folder: only Program Files (the service runs as SYSTEM from it).
-    assert preinstall[1].strip() == "!insertmacro ROOTMIND_REQUIRE_PROGRAM_FILES"
+    # Before anything changes: the install folder, only Program Files (the
+    # service runs as SYSTEM from it). That is the only refusal (exit 10).
+    assert preinstall[0].strip() == "!insertmacro ROOTMIND_REQUIRE_PROGRAM_FILES"
     folder = _macro(text, "ROOTMIND_REQUIRE_PROGRAM_FILES")
     assert '${If} $0 != "$PROGRAMFILES64\\${PRODUCTNAME}"' in folder
     assert "SetErrorLevel 10" in folder and "Abort" in folder
+    # Another account than the signed-in one, SYSTEM or a service account no
+    # longer stops the install: the service step is skipped instead.
+    assert "ROOTMIND_REQUIRE_SIGNED_IN_ACCOUNT" not in text
+    levels = re.findall(r"SetErrorLevel \S+", text)
+    assert levels == ["SetErrorLevel 10", "SetErrorLevel $R5"]
+    assert "SetErrorLevel $R5" in _macro(text, "ROOTMIND_REMOVE_SERVICE")
+    assert text.count("Abort") == 1
+
+
+def test_hooks_decide_whom_the_service_is_set_up_for():
+    text = HOOKS.read_bytes().decode("ascii")
+    accounts = _macro(text, "ROOTMIND_ACCOUNTS")
+    # The installer's own account comes from its token, which names SYSTEM as
+    # SYSTEM (GetUserNameEx names it after the computer account).
+    assert "advapi32::OpenProcessToken" in accounts
+    assert "advapi32::GetTokenInformation(p r1, i 1," in accounts
+    assert "wtsapi32::WTSQuerySessionInformationW" in accounts
+    context = _macro(text, "ROOTMIND_SERVICE_CONTEXT")
+    # Only user accounts (local, domain, Entra ID) get a service.
+    assert '${If} $0 == "S-1-5-21-"' in context
+    assert '${OrIf} $0 == "S-1-12-1-"' in context
+    # LocalSystem may only update our existing service, for its account.
+    assert '${If} $R5 == "S-1-5-18"' in context
+    assert "!insertmacro ROOTMIND_OUR_SERVICE_EXE $1" in context
+    assert 'StrCpy $R1 "--user-sid $R5"' in context
+    # The 1.x step runs only as the signed-in account that runs the installer.
+    v1 = _macro(text, "ROOTMIND_REMOVE_V1")
+    assert "!insertmacro ROOTMIND_SERVICE_CONTEXT" in v1
+    assert v1.index("${If} $9 <> 1") < v1.index("nsis_tauri_utils::RunAsUser")
 
 
 def test_hooks_install_and_remove_the_service():
     text = HOOKS.read_bytes().decode("ascii")
     assert "!insertmacro ROOTMIND_INSTALL_SERVICE" in _macro(text, "NSIS_HOOK_POSTINSTALL")
     install = _macro(text, "ROOTMIND_INSTALL_SERVICE")
+    assert "!insertmacro ROOTMIND_SERVICE_CONTEXT" in install
     assert (
-        "StrCpy $R0 '\"$INSTDIR\\backend\\rootmind-backend.exe\" service install "
+        "StrCpy $R8 '\"$INSTDIR\\backend\\rootmind-backend.exe\" service install "
         "--port auto --mcp-port auto'"
     ) in install
     # MCP over HTTP is the backend's default for a new install and sticky for updates.
     assert "--mcp-http" not in install and "--no-mcp-http" not in install
-    assert 'StrCpy $R0 "$R0 --user-sid $R7"' in install
-    assert "nsExec::ExecToLog $R0" in install and "SetErrorLevel" in install
+    assert 'StrCpy $R8 "$R8 $R1"' in install
+    assert "nsExec::ExecToLog $R8" in install
+    # The app is installed: the installer exits with 0 whatever the service
+    # step did, and records the outcome in the uninstall entry.
+    assert "SetErrorLevel" not in install
+    for record in (
+        '!insertmacro ROOTMIND_RECORD_SERVICE "skipped" "$R0" ""',
+        '!insertmacro ROOTMIND_RECORD_SERVICE "installed" "" ""',
+        '!insertmacro ROOTMIND_RECORD_SERVICE "failed" "$R2" "$R3"',
+    ):
+        assert record in install
+    # A message only for someone who can see it.
+    assert install.count("${IfNot} ${Silent}") == install.count("MessageBox") == 2
+    record = _macro(text, "ROOTMIND_RECORD_SERVICE state reason code")
+    for name in ("RootMindServiceSetup", "RootMindServiceSetupReason", "RootMindServiceSetupCode"):
+        assert f'SHCTX "${{UNINSTKEY}}" "{name}"' in record
     assert "!insertmacro ROOTMIND_REMOVE_SERVICE" in _macro(text, "NSIS_HOOK_PREUNINSTALL")
     remove = _macro(text, "ROOTMIND_REMOVE_SERVICE")
     assert 'StrCpy $R1 "service uninstall --purge"' in remove

@@ -5,13 +5,14 @@ import { recheck } from "../hooks/useBackend";
 import { useServiceInfo } from "../hooks/useServiceInfo";
 import { DEFAULT_BASE_URL, readStoredBackend, useStore } from "../state/store";
 import { connectCustom, connectService, runServiceChange } from "../state/backendActions";
-import { canRepair, changeMessage } from "../state/service";
+import { canRepair, changeMessage, repairLabels } from "../state/service";
 import { Button } from "../components/ui";
 import { Dialog, dialogStyles as styles } from "../components/Dialog";
 
 /**
- * The RootMind service cannot be used: what is wrong and what to do (Repair
- * when it can help, else the installer), Check again, or another backend.
+ * The RootMind service cannot be used: what is wrong and what to do (Set up
+ * for a service that was never set up, Repair when it can help, else the
+ * installer), Check again, or another backend.
  */
 function ServicePanel({ onOther }: { onOther: () => void }) {
   const problem = useStore((s) => s.serviceProblem) ?? "noAnswer";
@@ -20,6 +21,8 @@ function ServicePanel({ onOther }: { onOther: () => void }) {
   const [message, setMessage] = useState<string | null>(null);
 
   const repairable = canRepair(problem, info);
+  // "Set up" for a service that was never set up, else "Repair".
+  const repairText = repairLabels(problem);
   // Repair would help, but this account cannot approve it.
   const needsAdmin =
     !repairable && !!info && !info.canElevate && canRepair(problem, { ...info, canElevate: true });
@@ -63,7 +66,7 @@ function ServicePanel({ onOther }: { onOther: () => void }) {
           </Button>
           {repairable && (
             <Button variant="primary" onClick={() => void repair()} disabled={!!busy}>
-              {labels.service.repair}
+              {labels.service[repairText.action]}
             </Button>
           )}
         </>
@@ -71,7 +74,7 @@ function ServicePanel({ onOther }: { onOther: () => void }) {
     >
       <p className={styles.text}>{labels.service.problems[problem].text}</p>
       {needsAdmin && <p className={styles.text}>{labels.service.repairNeedsAdmin}</p>}
-      {busy === "repair" && <p className={styles.text}>{labels.service.repairing}</p>}
+      {busy === "repair" && <p className={styles.text}>{labels.service[repairText.busy]}</p>}
       {message && <p className={styles.text}>{message}</p>}
     </Dialog>
   );

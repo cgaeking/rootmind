@@ -81,7 +81,7 @@ flowchart TB
 | CLI | `main.py` | One command tree: `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service`; bind and token resolution |
 | Windows service | `service/` | `service install`, `uninstall` and `status`, and the service host that the Service Control Manager starts |
 | Desktop app | `desktop/` | Tauri 2 UI; a client of the Windows service over REST: reads its state, connects with its token, repairs it and switches MCP over HTTP |
-| Installer | `desktop/src-tauri/installer/` | Per-machine NSIS installer; sets up the Windows service for the signed-in account and removes it on uninstall |
+| Installer | `desktop/src-tauri/installer/` | Per-machine NSIS installer; sets up the Windows service for the signed-in account when it runs as that account (else the app does), and removes it on uninstall |
 
 ## Deployment modes
 
@@ -91,10 +91,11 @@ flowchart TB
 | **Custom** (Settings → Advanced) | You | Whatever that backend uses | The address you enter (loopback only, because of the app's CSP) | Optional, entered by you | Not managed by the app |
 | **Command line** (development, other setups) | You (`rootmind api`, `uv run ...`, `rootmind-backend.exe api`) | `RLM_HOME`, or the working directory | `--host`/`--port`, then `RLM_HOST`/`RLM_PORT`, then `api.*` in `config.yaml`, then `127.0.0.1:8000` | Off unless `RLM_API_TOKEN` or `--require-token` | `rootmind mcp` / `rootmind-mcp`, `rootmind mcp-http` / `rootmind-mcp-http` |
 
-Since 2.0 the desktop app has no backend of its own. The installer always
-sets up the RootMind service (see [Packaging](#packaging)), and the app is a
-client of it. A backend at another address, such as `rootmind api` from a
-source checkout or a uv install, is for development and other setups.
+Since 2.0 the desktop app has no backend of its own. The installer sets up
+the RootMind service, or the app does when the installer could not (see
+[Packaging](#packaging)), and the app is a client of it. A backend at another
+address, such as `rootmind api` from a source checkout or a uv install, is for
+development and other setups.
 
 ```
 %ProgramFiles%\RootMind\                          the app, per machine (the folder can be changed in the installer)
@@ -172,7 +173,7 @@ the CI scripts.
 | Commands | `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service install\|uninstall\|status`, and `service run backend\|mcp-http` (started by the Service Control Manager, not listed in the help) |
 | `api` options | `--host`, `--port` (0 = a free port, which the log names), `--require-token`. The options of the removed built-in backend, `--exit-with-parent` and `--import-config`, are refused (exit 2) |
 | `service install` options | `--port N\|auto`, `--mcp-http` / `--no-mcp-http`, `--mcp-port N\|auto`, `--mcp-token-from FILE`, `--user-sid SID`, `--no-start` |
-| Installer | Installs with `service install --port auto --mcp-port auto --user-sid <signed-in account>`; uninstalls with `service uninstall`, `--purge` when the app data is to be deleted |
+| Installer | Installs with `service install --port auto --mcp-port auto --user-sid <signed-in account>` (as SYSTEM, only to update an existing service: without `--user-sid`; skipped otherwise); uninstalls with `service uninstall`, `--purge` when the app data is to be deleted |
 | Token files | `<RLM_HOME>/data/rest_token.txt` (REST), `<RLM_HOME>/data/api_token.txt` (MCP) |
 | Open routes with a token | `GET`/`HEAD` on `/` (with `"auth": "bearer"` or `"none"`) and `/health`; everything else 401 |
 | Service names | `RootMind-Backend`, `RootMind-MCP-HTTP` |
@@ -224,10 +225,13 @@ and the desktop app (`desktop/src-tauri/src/imagepath.rs`) parse these lines
 with the same rules and the same test strings.
 
 **Who sets it up.** The installer runs `service install` for the account that
-is signed in to Windows, and the uninstaller runs `service uninstall` (see
-[Packaging](#packaging)). The app runs `service install` again for Repair and
-to switch MCP over HTTP. On a machine without the app, `service install` from
-the release zip sets the service up with a default config without folders;
+is signed in to Windows when that account runs it, and the uninstaller runs
+`service uninstall` (see [Packaging](#packaging)). When the installer runs as
+SYSTEM (deployment tools, winget's validation) or as another account, the app
+sets the service up instead (**Set up**). The app runs `service install` again
+for Set up, Repair and to switch MCP over HTTP. On a machine without the app,
+`service install` from the release zip sets the service up with a default
+config without folders;
 folders are then added through `POST /config` with the REST token, in
 `config.yaml` from an elevated prompt, or with the app.
 
@@ -277,6 +281,11 @@ and the database.
 1. Checks: Windows and the onedir release build (else exit 2 with the
    download address of the release zip), elevated (5), `--user-sid` equal to
    the approving account (8), and an access context for that account (9).
+   Run as LocalSystem, which no account approved (a deployment tool updating
+   RootMind), it only updates our existing backend service for the account
+   that service is registered for (`--user-sid` may name only that account)
+   and never sets one up (8); the source folder is then judged for
+   LocalSystem.
    When the program will be copied (step 6), the folder it comes from and
    every folder above it must be safe from accounts other than
    administrators: no other account may write there, or move, replace or
@@ -347,16 +356,17 @@ no longer installed (no uninstall entry in HKLM, and no 1.x entry in HKCU).
 | 5 | Not elevated |
 | 6 | Data folder refused |
 | 7 | The services did not pass the health check |
-| 8 | Account mismatch: the approving account is not the account in `--user-sid`, or the service belongs to another account |
+| 8 | Account mismatch: the approving account is not the account in `--user-sid`, the service belongs to another account, or LocalSystem has no service to update |
 | 9 | The access context for the account could not be built |
 | 10 | The folder the program would be copied from can be changed by accounts other than administrators |
 
-The installer exits with the code of `service install` when that step fails,
-with 8 on its own when it runs as another account than the signed-in one, and
-with 10 on its own when its install folder is not `%ProgramFiles%\RootMind`.
-The app shows 1223 when the approval prompt was cancelled. Program and data
-locations and their permissions are described in
-[SECURITY.md](SECURITY.md#background-service).
+The installer exits with 10 on its own, before anything changes, when its
+install folder is not `%ProgramFiles%\RootMind`. Otherwise it exits with 0
+once the app is installed, also when it skipped `service install` or that
+command failed; it records the outcome and the command's exit code in its
+uninstall entry (see [Packaging](#packaging)). The app shows 1223 when the
+approval prompt was cancelled. Program and data locations and their
+permissions are described in [SECURITY.md](SECURITY.md#background-service).
 
 **Connecting from the app** (`desktop/src-tauri/src/service.rs`, `win/`). The
 app reads the ImagePath from the registry and the state from the Service
@@ -377,12 +387,13 @@ codes 225, 226, 1260 and 4550–4599) is reported as blocked.
 
 **Settings → RootMind service** (`desktop/src/screens/ServiceSection.tsx`) is
 read-only: a status badge, the address and the service's version. When the
-service cannot be used, it names the problem (not installed, stopped, another
+service cannot be used, it names the problem (not set up yet, stopped, another
 program on its port, another account's service, a service RootMind did not
-install, no answer) and offers **Repair** where that helps: for a missing,
-stopped or unresponsive service, on an administrator account. A banner with
-**Update service** appears when the service runs an older version than the
-app. The checkbox **Serve MCP over HTTP (for Claude Desktop, n8n and other agents)**
+install, no answer) and offers **Set up** for a service that is not installed
+and **Repair** for a stopped or unresponsive one, on an administrator account
+(both run `service_update`); the blocking dialog at start offers the same. A
+banner with **Update service** appears when the service runs an older version
+than the app. The checkbox **Serve MCP over HTTP (for Claude Desktop, n8n and other agents)**
 switches the MCP service (one administrator approval). While it is on, the
 section shows the **MCP endpoint** with **Copy** and **Copy token**, and the
 values for **n8n (MCP Client Tool)** with **Copy**, which fills in the token,
@@ -485,22 +496,29 @@ included.
 `desktop/src-tauri/installer/hooks.nsh` sets up the service. Installing runs
 these steps:
 
-1. **Account check**, before anything changes. The installer compares the
-   account it runs as (`GetUserNameEx`) with the user of its Windows session
-   (`WTSQuerySessionInformation`), by SID when both can be looked up, else by
-   name. When they differ, for example when an administrator approved the
-   prompt for a signed-in standard account, it shows a message and exits
-   with 8 without changing anything: the service reads with the installing
-   account's rights and only that account can read its token, so the
-   signed-in account could not use it. Without a session user (session 0: a
-   service, a deployment tool, SSH) there is nothing to compare, and
-   `service install` takes the account the installer runs as.
-2. **Install folder check.** The template has no folder page, and the install
+1. **Install folder check.** The template has no folder page, and the install
    folder must be `$PROGRAMFILES64\RootMind` (case-insensitive, a trailing
    backslash ignored): the service is set up from the backend in that folder,
    so it has to be a folder that only administrators can change. Any other
    folder (`/D=`, or a changed install location in HKLM) is refused with a
-   message and exit code 10 before anything changes.
+   message and exit code 10 before anything changes. This is the installer's
+   only refusal.
+2. **Whom the service is for.** The service reads with one account's rights
+   and only that account can read its token, so the installer sets it up only
+   for the account that runs it, and only when that is clearly the account
+   that uses RootMind. It reads its own account from its process token and the
+   user of its Windows session (`WTSQuerySessionInformation`), and compares
+   them by SID when both can be looked up, else by name. The service step
+   runs for a user account (local, domain or Microsoft Entra ID) that is the
+   session's user, or that runs the installer in a session without a user
+   (session 0: SSH, a CI runner). It is skipped when the installer runs as
+   SYSTEM or another service account (Intune, Configuration Manager and
+   winget's validation machines install silently as SYSTEM), or as another
+   account than the signed-in one (an administrator approving the prompt for
+   a standard account), or when its own account cannot be read. Exception: as
+   SYSTEM, an update over an existing service of ours runs `service install`
+   without `--user-sid`, which updates that service for its registered
+   account (and nothing else, see `service install` above).
 3. Closes the app and the programs that run from `$INSTDIR\backend\` (an MCP
    client's `rootmind-backend.exe mcp`) through Tauri's Restart Manager
    check, which matches by path and so never touches the service's copy.
@@ -509,8 +527,10 @@ these steps:
    as the signed-in account and not elevated
    (`nsis_tauri_utils::RunAsUser`), because it lies in a folder that account
    can change; the installer waits up to 2 minutes for the entry to
-   disappear. A silent 1.x uninstall keeps a 1.x background service, which
-   step 7 then updates with its folders, settings and index. The 1.x
+   disappear. This step runs only when the account signed in to the session
+   runs the installer, never as SYSTEM or for another account's profile. A
+   silent 1.x uninstall keeps a 1.x background service, which step 7 then
+   updates with its folders, settings and index. The 1.x
    built-in backend's folders, settings, API keys and index are not
    imported; its folder `%LOCALAPPDATA%\io.github.cgaeking.rootmind\backend`
    is left in place, and chats stay.
@@ -519,22 +539,37 @@ these steps:
    such as the previous version's package metadata.
 6. Copies the files (Tauri's template).
 7. Runs `"$INSTDIR\backend\rootmind-backend.exe" service install --port auto
-   --mcp-port auto --user-sid <SID of the signed-in account>`, with its output
-   in the installer's details list. A new install chooses free ports and
-   turns MCP over HTTP on; an update keeps the ports, the MCP setting, the
-   tokens and the data. If this step fails, the app stays installed: a
-   message names the cause (3 foreign service, 4 no free port, 6
+   --mcp-port auto --user-sid <SID of the installing account>` (step 2; as
+   SYSTEM for an update, without `--user-sid`), with its output in the
+   installer's details list. A new install chooses free ports and turns MCP
+   over HTTP on; an update keeps the ports, the MCP setting, the tokens and
+   the data. When step 2 skips it, the app is installed without the service;
+   RootMind then says that the service is not set up yet and offers **Set
+   up** to an administrator. If `service install` fails, the app stays
+   installed: the cause is named (3 foreign service, 4 no free port, 6
    `%ProgramData%\RootMind` not protected, 7 the service did not start or
    answer, 8 another account's service, 9 the access check could not be set
    up, 10 the install folder can be changed by other accounts, otherwise an
-   unexpected error), points to the details list and
-   `%ProgramData%\RootMind\logs\install.log`, and the installer exits with
-   that code. After fixing the cause, run the installer again or use Repair.
+   unexpected error), with a pointer to the details list and
+   `%ProgramData%\RootMind\logs\install.log`, and RootMind offers Repair or
+   Set up after the cause is fixed.
+8. Records the outcome in the app's uninstall entry (HKLM, admin-only, removed
+   with the app): `RootMindServiceSetup` is `installed`, `skipped` or `failed`,
+   `RootMindServiceSetupReason` says why (accounts and causes, never a
+   secret), and `RootMindServiceSetupCode` holds the exit code of a failed
+   `service install`. The data folder `%ProgramData%\RootMind` is not used for
+   this: only `service install` may create it, protected. A skipped or failed
+   service step shows a message only when the installer is not silent and an
+   account is signed in to its session (a message in session 0 would wait
+   forever). The installer exits with 0: deployment tools and winget see a
+   successful app install, and the app shows what is wrong.
 
 **Update.** Running the installer of a newer version (or the same one)
 updates in place: the app is closed first, the files are replaced while the
 service keeps running from its own copy, and step 7 updates the service,
-keeping ports, tokens, settings and index. Tauri's updater would run the old
+keeping ports, tokens, settings and index. Run as SYSTEM, it updates an
+existing service as well (for its registered account); without one, it skips
+the service as for a new install. Tauri's updater would run the old
 uninstaller with `/UPDATE`; such an uninstall keeps the service. The app has
 no updater.
 
@@ -552,8 +587,10 @@ uninstaller. A silent uninstall (`/S`) leaves the box unticked: it removes the
 services but never deletes data. If `service uninstall` fails, a message
 gives the command to run later from an elevated prompt.
 
-**Repair.** Settings → RootMind service → **Repair**, and **Update service**,
-run `service install --port auto --mcp-port auto --user-sid <SID>` elevated,
+**Set up and Repair.** Settings → RootMind service → **Set up** (no service
+yet) or **Repair**, the same buttons in the dialog the app shows at start, and
+**Update service** run `service install --port auto --mcp-port auto --user-sid
+<SID of the signed-in account>` elevated,
 with the backend installed with the app in `%ProgramFiles%\RootMind\backend\`, so
 the service ends up at the app's version. Only when that backend is missing
 do they use the service's registered copy under `%ProgramFiles%\RootMind Service\`
@@ -898,7 +935,7 @@ How the API is protected, and what remains open, is described in
   custom address (see [Deployment modes](#deployment-modes)) and run the
   service changes the app offers (Repair, MCP over HTTP). `src/api/backend.ts`
   wraps the Rust commands, and `src/state/service.ts` holds the pure helpers:
-  which problem the service has, whether Repair can fix it, the messages for
+  which problem the service has, whether Repair (or Set up) can fix it, the messages for
   the exit codes, and version comparison.
 - **Connection state.** A heartbeat checks the backend every 5 seconds: with a
   token, one authenticated `GET /status`. In service mode every check goes
@@ -907,7 +944,7 @@ How the API is protected, and what remains open, is described in
   current token again, and a custom backend ask for one. While a repair or an
   MCP change runs, the state is "switching", so the heartbeat does not react
   to the service going down on purpose. A dialog offers the next step: for
-  the service, what is wrong, **Repair** where it helps, **Check again**, or
+  the service, what is wrong, **Set up** or **Repair** where it helps, **Check again**, or
   a backend at another address; for a custom backend, the address and token,
   or **Use the RootMind service**.
 - **Stale data.** Settings, Folders and Status load their data for the backend
@@ -1007,9 +1044,15 @@ How the API is protected, and what remains open, is described in
   and the service's data, leave no stale backend files, and move the services
   to a new program copy. A silent uninstall removes the services, their
   program copy, the entry and the app, and keeps the service's data folder
-  without the REST token. The refusal of an installer approved by another
-  account is not covered (the runner has one account); the hooks are
-  checked statically by `scripts/tests/test_nsis_template.py`.
+  without the REST token. Run as SYSTEM through a one-off scheduled task (as
+  deployment tools and winget's validation run it), `/S` exits with 0,
+  installs the app without a service and records `skipped` with the reason;
+  `service install` for the runner account (what Set up runs) then sets both
+  services up and they answer with their tokens; a silent update as SYSTEM
+  updates that service in place; a silent uninstall removes it all. An
+  installer approved by another account than the signed-in one is not
+  covered (the runner has one account); the hooks are checked statically by
+  `scripts/tests/test_nsis_template.py`.
 - `scripts/tests/` covers the release scripts, the NSIS template and the
   installer hooks.
 
@@ -1022,7 +1065,8 @@ quoting, exit-code mapping, the ImagePath and TCP table parsers, the order of
 the listener check and the token read, token files, `safe_id` and the
 file-opening scope, plus Windows-only tests of the Service Control Manager,
 TCP table and account bindings. The approval prompts, the installer's
-dialogs and its account check are checked by hand before a release (see
+dialogs and its handling of another signed-in account are checked by hand
+before a release (see
 [CONTRIBUTING.md](CONTRIBUTING.md#releasing)).
 
 **Evals** (`backend/evals/`, `backend/scripts/run_evals.py`) measure the agent
@@ -1051,10 +1095,14 @@ and parsers that run as SYSTEM.
 
 **Administrator rights to install.** The per-machine installer needs one
 administrator approval, and the account signed in to Windows must be the
-one that approves it. The service reads with that account's rights and only
-that account can read its token, so an approval by another administrator
-("over the shoulder") would set up a service the signed-in account cannot
-use; the installer refuses it before anything changes. A standard account
+one that sets up the service. The service reads with that account's rights
+and only that account can read its token, so an approval by another
+administrator ("over the shoulder"), or an install by SYSTEM through a
+deployment tool, would set up a service the signed-in account cannot use.
+The installer then installs only the app, and the app sets the service up for
+the signed-in account (Set up, one administrator approval). Installing the
+app without the service, instead of refusing, keeps silent and managed
+installs (winget, Intune, Configuration Manager) working. A standard account
 can use RootMind only with a backend it starts itself (Settings →
 Advanced). RootMind 1.x installed per account without administrator rights;
 2.0 cannot.
@@ -1132,9 +1180,9 @@ service would need:
 - The release binaries are not code-signed. SmartScreen warns, and Smart App
   Control may block them. The winget submission waits for signed binaries
   (`packaging/winget/README.md`).
-- The approval prompts, the installer's dialogs, its refusal of an approval
-  by another account, the upgrade from 1.x, and Repair and the MCP switch in
-  the app are tested by hand; CI covers the service through its command line
+- The approval prompts, the installer's dialogs, an install approved by
+  another account, the upgrade from 1.x, and Set up, Repair and the MCP
+  switch in the app are tested by hand; CI covers the service through its command line
   and the installer in silent and passive mode on a runner with one account.
 - Installing needs an administrator account, the service serves one account
   per computer, and it cannot index network drives or shares. Domain accounts

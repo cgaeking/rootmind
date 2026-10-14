@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-10-14
+
 ### Added
 
 - Docs: "Reach RootMind from cloud assistants" (Grok Bot, cloud-hosted n8n and similar) with tunnel steps for ngrok and Tailscale Funnel; the app's n8n hint mentions using the tunnel address when n8n runs elsewhere.
@@ -11,6 +13,12 @@ All notable changes to RootMind are documented in this file. The format is based
 ### Changed
 
 - Docs: releases are described as not code-signed; the code signing policy no longer names a signing service, and winget is being submitted with unsigned binaries.
+- The installer exits with 0 whenever it installed the app, also when `service install` failed (it used to exit with that command's code). RootMind shows the problem and **Repair**, and the installer's uninstall entry records the outcome: `RootMindServiceSetup` (`installed`, `skipped` or `failed`), `RootMindServiceSetupReason` and `RootMindServiceSetupCode`. Only another install folder still stops it (exit code 10).
+- `service install` run as LocalSystem only updates an existing RootMind service, for the account that service belongs to; it never sets one up (exit code 8).
+
+### Fixed
+
+- **Silent and managed installs no longer fail** (winget's validation, Intune, Configuration Manager). An installer that runs as SYSTEM or another service account, or as another account than the one signed in to Windows, no longer stops with exit code 8: it installs the app, leaves the background service to the app and exits with 0. RootMind then says "The RootMind service is not set up yet" and offers **Set up**, which sets the service up for the signed-in account with one administrator approval. An update run as SYSTEM still updates an existing service. The removal of a RootMind 1.x installation runs only when the signed-in account runs the installer, never as SYSTEM. The Claude Desktop bundle points to **Set up** as well.
 
 ## [2.1.0] - 2026-10-14
 

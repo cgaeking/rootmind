@@ -51,7 +51,7 @@ export const MESSAGES = {
   status_failed: (detail) =>
     `RootMind could not report the state of its service (${detail}). Open ${SETTINGS}, or run the RootMind installer again from ${RELEASES_URL}; then try again.`,
   service_missing: () =>
-    `The RootMind service is not set up. Open ${SETTINGS} and choose Repair, or run the RootMind installer again from ${RELEASES_URL}; then try again.`,
+    `The RootMind service is not set up yet. Open ${SETTINGS} and choose Set up (an administrator account that uses RootMind approves it), or run the RootMind installer again from ${RELEASES_URL}; then try again.`,
   mcp_off: () =>
     `MCP over HTTP is turned off. Turn on "${MCP_TOGGLE}" in ${SETTINGS}, then try again.`,
   mcp_not_ours: () =>

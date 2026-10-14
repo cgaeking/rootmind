@@ -77,6 +77,41 @@ describe("BackendModal for the RootMind service", () => {
     expect(useStore.getState().conn).toBe("offline");
   });
 
+  it("offers Set up for a service that was never set up", async () => {
+    vi.mocked(backend.serviceInfo).mockResolvedValue(serviceInfoFixture());
+    vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: false, reason: "not_installed" });
+    let finish: (r: Awaited<ReturnType<typeof backend.serviceUpdate>>) => void = () => {};
+    vi.mocked(backend.serviceUpdate).mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    useStore.setState({ serviceProblem: "notInstalled" });
+    render(<BackendModal />);
+    expect(screen.getByRole("dialog", { name: "The RootMind service is not set up yet" })).toBeTruthy();
+    expect(screen.getByText(/Set up installs it for this account/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
+
+    const setUp = await screen.findByRole("button", { name: "Set up" });
+    expect(setUp.className).toMatch(/primary/i);
+    fireEvent.click(setUp);
+    await waitFor(() => expect(backend.serviceUpdate).toHaveBeenCalledTimes(1));
+    expect(
+      screen.getByText("Setting up the service … approve the administrator prompt."),
+    ).toBeTruthy();
+    finish({ ok: false, cancelled: true, code: 1223, backend: null });
+    expect(await screen.findByText("Nothing was changed.")).toBeTruthy();
+  });
+
+  it("tells an account without administrator rights that setting up needs one", async () => {
+    vi.mocked(backend.serviceInfo).mockResolvedValue(serviceInfoFixture({ canElevate: false }));
+    vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: false, reason: "not_installed" });
+    useStore.setState({ serviceProblem: "notInstalled" });
+    render(<BackendModal />);
+    expect(await screen.findByText(/Repairing needs an administrator account/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Set up" })).toBeNull();
+  });
+
   it("asks to free a busy port (no Repair) and checks again on request", async () => {
     vi.mocked(backend.serviceInfo).mockResolvedValue({ ...stopped, state: "running" });
     vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: false, reason: "listener_mismatch" });
@@ -129,7 +164,7 @@ describe("ConnBanner", () => {
   it("names the service's problem", () => {
     useStore.setState({ serviceProblem: "notInstalled" });
     render(<ConnBanner />);
-    expect(screen.getByText("The RootMind service is not installed")).toBeTruthy();
+    expect(screen.getByText("The RootMind service is not set up yet")).toBeTruthy();
   });
 
   it("says a custom backend is unreachable", () => {

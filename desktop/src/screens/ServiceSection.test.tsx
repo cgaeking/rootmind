@@ -121,7 +121,7 @@ describe("ServiceSection", () => {
     expect(await screen.findByText(/service status --json \(exit code 0\)/)).toBeTruthy();
   });
 
-  it("offers Repair for a missing service", async () => {
+  it("offers Set up for a service that was never set up", async () => {
     vi.mocked(backend.serviceInfo).mockResolvedValue(serviceInfoFixture());
     vi.mocked(backend.serviceUpdate).mockResolvedValue({
       ok: true,
@@ -129,12 +129,23 @@ describe("ServiceSection", () => {
     });
     useStore.setState({ baseUrl: "", token: null, conn: "offline", serviceProblem: "notInstalled" });
     render(<ServiceSection />);
-    expect(await screen.findByText(/The RootMind service is not installed/)).toBeTruthy();
+    expect(await screen.findByText(/The RootMind service is not set up yet/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     // No MCP settings for a service that is not there.
     expect(screen.queryByRole("checkbox")).toBeNull();
-    fireEvent.click(await screen.findByRole("button", { name: "Repair" }));
+    expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
+    const setUp = await screen.findByRole("button", { name: "Set up" });
+    expect(setUp.className).toMatch(/primary/i);
+    fireEvent.click(setUp);
     await waitFor(() => expect(backend.serviceUpdate).toHaveBeenCalledTimes(1));
+  });
+
+  it("tells an account without administrator rights that setting the service up needs one", async () => {
+    vi.mocked(backend.serviceInfo).mockResolvedValue(serviceInfoFixture({ canElevate: false }));
+    useStore.setState({ baseUrl: "", token: null, conn: "offline", serviceProblem: "notInstalled" });
+    render(<ServiceSection />);
+    expect(await screen.findByText(/Repairing needs an administrator account/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Set up" })).toBeNull();
   });
 
   it("asks to close the program on the service's port instead of offering Repair", async () => {

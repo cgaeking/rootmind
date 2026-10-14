@@ -712,6 +712,61 @@ def test_update_by_another_account_is_refused(env):
     assert not env.manager.calls
 
 
+SYSTEM_SID = "S-1-5-18"
+
+
+def test_local_system_never_sets_a_service_up(env):
+    """A deployment tool runs the installer as LocalSystem: no account approved it."""
+    env.sid = SYSTEM_SID
+    code, _out, err = run_install(env, port="auto", mcp_port="auto")
+    assert code == ExitCode.ACCOUNT_MISMATCH
+    assert "only updates an existing RootMind service" in err
+    assert "Set up" in err
+    assert nothing_changed(env)
+    code, _out, _err = run_install(env, port="auto", mcp_port="auto", user_sid=USER_SID)
+    assert code == ExitCode.ACCOUNT_MISMATCH
+    assert nothing_changed(env)
+
+
+def test_local_system_updates_the_service_for_its_account(env):
+    install_existing(env, port=18300, mcp_port=18401)
+    env.sid = SYSTEM_SID
+    code, out, err = run_install(env, port="auto", mcp_port="auto")
+    assert code == 0, err
+    backend = imagepath.parse(env.manager.services[BACKEND_SERVICE]["image_path"])
+    mcp = imagepath.parse(env.manager.services[MCP_SERVICE]["image_path"])
+    assert backend.user_sid == USER_SID
+    assert (backend.port, mcp.port) == (18300, 18401)
+    assert backend.exe == program_exe("1.2.0-00000001") == mcp.exe
+    assert (env.root / "data" / "rest_token.txt").read_text() == "rest-token-from-before"
+    assert (env.root / "data" / "api_token.txt").read_text() == "mcp-token-from-before"
+    assert ("check_access", USER_SID) in env.events
+    assert ("prepare_data", USER_SID, True) in env.events
+    # The source folder is judged for LocalSystem, never for the service's account.
+    assert ("check_source", ntpath.dirname(USER_EXE), SYSTEM_SID) in env.events
+    assert "updated (version 1.2.0)" in out
+
+
+def test_local_system_updates_only_for_the_registered_account(env):
+    install_existing(env, mcp_port=3000)
+    env.sid = SYSTEM_SID
+    assert run_install(env, user_sid=USER_SID)[0] == 0
+    env.events.clear()
+    env.manager.calls.clear()
+    code, _out, err = run_install(env, user_sid=OTHER_SID)
+    assert code == ExitCode.ACCOUNT_MISMATCH
+    assert OTHER_SID in err
+    assert not env.manager.calls
+
+
+def test_local_system_leaves_a_foreign_service_alone(env):
+    env.manager.add(BACKEND_SERVICE, r'"C:\Tools\other.exe" --run')
+    env.sid = SYSTEM_SID
+    code, _out, _err = run_install(env)
+    assert code == ExitCode.FOREIGN_SERVICE
+    assert not env.manager.calls
+
+
 def test_turning_mcp_on_from_the_program_files_exe(env):
     install_existing(env, folder="1.2.0-0a1b2c3d")
     env.executable = program_exe("1.2.0-0a1b2c3d")

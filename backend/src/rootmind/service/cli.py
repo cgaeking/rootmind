@@ -17,7 +17,8 @@ Manager and not meant to be run by hand.
 Exit codes: 0 ok, 1 unexpected error, 2 usage (or not Windows, or not the
 release build), 3 a service with our name that RootMind did not install,
 4 port busy, 5 not elevated, 6 data folder refused, 7 health check failed,
-8 account mismatch, 9 the access check for the account cannot be built,
+8 account mismatch (also: run as LocalSystem without a service to update),
+9 the access check for the account cannot be built,
 10 the program folder to copy from can be changed by non-administrators.
 """
 
@@ -119,7 +120,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--user-sid",
         type=_sid,
         default=None,
-        help="The account whose folders the service may read (default: the approving account)",
+        help=(
+            "The account whose folders the service may read (default: the approving account; "
+            "run as LocalSystem, which only updates an existing service: its account)"
+        ),
     )
     install.add_argument(
         "--no-start", dest="start", action="store_false", help="Do not start the services"

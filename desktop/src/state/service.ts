@@ -57,7 +57,7 @@ export function serviceResultKey(r: Extract<ServiceResult, { ok: false }>): Serv
 export type ServiceProblem =
   /** Not Windows, or the browser preview: there is no service to reach. */
   | "unsupported"
-  /** No RootMind service is installed. */
+  /** No RootMind service is installed: not set up yet (offered as "Set up"), or removed. */
   | "notInstalled"
   /** A service named RootMind exists that the installer did not set up. */
   | "foreign"
@@ -123,6 +123,22 @@ export function problemFromInfo(info: ServiceInfo | null, failed: boolean): Serv
 export function canRepair(problem: ServiceProblem, info: ServiceInfo | null): boolean {
   if (info && !info.canElevate) return false;
   return problem === "notRunning" || problem === "notInstalled" || problem === "noAnswer";
+}
+
+/**
+ * How the app offers service_update for a problem it can fix: "Set up" for a
+ * service that was never set up (the installer leaves that to the app when it
+ * runs as SYSTEM, as deployment tools do, or as another account than the
+ * signed-in one), else "Repair". Label keys in labels.service: the button and
+ * the text while it runs.
+ */
+export function repairLabels(problem: ServiceProblem): {
+  action: "setUp" | "repair";
+  busy: "settingUp" | "repairing";
+} {
+  return problem === "notInstalled"
+    ? { action: "setUp", busy: "settingUp" }
+    : { action: "repair", busy: "repairing" };
 }
 
 /** What to tell the user after a service change; null when it succeeded. */

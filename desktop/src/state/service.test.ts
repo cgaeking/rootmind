@@ -7,6 +7,7 @@ import {
   isOlderVersion,
   n8nSnippet,
   problemFromInfo,
+  repairLabels,
   serviceProblem,
   serviceResultKey,
 } from "./service";
@@ -149,6 +150,18 @@ describe("canRepair", () => {
     for (const p of ["unsupported", "portBusy", "foreign", "otherAccount"] as const) {
       expect(canRepair(p, OURS)).toBe(false);
     }
+  });
+});
+
+describe("repairLabels", () => {
+  it("offers Set up for a service that was never set up, else Repair", () => {
+    expect(repairLabels("notInstalled")).toEqual({ action: "setUp", busy: "settingUp" });
+    for (const p of ["notRunning", "noAnswer"] as const) {
+      expect(repairLabels(p)).toEqual({ action: "repair", busy: "repairing" });
+    }
+    expect(en.service.setUp).toBe("Set up");
+    expect(de.service.setUp).toBe("Einrichten");
+    expect(en.service.problems.notInstalled.title).toBe("The RootMind service is not set up yet");
   });
 });
 

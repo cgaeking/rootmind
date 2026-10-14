@@ -35,11 +35,23 @@
     - "uninstall.exe /S" removes the services (their ports close), the
       service's program copy, the entry, the app and the backend; the
       service's data folder stays (a silent uninstall never deletes data), but
-      not the REST token.
+      not the REST token;
+    - as SYSTEM, the way deployment tools (Intune, Configuration Manager) and
+      winget's validation machines run it (a one-off scheduled task for
+      SYSTEM, no download): "/S" exits with 0 and installs the app (the HKLM
+      entry, the files in %ProgramFiles%\RootMind) but no service, and the
+      uninstall entry records why (RootMindServiceSetup = skipped, with the
+      reason). "service install" from the installed backend for this account,
+      as Set up in the app runs it, then sets both services up, and they
+      answer with their tokens. A silent update as SYSTEM updates the
+      existing service in place for its account (new program copy, same
+      ports, account and tokens; RootMindServiceSetup = installed). A silent
+      uninstall removes it all again.
 
-    Not covered here: the refusal of an installer approved by another account
-    than the signed-in one (the runner has a single account); the hooks are
-    checked statically by scripts/tests/test_nsis_template.py.
+    Not covered here: an installer approved by another account than the
+    signed-in one, which installs the app without the service (the runner has
+    a single account); the hooks are checked statically by
+    scripts/tests/test_nsis_template.py.
 
     The tree hash is SHA-256 over the sorted lines "<relative path>`t<sha256>`n"
     of every file, with "/" separators and UTF-8 text, the same as
@@ -83,6 +95,10 @@ $ServiceNames = @("RootMind-Backend", "RootMind-MCP-HTTP")
 $MarkerName = "RootMindSmokeMarker"
 $MarkerValue = "kept"
 $OlderVersion = "0.0.1"
+# What the installer records in its uninstall entry about the service step.
+$SetupValue = "RootMindServiceSetup"
+$SetupReasonValue = "RootMindServiceSetupReason"
+$SetupCodeValue = "RootMindServiceSetupCode"
 $Initialize = @{ protocolVersion = "2025-06-18"; capabilities = @{}; clientInfo = @{ name = "installer-smoke"; version = "1" } }
 
 function Fail([string] $Message) { throw "INSTALLER SMOKE FAILED: $Message" }
@@ -231,6 +247,37 @@ function Invoke-Program([string] $File, [string] $Arguments, [int] $TimeoutSecon
     return [pscustomobject]@{ ExitCode = $process.ExitCode; Stdout = $stdout.Result; Stderr = $stderr.Result }
 }
 
+# Run a program as SYSTEM, the way deployment tools run installers: a one-off
+# scheduled task for SYSTEM (session 0, no signed-in user), started at once and
+# removed afterwards. Returns its exit code (the task's last result).
+function Invoke-AsSystem([string] $File, [string] $Arguments, [int] $TimeoutSeconds) {
+    $name = "RootMind-installer-smoke-" + [guid]::NewGuid().ToString("N")
+    $action = New-ScheduledTaskAction -Execute $File -Argument $Arguments -WorkingDirectory $WorkDir
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds $TimeoutSeconds) `
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings | Out-Null
+    try {
+        # LastRunTime has whole seconds; a task that never ran reports 1999.
+        $before = (Get-Date).AddSeconds(-2)
+        Start-ScheduledTask -TaskName $name
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds + 30)
+        while ($true) {
+            Start-Sleep -Seconds 2
+            $task = Get-ScheduledTask -TaskName $name
+            $info = Get-ScheduledTaskInfo -TaskName $name
+            if ($info.LastRunTime -ge $before -and $task.State -ne "Running") { break }
+            if ((Get-Date) -gt $deadline) {
+                Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+                Fail "$File $Arguments did not finish as SYSTEM within $TimeoutSeconds s"
+            }
+        }
+        return [int64]$info.LastTaskResult
+    } finally {
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-ArpValue([string] $Name) {
     $key = Get-Item -LiteralPath $UninstallKey -ErrorAction SilentlyContinue
     if ($null -eq $key) { return $null }
@@ -238,6 +285,47 @@ function Get-ArpValue([string] $Name) {
 }
 
 function Get-InstallLocation { return ([string](Get-ArpValue "InstallLocation")).Trim('"') }
+
+# What the installer recorded about the service step: installed, skipped or failed.
+# Returns the recorded reason.
+function Assert-ServiceSetup([string] $Expected, [string] $When) {
+    $recorded = [string](Get-ArpValue $SetupValue)
+    $reason = [string](Get-ArpValue $SetupReasonValue)
+    $code = Get-ArpValue $SetupCodeValue
+    if ($recorded -ne $Expected) { Fail "$When $SetupValue is '$recorded' ($reason, code $code), expected $Expected" }
+    if ($Expected -eq "installed" -and ($reason -or $null -ne $code)) {
+        Fail "$When the uninstall entry keeps an old reason: $reason (code $code)"
+    }
+    Pass "$When the uninstall entry records the service step: $recorded"
+    return $reason
+}
+
+# "uninstall.exe /S", as winget runs it: the services (their ports close), their
+# program copy, the entry, the app and the backend are gone; the service's data
+# folder stays, without the REST token.
+function Assert-SilentUninstall($State, [string] $What) {
+    # "_?=" runs the uninstaller in place, so it can be waited for; it cannot delete itself then.
+    $uninstaller = Join-Path $InstallDir "uninstall.exe"
+    if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { Fail "$uninstaller is missing" }
+    $uninstall = Invoke-Program $uninstaller "/S _?=$InstallDir" 900
+    if ($uninstall.ExitCode -ne 0) { Fail "the $What exited with $($uninstall.ExitCode)" }
+    foreach ($name in $ServiceNames) {
+        if (Get-Service -Name $name -ErrorAction SilentlyContinue) { Fail "after the ${What}, the service $name is still there" }
+    }
+    if ((Test-PortOpen $State.ApiPort) -or (Test-PortOpen $State.McpPort)) { Fail "after the ${What}, a service port is still open" }
+    Assert-ProgramGone (Split-Path -Parent $State.Exe) "after the ${What},"
+    Pass "$What removed both services and their program copy"
+    if (Test-Path -LiteralPath $UninstallKey) { Fail "after the ${What}, the uninstall entry is still there" }
+    if (Test-Path -LiteralPath $mainExe) { Fail "after the ${What}, the app is still there" }
+    if (Test-Path -LiteralPath $BackendDir) {
+        $left = @(Get-ChildItem -LiteralPath $BackendDir -Recurse -Force | Select-Object -First 10 | ForEach-Object { $_.FullName })
+        Fail "after the ${What}, the backend folder is still there: $($left -join ', ')"
+    }
+    Pass "$What -> 0; the entry, the app and the backend are gone"
+    if (Test-Path -LiteralPath (Join-Path $DataRoot "data\rest_token.txt")) { Fail "after the ${What}, the REST token is still there" }
+    if (-not (Test-Path -LiteralPath (Join-Path $DataRoot "config.yaml"))) { Fail "the $What deleted the service's data" }
+    Pass "$What kept the service's data, without the REST token"
+}
 
 function Assert-BackendTree([string] $BackendDir, [string] $When) {
     $hash = Get-TreeSha256 $BackendDir
@@ -418,6 +506,7 @@ try {
     Pass "the app ($mainName) and backend\rootmind-backend.exe are installed"
     Assert-BackendTree $BackendDir "after the install,"
     Assert-BackendVersion $BackendExe
+    Assert-ServiceSetup "installed" "after the install," | Out-Null
 
     # Standard accounts cannot change the app or the backend it ships.
     $writeRights = 0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
@@ -489,30 +578,71 @@ try {
     $state = Assert-UpdatedInPlace $run "passive reinstall of $Version" $stale $state
 
     # --- silent uninstall, as winget runs it ---------------------------------------------------
-    # "_?=" runs the uninstaller in place, so it can be waited for; it cannot delete itself then.
-    $uninstaller = Join-Path $InstallDir "uninstall.exe"
-    if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { Fail "$uninstaller is missing" }
-    $uninstall = Invoke-Program $uninstaller "/S _?=$InstallDir" 900
-    if ($uninstall.ExitCode -ne 0) { Fail "the silent uninstall exited with $($uninstall.ExitCode)" }
+    Assert-SilentUninstall $state "silent uninstall"
+
+    # --- silent install as SYSTEM, as deployment tools and winget's validation run it -----------
+    # No account approved it, and none is signed in to its session (session 0): the app is
+    # installed, the service is left to Set up in the app.
+    $started = [DateTime]::UtcNow
+    $code = Invoke-AsSystem $Setup "/S" 900
+    [void]$Summary.Add(("Silent install as SYSTEM (without the service): {0:N1} s" -f ([DateTime]::UtcNow - $started).TotalSeconds))
+    if ($code -ne 0) { Fail "the silent install as SYSTEM exited with $code" }
+    Pass "silent install as SYSTEM -> 0"
+    if (-not (Test-Path -LiteralPath $UninstallKey)) { Fail "after the install as SYSTEM, no uninstall entry at $UninstallKey" }
+    if ((Get-ArpValue "DisplayVersion") -ne $Version) {
+        Fail "after the install as SYSTEM, DisplayVersion is '$(Get-ArpValue "DisplayVersion")', expected $Version"
+    }
+    $location = Get-InstallLocation
+    if (-not [string]::Equals($location.TrimEnd('\'), $ExpectedDir, [StringComparison]::OrdinalIgnoreCase)) {
+        Fail "after the install as SYSTEM, InstallLocation is '$location', expected $ExpectedDir"
+    }
+    if (-not (Test-Path -LiteralPath $mainExe -PathType Leaf)) { Fail "after the install as SYSTEM, the app is missing" }
+    Assert-BackendTree $BackendDir "after the install as SYSTEM,"
+    Pass "install as SYSTEM: the uninstall entry, and the app in $InstallDir"
     foreach ($name in $ServiceNames) {
-        if (Get-Service -Name $name -ErrorAction SilentlyContinue) { Fail "the service $name is still there" }
+        if (Get-Service -Name $name -ErrorAction SilentlyContinue) { Fail "the install as SYSTEM created $name" }
     }
-    if ((Test-PortOpen $state.ApiPort) -or (Test-PortOpen $state.McpPort)) { Fail "a service port is still open" }
-    Assert-ProgramGone (Split-Path -Parent $state.Exe) "after the uninstall,"
-    Pass "silent uninstall removed both services and their program copy"
-    if (Test-Path -LiteralPath $UninstallKey) { Fail "the uninstall entry is still there" }
-    if (Test-Path -LiteralPath $mainExe) { Fail "the app is still there" }
-    if (Test-Path -LiteralPath $BackendDir) {
-        $left = @(Get-ChildItem -LiteralPath $BackendDir -Recurse -Force | Select-Object -First 10 | ForEach-Object { $_.FullName })
-        Fail "the backend folder is still there: $($left -join ', ')"
+    $programs = @(Get-ChildItem -LiteralPath $ProgramBase -Directory -ErrorAction SilentlyContinue |
+        Where-Object { -not (Test-PendingDelete $_.FullName) })
+    if ($programs.Count) { Fail "the install as SYSTEM copied the service's program: $($programs[0].FullName)" }
+    Pass "install as SYSTEM: no RootMind service"
+    $reason = Assert-ServiceSetup "skipped" "after the install as SYSTEM,"
+    if ($reason -notmatch 'SYSTEM' -or $reason -notmatch 'system or service account') {
+        Fail "after the install as SYSTEM, the recorded reason does not name SYSTEM: $reason"
     }
-    Pass "silent uninstall -> 0; the entry, the app and the backend are gone"
-    if (Test-Path -LiteralPath (Join-Path $DataRoot "data\rest_token.txt")) { Fail "the REST token is still there" }
-    if (-not (Test-Path -LiteralPath (Join-Path $DataRoot "config.yaml"))) { Fail "a silent uninstall deleted the service's data" }
-    Pass "the service's data was kept, without the REST token"
+    if ($null -ne (Get-ArpValue $SetupCodeValue)) { Fail "after the install as SYSTEM, an exit code is recorded" }
+    Pass "the recorded reason: $reason"
+
+    # --- Set up in the app: "service install" for this account, from the installed backend ------
+    # The app runs this command elevated (service_update), for the signed-in account.
+    $setupRun = Invoke-Program $BackendExe "service install --port auto --mcp-port auto --user-sid $UserSid" 900
+    if ($setupRun.ExitCode -ne 0) { Fail "service install for this account exited with $($setupRun.ExitCode): $($setupRun.Stderr)" }
+    $state = Get-ServiceState
+    if ($state.Sid -ne $UserSid) { Fail "after Set up, the service belongs to $($state.Sid), expected this account ($UserSid)" }
+    Pass "Set up: both services run from $(Split-Path -Parent $state.Exe) for this account"
+    Assert-ServicesAnswer $state "after Set up:"
+    if ((Get-ConnectorPaths $state) -notcontains $DocsDir) { Fail "after Set up, the kept data lost the folder $DocsDir" }
+    Pass "Set up kept the service's data (the configured folder)"
+
+    # --- silent update as SYSTEM: the existing service is updated for its account --------------
+    New-ItemProperty -LiteralPath $UninstallKey -Name $MarkerName -Value $MarkerValue -PropertyType String -Force | Out-Null
+    Set-ItemProperty -LiteralPath $UninstallKey -Name "DisplayVersion" -Value $OlderVersion
+    $stale = Add-StaleBackendFiles $BackendDir
+    $started = [DateTime]::UtcNow
+    $code = Invoke-AsSystem $Setup "/S" 900
+    [void]$Summary.Add(("Silent update as SYSTEM: {0:N1} s" -f ([DateTime]::UtcNow - $started).TotalSeconds))
+    $state = Assert-UpdatedInPlace ([pscustomobject]@{ ExitCode = $code }) "silent update as SYSTEM" $stale $state
+    Assert-ServiceSetup "installed" "after the update as SYSTEM," | Out-Null
+
+    # --- silent uninstall again ------------------------------------------------------------------
+    Assert-SilentUninstall $state "silent uninstall after the install as SYSTEM"
 } catch {
     $failed = $true
     Write-Host $_.Exception.Message -ForegroundColor Red
+    if (Test-Path -LiteralPath $UninstallKey) {
+        Write-Host ("uninstall entry: {0} = '{1}', {2} = '{3}', {4} = '{5}'" -f $SetupValue, (Get-ArpValue $SetupValue),
+            $SetupReasonValue, (Get-ArpValue $SetupReasonValue), $SetupCodeValue, (Get-ArpValue $SetupCodeValue))
+    }
     $log = Join-Path $DataRoot "logs\install.log"
     if (Test-Path -LiteralPath $log) {
         Write-Host "install.log (last lines):"
@@ -529,6 +659,8 @@ try {
             try { Invoke-Program $cleanupUninstaller "/S _?=$cleanupDir" 900 | Out-Null } catch { Write-Host "cleanup: $_" }
         }
     }
+    Get-ScheduledTask -TaskName "RootMind-installer-smoke-*" -ErrorAction SilentlyContinue |
+        Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
     foreach ($name in $ServiceNames) {
         if (Get-Service -Name $name -ErrorAction SilentlyContinue) {
             & sc.exe stop $name 2>&1 | Out-Null

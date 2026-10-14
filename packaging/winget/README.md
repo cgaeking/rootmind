@@ -3,7 +3,8 @@
 These templates describe RootMind for the Windows Package Manager (winget): the package
 `cgaeking.RootMind` with the moniker `rootmind`, installed by the per-machine installer
 `RootMind-Setup-x64.exe` from the GitHub release. The installer needs administrator approval
-and sets up the RootMind Windows service for the account signed in to Windows.
+and sets up the RootMind Windows service for the account signed in to Windows when that account
+runs it; otherwise RootMind sets the service up when that account first opens it.
 
 RootMind is not in the winget repository yet; the first submission (unsigned binaries) is
 under way. Until it is accepted, install RootMind from the
@@ -29,15 +30,26 @@ folder is fixed: a folder passed with `/D=<path>` (`winget install --location`) 
 `%ProgramFiles%\RootMind` is refused with exit code 10 and without changes. The installer is per machine (`Scope: machine`): `ProductCode: RootMind` is
 the name of the uninstall key it creates under `HKLM`, and `%ProgramFiles%\RootMind` is its
 only folder. It asks for administrator approval itself (`ElevationRequirement:
-elevatesSelf`). It refuses, with exit code 8 and without changes, when it runs as another account
-than the one signed in to Windows, for example when winget runs in an administrator's prompt
-while a standard account is signed in. After copying the files it runs `service install`; when
-that fails, the app stays installed and the installer exits with the service command's exit
-code.
+elevatesSelf`).
+
+After copying the files the installer runs `service install`, but only for the account that runs
+it and only when that is the account signed in to Windows (or no one is signed in to its
+session, as over SSH). When winget runs it as SYSTEM (winget's validation machines, and
+deployment tools such as Intune or Configuration Manager), or in an administrator's prompt while
+another account is signed in, it installs the app without the service and exits with 0. When
+the signed-in account opens RootMind, the app says "The RootMind service is not set up yet", and
+**Set up** sets it up for that account with one administrator approval. When `service install`
+fails, the app stays installed and the installer exits with 0 as well; RootMind shows the problem
+and **Repair**. The uninstall entry (`HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\RootMind`)
+records the outcome: `RootMindServiceSetup` (`installed`, `skipped` or `failed`),
+`RootMindServiceSetupReason` and, for a failure, `RootMindServiceSetupCode` (the exit code of
+`service install`). The installer's exit codes are 0 (the app is installed) and 10 (another
+install folder; nothing changed).
 
 With `UpgradeBehavior: install`, `winget upgrade` runs the new installer over the installed
 version, which updates the app and the service in place and keeps the app data and the
-service's data; the installed version is not uninstalled first. `winget uninstall` runs the
+service's data; the installed version is not uninstalled first. Run as SYSTEM, an upgrade
+updates an existing service as well, for the account it belongs to. `winget uninstall` runs the
 uninstaller with `/S`, which removes the services but keeps `%ProgramData%\RootMind`.
 
 ## Render and validate
@@ -86,7 +98,8 @@ release assets must never change after a submission; immutable releases on GitHu
    winget install --manifest <folder>
    ```
 
-   Start RootMind once, then remove it with `winget uninstall cgaeking.RootMind`.
+   Start RootMind once (when the installer ran as another account than the signed-in one, it
+   offers **Set up** first), then remove it with `winget uninstall cgaeking.RootMind`.
 3. Scan the installer, the installed backend (`%ProgramFiles%\RootMind\backend`) and the
    service's copy (`%ProgramFiles%\RootMind Service`) with Microsoft Defender. The winget
    pipeline runs Defender on every submission. If a file is flagged, report it to Microsoft as
