@@ -50,10 +50,16 @@ def write_token(home: Path, token: str) -> None:
 
 
 def status(home: Path) -> dict | None:
-    try:
-        return json.loads(ra.status_path(home).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    # The manager rewrites the file in place, so a read can catch it just
+    # after the truncate; read again like the backend does.
+    for _ in range(20):
+        try:
+            return json.loads(ra.status_path(home).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            time.sleep(0.01)
+    return None
 
 
 def state_is(home: Path, state: str):
