@@ -315,3 +315,10 @@ def test_parse_error_and_batches_are_400(mcp):
     assert bad.json()["error"]["code"] == -32700
     batch = mcp.post("/mcp", json=[LIST, LIST], headers=AUTH)
     assert batch.status_code == 400
+
+
+def test_initialize_sends_instructions(mcp):
+    body = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    result = mcp.post("/mcp", json=body, headers=AUTH).json()["result"]
+    assert "user's own files on this computer" in result["instructions"]
+    assert "search_documents" in result["instructions"]

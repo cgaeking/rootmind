@@ -59,3 +59,14 @@ def test_tool_parity():
     assert len(stdio) == 5
     descriptions = {t.name: t.description for t in mcp_stdio.list_tools_result().tools}
     assert descriptions == {t["name"]: t["description"] for t in tools.TOOLS}
+
+
+async def test_initialize_sends_instructions_with_folder_names(app_config, indexed_repo):
+    server = mcp_stdio.create_server(indexed_repo, app_config)
+
+    async with Client(server, mode="legacy") as client:
+        instructions = client.instructions
+
+    assert "user's own files on this computer" in instructions
+    for label in tools.folder_labels(app_config.connectors):
+        assert label in instructions
