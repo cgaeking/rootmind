@@ -82,6 +82,7 @@ def create_server(repo: DocumentRepository, config: AppConfig) -> Server:
     return Server(
         SERVER_NAME,
         version=__version__,
+        instructions=tools.server_instructions(tools.folder_labels(config.connectors)),
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
     )

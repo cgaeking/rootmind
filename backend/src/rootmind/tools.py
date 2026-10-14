@@ -46,11 +46,54 @@ HINT_LOOKBEHIND, HINT_LOOKAHEAD = 3_000, 1_000
 
 _FILE_TYPE_DESCRIPTION = "Optional: filter by file type, e.g. pdf, docx, xlsx, pptx, md, txt, csv"
 
+# Server instructions for MCP clients (sent with the initialize result).
+MAX_FOLDER_LABELS = 10
+_LABEL_MAX_CHARS = 60
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def folder_labels(connectors: Any) -> list[str]:
+    """Short names of the configured folders (the last path part), for the MCP instructions.
+
+    Only the folder names are used, not the full paths, so the user name in a
+    path such as ``C:/Users/<name>/Documents`` is not sent to the MCP client.
+    """
+    labels: list[str] = []
+    for connector in connectors or []:
+        path = str(getattr(connector, "path", "") or "").replace("\\", "/").rstrip("/")
+        label = path.rsplit("/", 1)[-1] if path else ""
+        label = _CONTROL_CHARS.sub(" ", label or str(getattr(connector, "name", "") or ""))
+        label = label.strip()[:_LABEL_MAX_CHARS]
+        if label and label not in labels:
+            labels.append(label)
+        if len(labels) == MAX_FOLDER_LABELS:
+            break
+    return labels
+
+
+def server_instructions(labels: list[str] | None = None) -> str:
+    """Tell MCP clients what RootMind is, so they pick it for the user's local files.
+
+    Without this, a client with several document tools (for example a cloud
+    drive connector) cannot tell that RootMind holds the files on this computer.
+    """
+    where = f" ({', '.join(labels)})" if labels else ""
+    return (
+        "RootMind gives read-only access to the user's own files on this computer: "
+        f"the local folders indexed by RootMind{where}. When the user asks about their "
+        "documents or files on this computer or PC, or about invoices, contracts, letters, "
+        "offers, reports or similar documents without naming another source, search "
+        "RootMind first with search_documents, then read the relevant hits with "
+        "read_document. Cite the document name and the page, slide or sheet."
+    )
+
+
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_documents",
         "description": (
-            "Fast full-text search (SQLite FTS5) over all indexed documents. Matches exact "
+            "Search the user's own files on this computer (the local folders indexed by "
+            "RootMind). Fast full-text search (SQLite FTS5) over all indexed documents. Matches exact "
             "words and word prefixes. USE THIS FIRST: it is fast and cheap. Returns matching "
             "documents with text snippets, the location (page/slide/sheet) when known, and a "
             "suggested read_document call around each hit."

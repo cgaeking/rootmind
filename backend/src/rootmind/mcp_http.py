@@ -202,6 +202,7 @@ def create_app(
         sse_sessions={},
         config_path=None,
         config_signature=None,
+        folders=[],
     )
     allowed_lock = threading.Lock()
 
@@ -233,6 +234,7 @@ def create_app(
             if allowed != state.allowed:
                 logger.info("Folder list re-read from %s: %d folder(s)", path, len(allowed))
             state.allowed = allowed
+            state.folders = tools.folder_labels(cfg.connectors)
             state.config_signature = signature
             return allowed
 
@@ -258,6 +260,7 @@ def create_app(
                     "Cannot re-read %s; using the folder list given: %s", state.config_path, e
                 )
         state.allowed = frozenset(c.name for c in connectors)
+        state.folders = tools.folder_labels(connectors)
         stats = state.repo.get_statistics()
         logger.info(
             "Database ready: %d documents, %s characters",
@@ -319,10 +322,14 @@ def create_app(
 
     async def dispatch(method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "initialize":
+            # Re-read the folder list if config.yaml changed, so the
+            # instructions name the folders as they are now.
+            await asyncio.to_thread(current_allowed)
             return {
                 "protocolVersion": _negotiate_version(params),
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": __version__},
+                "instructions": tools.server_instructions(state.folders),
             }
         if method in ("ping", "initialized", "notifications/initialized"):
             return {}
