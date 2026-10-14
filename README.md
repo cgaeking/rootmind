@@ -220,7 +220,69 @@ token filled in:
 - **n8n on another machine:** only through a TLS-terminating reverse proxy or
   a tunnel in front of `127.0.0.1:<port>`. Never expose the plain HTTP port:
   the server speaks plain HTTP, and anyone with the token can read every
-  indexed document.
+  indexed document. See
+  [Reach RootMind from cloud assistants](#reach-rootmind-from-cloud-assistants).
+
+### Reach RootMind from cloud assistants
+
+Assistants that run on someone else's servers, such as Grok Bot, a cloud-hosted
+n8n or other web agents, cannot reach `127.0.0.1` on your computer. They need a
+public HTTPS address that forwards to the MCP endpoint, which a tunnel on your
+computer provides. RootMind itself needs no change: the tunnel forwards to the
+**MCP endpoint** shown in Settings → RootMind service, and the client sends the
+same token.
+
+**With ngrok** (free account, one fixed free domain):
+
+1. Create an account at [ngrok.com](https://ngrok.com), then install the agent
+   and add your authtoken:
+
+   ```powershell
+   winget install ngrok.ngrok
+   ngrok config add-authtoken <your-ngrok-authtoken>
+   ```
+
+2. In the ngrok dashboard under **Domains**, note your free domain, then start
+   the tunnel to the MCP port (3000 unless Settings shows another):
+
+   ```powershell
+   ngrok http 3000 --url https://<your-free-domain>
+   ```
+
+   To keep it running after a restart, define the tunnel in ngrok's
+   configuration file and install it as a service (`ngrok service install`;
+   see the ngrok documentation).
+
+**With Tailscale Funnel** (free Tailscale account and app):
+
+```powershell
+tailscale funnel --bg 3000
+```
+
+The command prints the public address (`https://<computer>.<tailnet>.ts.net`)
+and keeps the funnel running in the background, also after a restart. The first
+time, it asks you to allow Funnel for your tailnet.
+
+**In the assistant**, add a custom MCP connector (or n8n's MCP Client Tool) with:
+
+| Field | Value |
+|---|---|
+| URL | `https://<your-public-address>/mcp` |
+| Transport | HTTP Streamable |
+| Authentication | header `Authorization: Bearer <token>` (Settings → RootMind service → **Copy token**) |
+
+Clients that only offer an OAuth sign-in and cannot send a bearer token cannot
+connect this way.
+
+Keep in mind:
+
+- Anyone with the token can read every indexed document through the tunnel.
+  Keep it secret; stopping the tunnel closes the public access.
+- What a cloud assistant reads through RootMind (search results and document
+  text) goes to that assistant's provider.
+- RootMind refuses requests that a web page sends from a browser (requests
+  with a non-local `Origin` header); server-to-server requests from the
+  assistant are not affected.
 
 ## How it works
 
