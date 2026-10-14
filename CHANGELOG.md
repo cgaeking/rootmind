@@ -8,6 +8,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 - Docs: "Reach RootMind from cloud assistants" (Grok Bot, cloud-hosted n8n and similar) with tunnel steps for ngrok and Tailscale Funnel; the app's n8n hint mentions using the tunnel address when n8n runs elsewhere.
 
+### Changed
+
+- Docs: releases are described as not code-signed; the code signing policy no longer names a signing service, and winget is being submitted with unsigned binaries.
+
 ## [2.1.0] - 2026-10-14
 
 ### Added

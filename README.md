@@ -712,8 +712,8 @@ The full threat model is in [SECURITY.md](SECURITY.md).
   The backend is cross-platform Python; CI runs its tests on Ubuntu and
   Windows.
 - The release binaries are not code-signed yet (see [Install](#install)).
-  RootMind is not in the winget repository yet; submitting it is planned once
-  the binaries are signed.
+  RootMind is not in the winget repository yet; the first submission is
+  under way.
 - No OCR: scanned PDFs without a text layer produce no text.
 - Legacy `.doc` and `.xls` files go to the DOCX and XLSX parsers and usually
   fail to parse.
@@ -746,6 +746,7 @@ keep their own licenses.
 
 ## Code signing policy
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate
-by [SignPath Foundation](https://signpath.org). See [CODE_SIGNING.md](CODE_SIGNING.md)
-for what is signed, the team roles and the privacy policy.
+Releases are not code-signed yet; each release ships checksums and build
+provenance attestations instead (see [Verify downloads](#verify-downloads)).
+[CODE_SIGNING.md](CODE_SIGNING.md) describes what will be signed, the team
+roles and the privacy policy.

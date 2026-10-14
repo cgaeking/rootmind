@@ -1,13 +1,12 @@
 # Code signing policy
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by
-[SignPath Foundation](https://signpath.org).
+**Status:** RootMind releases are not code-signed yet. Every release ships
+`SHA256SUMS.txt` and a build provenance attestation for every file, so you can
+check that a download is unchanged and was built from this repository (see the
+README, "Verify downloads"). Once a signing service is set up, this page will
+name it and the first signed version.
 
-**Status:** releases up to and including 1.3.0 are not signed. Signed releases
-start once the signing setup is complete; this page will then name the first
-signed version.
-
-## What is signed
+## What will be signed
 
 Only files that the [release workflow](.github/workflows/release.yml) builds from
 the source in this repository, on GitHub Actions, for a version tag:
@@ -22,16 +21,16 @@ libraries listed in [`backend/uv.lock`](backend/uv.lock) and
 [`desktop/src-tauri/Cargo.lock`](desktop/src-tauri/Cargo.lock)) are included as
 their maintainers publish them and are not signed by this project.
 
-Every signing request is created by the release workflow and approved by hand
-before anything is signed. Each release also ships `SHA256SUMS.txt` and a build
-provenance attestation for every file (see the README, "Verify downloads").
+Every signing request will be created by the release workflow and approved by
+hand before anything is signed.
 
 ## Team roles
 
 - Committers and reviewers: [Christian Gäking](https://github.com/cgaeking)
 - Approvers: [Christian Gäking](https://github.com/cgaeking)
 
-All team members use multi-factor authentication for GitHub and SignPath.
+All team members use multi-factor authentication for GitHub (and for the
+signing service, once one is used).
 Changes from anyone else arrive as pull requests and are reviewed before they
 are merged; build scripts and workflows are reviewed like any other code.
 

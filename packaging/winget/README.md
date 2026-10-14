@@ -5,8 +5,8 @@ These templates describe RootMind for the Windows Package Manager (winget): the 
 `RootMind-Setup-x64.exe` from the GitHub release. The installer needs administrator approval
 and sets up the RootMind Windows service for the account signed in to Windows.
 
-RootMind is not in the winget repository yet. The first submission is planned for when the
-release binaries are code-signed. Until then, install RootMind from the
+RootMind is not in the winget repository yet; the first submission (unsigned binaries) is
+under way. Until it is accepted, install RootMind from the
 [GitHub releases](https://github.com/cgaeking/rootmind/releases).
 
 ## Files
