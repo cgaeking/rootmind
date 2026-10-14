@@ -20,7 +20,10 @@ The desktop app uses the RootMind Windows service, which requires a token on
 every request, so other accounts on the same computer and web pages cannot use
 it. RootMind does not protect against malware that runs under your own
 account, against local administrators, or against exposing its ports to a
-network. These are out of scope (see the end of this document).
+network. These are out of scope (see the end of this document). The one
+deliberate exception is **remote access** (off by default): it makes MCP over
+HTTP reachable from the internet through ngrok, protected by the MCP token
+(see [Remote access](#remote-access-ngrok)).
 
 ## What leaves the machine
 
@@ -31,9 +34,12 @@ network. These are out of scope (see the end of this document).
 | Chat titles (`POST /chat/title`) | Up to 500 characters each of the first question and its answer | The configured provider |
 | Model list (`POST /llm/models`) | The API key, to list models | The configured provider |
 | MCP tool calls | Tool results go to the MCP client, and from there to whatever model that client uses | Decided by the MCP client |
+| Remote access, while it is on | The ngrok authtoken (to sign in), and every request and answer through the public address, including the MCP token in the `Authorization` header: ngrok terminates TLS at its edge | ngrok; a cloud assistant's requests and the document text it reads also go to that assistant's provider |
 
 RootMind has no telemetry and no update check. The desktop app's CSP only
-allows network requests to `localhost` and `127.0.0.1`.
+allows network requests to `localhost` and `127.0.0.1`. With remote access
+off (the default), the RootMind service opens no connection to ngrok and does
+not even load the SDK.
 
 ## Data at rest
 
@@ -48,6 +54,8 @@ The backend keeps its files in its home folder (`RLM_HOME`):
 | Index | Service: `data\db\index.db`; command line: `data\index.db`; plus `-wal`/`-shm` | Contains the **full extracted text** of every indexed file. In the service's folder the installing account can read it |
 | REST token | `data\rest_token.txt` (service, and `--require-token`), or `RLM_API_TOKEN` | See [REST API](#rest-api) |
 | MCP HTTP token | `data\api_token.txt`, unless `MCP_API_TOKEN` is set | In the service's folder readable by the installing account, SYSTEM, administrators and the MCP service account (see [MCP over HTTP](#mcp-over-http-bearer-token)). Created with mode 0600 on Linux and macOS; elsewhere on Windows it inherits the folder's permissions |
+| ngrok authtoken (remote access) | `data\ngrok_authtoken.txt` | Only in the service's folder: readable by SYSTEM, Administrators and the MCP service account, **not** by the installing account's standard token. Never in `config.yaml`, never returned by the API, never logged (see [Remote access](#remote-access-ngrok)). Kept by an uninstall without **Delete the application data** |
+| Remote access status | `data\remote_access.json` | State, public address, last error and time; no secrets. Written by the MCP service account in place |
 | Logs | Service: `logs\backend\`, `logs\mcp-http\` and `logs\install.log`. Command line: the console | Contain file paths, questions and tool arguments. RootMind never logs API keys or tokens, only a short fingerprint of a token; provider error messages are logged as the provider sends them |
 | Chat history | `%APPDATA%\io.github.cgaeking.rootmind\conversations` | Questions, answers and source paths in plain JSON |
 | Custom backend address and token | The desktop app's local storage | Only when you connect to a backend under Settings → Advanced |
@@ -207,10 +215,13 @@ on by default, runs as the virtual account `NT SERVICE\RootMind-MCP-HTTP`
 with only `SeChangeNotifyPrivilege`. It serves from the index and never reads
 the indexed folders. It can read `config.yaml` and `data\api_token.txt`, write
 the database folder and its own logs, and nothing else in the data folder; in
-particular it cannot read the REST token. `config.yaml` also holds the LLM API
+particular it cannot read the REST token. For remote access it can also read
+`data\ngrok_authtoken.txt` and read and write (not delete, not re-permission)
+`data\remote_access.json`. `config.yaml` also holds the LLM API
 keys saved through the app, so the MCP service account can read them, although
 it never uses them. Turning MCP over HTTP off (Settings → RootMind service)
-removes the service and the account's entries from the data folder. What the
+removes the service and the account's entries from the data folder, and turns
+remote access off in `config.yaml`. What the
 token gives access to is described under
 [MCP over HTTP](#mcp-over-http-bearer-token).
 
@@ -245,6 +256,8 @@ RootMind\              owner BA, protected: SY full, BA full, U read, M read (th
   data\                inherited, M: nothing
     rest_token.txt     inherited (M: nothing)
     api_token.txt      inherited + M read
+    ngrok_authtoken.txt  protected: SY full, BA full, M read (U: nothing)
+    remote_access.json inherited + M read and write (no delete, no permission change)
     db\                inherited + M modify (index.db, -wal, -shm)
   logs\                inherited
     backend\           service log
@@ -257,7 +270,8 @@ A missing folder is created with these permissions in one step. An existing
 one, for example one kept by an uninstall without **Delete the application
 data**, is reused only when every item in it is owned by SYSTEM or
 Administrators, grants write access to no other account (except M on its two
-folders), and contains no reparse points or hard-linked files. An update stops
+folders and on `remote_access.json`), and contains no reparse points or
+hard-linked files. An update stops
 both services before it checks the folder, and the permissions are written
 through a handle of each item, never through a link that replaced it. Files
 that `service install` creates are owned by Administrators, also for an
@@ -368,12 +382,75 @@ only to the port that `service status` reports for the running MCP service.
   `MCP_ALLOWED_ORIGINS`) are rejected with 403 before the token is checked.
 - It binds to `127.0.0.1` by default and warns when bound to anything else.
   It speaks plain HTTP: to reach it from another machine, put a TLS proxy or a
-  TLS tunnel in front of it. Never expose the plain port.
+  TLS tunnel in front of it (the service's remote access is such a tunnel).
+  Never expose the plain port.
 
 Limits: there is one shared token, without scopes, expiry or rate limiting.
 Anyone with the token can read every indexed document. To rotate it, delete
 `data/api_token.txt` (or change `MCP_API_TOKEN`) and restart the server; for
 the RootMind service, see [Background service](#background-service).
+
+### Remote access (ngrok)
+
+Remote access is **off by default**. When the user turns it on (Settings →
+RootMind service, after a confirmation that names both risks below), the
+RootMind service's MCP server opens an outbound connection to ngrok with the
+user's authtoken and gets a public HTTPS address that forwards to
+`127.0.0.1:<MCP port>`. No inbound port is opened on the computer, and no
+ngrok program is installed: the tunnel runs in-process through ngrok's
+open-source SDK (PyPI `ngrok`, a native extension locked with hashes in
+`uv.lock`).
+
+What it exposes:
+
+- **Only the MCP server.** The tunnel forwards to the MCP port and nothing
+  else: `/health` answers without a token, every MCP endpoint needs the MCP
+  bearer token, and requests with a browser `Origin` that is not loopback are
+  refused before the token is checked. The REST API is never reachable
+  through it (another port, and it refuses non-loopback peers and foreign
+  `Host` headers anyway).
+- **Every indexed document, to anyone with the MCP token.** The token is
+  32 random bytes and compared in constant time; there is no rate limiting,
+  request log or lockout on the public path, and no expiry. Treat it like a
+  password, keep the copies in assistants and n8n credentials, and rotate it
+  (see [Background service](#background-service)) if it may have leaked.
+- **The traffic to ngrok.** ngrok terminates TLS at its edge, so ngrok can
+  see requests and answers, including the MCP token and the document text a
+  client reads. What a cloud assistant reads goes to that assistant's
+  provider as well. Both are named in the confirmation and in the README.
+- Turning remote access off (or MCP over HTTP off, or stopping the service)
+  closes the tunnel within a few seconds; the public address then answers
+  with ngrok's error page. `service install --no-mcp-http` also turns it off
+  in `config.yaml`, so turning MCP over HTTP on later never reopens the
+  public address by itself.
+
+The authtoken:
+
+- The app sends it once to the REST API (`POST /remote-access`, bearer token,
+  JSON only); the field is write-only, and no endpoint returns it, only
+  whether one is saved. An invalid value is refused with 400 without being
+  echoed.
+- The backend (LocalSystem) writes it to `data\ngrok_authtoken.txt`: a new
+  file created with its final, protected access list (SYSTEM and
+  Administrators full, the MCP service account read while the MCP service
+  exists) and then moved over the old one, so no other account can open it
+  at any moment. The installing account's standard token cannot read it (an
+  elevated administrator can, as for every file there). It is never part of
+  `config.yaml`, which more accounts can read. `service install` and the
+  data-folder check enforce the same entries.
+- It is never logged: RootMind's messages leave it out, errors from ngrok
+  are redacted before they reach the log or the status file, and while the
+  tunnel runs, a filter on the service's log handlers replaces it in every
+  record (the SDK logs into Python logging). Tests assert all three.
+- Someone who gets it can use the user's ngrok account (open endpoints,
+  traffic quota), not RootMind's data. Revoke it in the ngrok dashboard.
+
+The MCP service account, which runs the tunnel, can read the authtoken and
+write exactly one file in the data folder, `remote_access.json` (state, URL,
+last error, time; no secrets), in place: it can neither delete it nor change
+its permissions. The backend reads that file with a size limit, checks every
+field and passes on only `https://` addresses, so even a compromised MCP
+process gains nothing through it beyond what it can already read (the index).
 
 ### Prompt injection from indexed documents
 
@@ -493,13 +570,16 @@ content you would open yourself.
 - GitHub Actions are pinned by commit SHA and check out without persisted
   credentials. Tests never contact an LLM provider: real SDK clients cannot be
   constructed in tests, no keys are set, and the provider base URLs point at
-  a closed local port.
+  a closed local port. Tests never contact ngrok either: remote access runs
+  against a fake SDK, and the smoke and service tests never turn it on.
 
 ## Out of scope
 
 - Several users sharing one backend. The RootMind service belongs to the
   account that installed it.
 - Exposing the REST API to a network, or the MCP HTTP server without TLS.
+  Remote access is the supported way to expose MCP over HTTP; what ngrok
+  and a cloud assistant's provider do with the traffic is under their terms.
 - Malware running under your own account, attackers with administrator
   rights, and physical access to the machine.
 - Content that LLM providers receive, store or log under their own terms.

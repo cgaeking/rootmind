@@ -6,6 +6,7 @@ Control Manager; the service e2e test in CI covers it.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -162,6 +163,102 @@ def test_mcp_serves_with_its_token_file(home, monkeypatch):
         assert not (home / "data" / "rest_token.txt").exists()
     finally:
         assert running.stop() is True
+
+
+def test_mcp_runs_remote_access_to_its_own_port(home):
+    """The tunnel forwards to the MCP server's port, and closes with the server."""
+    from fake_ngrok import FAKE_AUTHTOKEN, FakeNgrok
+
+    from rootmind import remote_access
+
+    (home / "data" / "api_token.txt").write_text("mcp-token")
+    (home / "data" / "ngrok_authtoken.txt").write_text(FAKE_AUTHTOKEN)
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    config["remote_access"] = {"enabled": True, "domain": "rootmind-test.ngrok-free.app"}
+    (home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    sdk = FakeNgrok()
+    built = []
+
+    def factory(root, port):
+        manager = remote_access.RemoteAccessManager(
+            home=root, port=port, sdk_loader=sdk.loader(), poll_seconds=0.02
+        )
+        built.append(manager)
+        return manager
+
+    running = Running(host.ServiceRunner("mcp-http", 0, home=home, remote_access_factory=factory))
+    status_file = home / "data" / "remote_access.json"
+
+    def status():
+        try:
+            return json.loads(status_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    try:
+        deadline = time.monotonic() + 10
+        while (status() or {}).get("state") != "connected" and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert status()["url"] == "https://rootmind-test.ngrok-free.app"
+        [session] = sdk.sessions
+        assert session.listener.target == running.url  # the MCP server, nothing else
+        assert built[0].port == running.runner.port_in_use
+    finally:
+        assert running.stop() is True
+    assert session.closed and session.listener.closed
+    assert status()["state"] == "stopped"
+
+
+def test_the_backend_writes_remote_access_files_through_the_layout(home):
+    from fake_ngrok import FAKE_AUTHTOKEN
+
+    calls = []
+
+    class Protection:
+        def write_secret(self, path, text):
+            calls.append(("write_secret", path))
+            path.write_text(text, encoding="utf-8")
+
+        def share_status(self, path):
+            calls.append(("share_status", path))
+            path.write_text("{}", encoding="utf-8")
+
+    runner = host.ServiceRunner(
+        "backend",
+        0,
+        home=home,
+        user_sid="S-1-5-21-1",
+        access_factory=access_factory([]),
+        protection_factory=Protection,
+    )
+    running = Running(runner)
+    try:
+        token = (home / "data" / "rest_token.txt").read_text().strip()
+        response = httpx.post(
+            f"{running.url}/remote-access",
+            json={"enabled": True, "authtoken": FAKE_AUTHTOKEN},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200, response.text
+        assert FAKE_AUTHTOKEN not in response.text
+    finally:
+        running.stop()
+    assert calls == [
+        ("write_secret", home / "data" / "ngrok_authtoken.txt"),
+        ("share_status", home / "data" / "remote_access.json"),
+    ]
+    assert yaml.safe_load((home / "config.yaml").read_text())["remote_access"]["enabled"] is True
+
+
+def test_default_remote_access_factories(home):
+    from rootmind import remote_access
+    from rootmind.service import layout
+
+    manager = host._default_remote_access_factory(home, 3456)
+    assert isinstance(manager, remote_access.RemoteAccessManager)
+    assert manager.target == "http://127.0.0.1:3456"
+    assert manager.config_path == home / "config.yaml"
+    assert isinstance(host._default_protection_factory(), layout.DataFileProtection)
 
 
 def test_mcp_without_a_token_file_stops(home):

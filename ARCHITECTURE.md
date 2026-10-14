@@ -45,10 +45,13 @@ flowchart TB
     parsers["Parsers<br/>indexer/parser.py"]
     conn["LocalConnector<br/>connectors/local.py"]
     policy["Folder access policy<br/>access.py, winaccess.py"]
+    remote["Remote access (ngrok SDK)<br/>remote_access.py"]
 
     cli --> rest
     host --> rest
     host --> http
+    host --> remote
+    remote -.->|"forwards to"| http
     rest --> engine
     rest --> repo
     rest --> sync
@@ -78,6 +81,7 @@ flowchart TB
 | Agent loop | `rlm_engine/engine.py` | Provider adapters, the bounded tool loop, condensing follow-up questions, sources |
 | REST API | `api/app.py`, `api/routes.py`, `auth.py` | Localhost API for the desktop app with an optional bearer token; config hot reload |
 | MCP servers | `mcp_stdio.py`, `mcp_http.py` | The same tools for external MCP clients |
+| Remote access | `remote_access.py` | Optional ngrok tunnel to MCP over HTTP, run by the MCP service; its settings and status files |
 | CLI | `main.py` | One command tree: `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service`; bind and token resolution |
 | Windows service | `service/` | `service install`, `uninstall` and `status`, and the service host that the Service Control Manager starts |
 | Desktop app | `desktop/` | Tauri 2 UI; a client of the Windows service over REST: reads its state, connects with its token, repairs it and switches MCP over HTTP |
@@ -175,6 +179,7 @@ the CI scripts.
 | `service install` options | `--port N\|auto`, `--mcp-http` / `--no-mcp-http`, `--mcp-port N\|auto`, `--mcp-token-from FILE`, `--user-sid SID`, `--no-start` |
 | Installer | Installs with `service install --port auto --mcp-port auto --user-sid <signed-in account>` (as SYSTEM, only to update an existing service: without `--user-sid`; skipped otherwise); uninstalls with `service uninstall`, `--purge` when the app data is to be deleted |
 | Token files | `<RLM_HOME>/data/rest_token.txt` (REST), `<RLM_HOME>/data/api_token.txt` (MCP) |
+| Remote access files | `<RLM_HOME>/data/ngrok_authtoken.txt` (the ngrok authtoken, written by the backend), `<RLM_HOME>/data/remote_access.json` (the tunnel's status, written by the MCP service); settings in `config.yaml`, section `remote_access` |
 | Open routes with a token | `GET`/`HEAD` on `/` (with `"auth": "bearer"` or `"none"`) and `/health`; everything else 401 |
 | Service names | `RootMind-Backend`, `RootMind-MCP-HTTP` |
 
@@ -385,6 +390,47 @@ other accounts can change (exit 10). A launch that
 Windows security refuses (Smart App Control, WDAC or antivirus: Windows error
 codes 225, 226, 1260 and 4550–4599) is reported as blocked.
 
+**Remote access** (`remote_access.py`, off by default). The MCP service can
+give MCP over HTTP a public HTTPS address through ngrok, for assistants that
+run in the cloud. It uses the open-source ngrok SDK (PyPI `ngrok`, MIT or
+Apache-2.0, a native extension), in-process; no ngrok agent program is
+shipped. The work is split by account:
+
+- The backend (LocalSystem) takes the settings through `GET`/`POST
+  /remote-access`: `enabled` and `domain` go to `config.yaml`
+  (`remote_access`), the authtoken to `data\ngrok_authtoken.txt`. It writes
+  that file through `layout.DataFileProtection`: a new temporary file created
+  with the final security descriptor (SYSTEM and Administrators full, the MCP
+  account read while the MCP service exists, never the installing account)
+  and moved over the old one. It never reads the authtoken back, only whether
+  the file exists. No administrator approval is needed.
+- The MCP service's `RemoteAccessManager` runs in its own thread with its own
+  event loop, started by `ServiceRunner.serve()` after the port is bound and
+  stopped (tunnel closed) when the server stops. Every 2 seconds it checks
+  `config.yaml` and the authtoken file (by file id, time and size). When
+  remote access is on, it opens an ngrok session with the authtoken and an
+  HTTP endpoint (on the reserved domain, if any) with `listen_and_forward`
+  to `http://127.0.0.1:<its port>`, so the public address serves exactly the
+  MCP server. A change of the settings or the authtoken closes the tunnel and
+  opens it again; turning it off closes it. A failed connect is retried after
+  5, 10, 20 ... seconds, at most 5 minutes; a lost connection is restored by
+  the SDK, which the manager follows through its disconnection and heartbeat
+  callbacks. A stop command from the ngrok dashboard closes the tunnel until
+  the settings change.
+- The status (`off`, `connecting`, `connected` with the URL, `error` with the
+  message, `stopped`, and the time; no secrets) goes to
+  `data\remote_access.json`, rewritten in place on every change and every 30
+  seconds. `service install` creates the file; the MCP account may read and
+  write it but not delete it or change its permissions. The backend reads it
+  (at most 64 KB, field by field, only `https://` URLs) and reports
+  `unavailable` when it is older than 90 seconds or says `stopped`.
+- The authtoken is never logged: error messages are redacted, and while the
+  manager runs, a filter on the log handlers replaces it in every record
+  (the SDK logs into Python logging, at WARN).
+- `service install --no-mcp-http` turns remote access off in `config.yaml`,
+  so turning MCP over HTTP on again never reopens the public address by
+  itself; the authtoken is kept. An uninstall without `--purge` keeps it too.
+
 **Settings → RootMind service** (`desktop/src/screens/ServiceSection.tsx`) is
 read-only: a status badge, the address and the service's version. When the
 service cannot be used, it names the problem (not set up yet, stopped, another
@@ -398,7 +444,16 @@ switches the MCP service (one administrator approval). While it is on, the
 section shows the **MCP endpoint** with **Copy** and **Copy token**, and the
 values for **n8n (MCP Client Tool)** with **Copy**, which fills in the token,
 plus the link **Reach MCP from n8n**. The token is read from Rust on each
-copy and never shown. After a failed change, **Details** shows the output of
+copy and never shown. Below it, **Remote access (ngrok)**
+(`desktop/src/screens/RemoteAccess.tsx`, only while the app uses the
+service) has a checkbox, the authtoken (a password field; once saved only
+**Saved** with **Replace** and **Remove**), the optional reserved domain, and
+the status with the **Public MCP endpoint** and **Copy** while connected. It
+is disabled while MCP over HTTP is off and until an authtoken is saved;
+turning it on asks for confirmation (anyone with the MCP token can read every
+indexed document; what a cloud assistant reads goes to its provider). It
+uses the REST API, polls the status every 3 seconds while remote access is
+on, and needs no administrator approval. After a failed change, **Details** shows the output of
 `service_details`. While a custom backend is in use, the section reports what
 `service_info` shows.
 
@@ -456,7 +511,10 @@ executable gets no arguments.
   and without a token (the token never reaches the output), that the options
   of the removed built-in backend (`--exit-with-parent`, `--import-config`)
   are refused, indexing of every document format in the eval corpus, that
-  both LLM client libraries load, and MCP over HTTP and stdio.
+  both LLM client libraries load, that the ngrok SDK (a native extension,
+  collected with its metadata by the spec) imports and remote access is off
+  by default (`GET /remote-access`; no tunnel is opened), and MCP over HTTP
+  and stdio.
 - `backend/packaging/tree_hash.py` computes the tree hash (SHA-256 over the
   sorted `<path>\t<sha256>` lines of every file). CI uses it to make sure the
   installer and the zip contain exactly the tested build.
@@ -861,6 +919,10 @@ each field. Sections:
 - `api`: host and port for `rootmind api` (and `rootmind` without a command)
   when neither `--host`/`--port` nor `RLM_HOST`/`RLM_PORT` are given. The
   service gets its port on the command line.
+- `remote_access`: `enabled` (default false) and `domain` (a reserved ngrok
+  domain, or null) for the RootMind service's MCP server (see
+  [Background service](#background-service)). The authtoken is not part of
+  the config.
 
 | Environment variable | Used by | Effect |
 |---|---|---|
@@ -918,6 +980,7 @@ share. The two tokens are separate secrets in separate files.
 | `POST /chat/title` | Short title for a conversation (one LLM call); same error codes |
 | `GET /config`, `POST /config` | Editable config with masked API keys; save and hot reload. Under a restricting folder access policy, a folder the policy refuses gets 400 and nothing is saved |
 | `POST /llm/models` | Model list from the provider, using the key in the request or the stored key; 502 or 504 when the provider fails |
+| `GET /remote-access`, `POST /remote-access` | Remote access: `enabled`, `domain`, `authtoken_saved` (the authtoken itself is write-only), whether the ngrok SDK is available, and the tunnel's status from the MCP service. `POST` takes `enabled`, `domain` and `authtoken` (omitted: unchanged; `""` removes); turning it on without a saved authtoken, an invalid authtoken (never echoed) or domain: 400 |
 
 How the API is protected, and what remains open, is described in
 [SECURITY.md](SECURITY.md#rest-api).
@@ -956,7 +1019,8 @@ How the API is protected, and what remains open, is described in
   Folders (changes are saved at once; a folder the backend refuses is taken
   back with the reason, and the folders the service cannot read are marked
   "Not accessible to the RootMind service: ..."), Settings (appearance and
-  language, RootMind service, provider, model, keys, schedule, Advanced for a
+  language, RootMind service with MCP over HTTP and remote access, provider,
+  model, keys, schedule, Advanced for a
   custom backend, and About with the app and backend versions) and Status.
 - **Rust side.** `src-tauri/src/app.rs` reports the build information and
   locates the backend that ships with the app; `service.rs` and `win/` read
@@ -1010,6 +1074,11 @@ How the API is protected, and what remains open, is described in
   lines, exit codes, ports, update and uninstall) runs against fake Service
   Control Manager and file system adapters on every OS; the permission
   layout is checked against real temporary folders on Windows.
+- Remote access runs against a fake ngrok SDK (`tests/fake_ngrok.py`): the
+  manager's start, stop, settings and authtoken changes, retries with
+  growing pauses, timeouts, lost connections, stop commands from ngrok, the
+  status file, and that the authtoken never reaches a log, the status or an
+  API answer. No test opens a real tunnel or needs an ngrok account.
 - A small corpus with one file per format (PDF with two pages, XLSX with two
   sheets, PPTX with three slides, DOCX, CSV, Markdown, text) is generated for
   the tests.
@@ -1025,7 +1094,10 @@ How the API is protected, and what remains open, is described in
   CI runner and checks the refusals (foreign service, busy port, wrong
   account, unprotected data folder), an install with MCP over HTTP on by
   default, the accounts, privileges and quoted command lines, the
-  permissions of the program and data folders, both tokens, read confinement
+  permissions of the program and data folders, both tokens, the
+  remote-access files (the MCP service writes its status in place; a saved
+  authtoken is readable only by SYSTEM, Administrators and the MCP account,
+  and in no log; remote access is never turned on), read confinement
   (a file only administrators can read is not found by search; system
   folders and shares are refused), the MCP folder reload, restart and update,
   switching MCP over HTTP off and on again from the Program Files copy (as
@@ -1060,7 +1132,7 @@ How the API is protected, and what remains open, is described in
 the backend choice, the store, the client's token handling, the connectivity
 check, the stale-data guards (including a render test of Settings switching
 backends), the service problems and result messages, the RootMind service
-section, the backend dialog and the label files; Rust tests for argument
+section with remote access, the backend dialog and the label files; Rust tests for argument
 quoting, exit-code mapping, the ImagePath and TCP table parsers, the order of
 the listener check and the token read, token files, `safe_id` and the
 file-opening scope, plus Windows-only tests of the Service Control Manager,
@@ -1143,6 +1215,20 @@ requires a token from the start and fails closed without one. The service
 serves it by default, on `127.0.0.1` only: for the installed app it is the
 way MCP clients reach the index, which the stdio server cannot open.
 
+**Remote access with the ngrok SDK inside the MCP service.** Cloud
+assistants need a public HTTPS address. The tunnel runs in the process that
+already serves MCP, as its virtual account: it can read the index anyway, but
+not the REST token, the indexed folders or anything else in the data folder,
+and the tunnel can forward to nothing but that server. The SDK is a library
+in the build (locked with hashes in `uv.lock`), so there is no second program
+to download, verify, place and keep updated, as an ngrok agent would need.
+ngrok is the only provider: it needs only an authtoken. Tailscale Funnel
+needs the Tailscale app and stays a documented alternative. The authtoken
+has its own file with its own access list instead of a field in
+`config.yaml`, which the installing account and the MCP account can read.
+There is no rate limiting on the public path; the MCP token (256 bits) is the
+protection.
+
 **A hand-written MCP HTTP transport.** `mcp_http.py` implements the JSON-RPC
 methods it needs on FastAPI (JSON responses on `POST /mcp`, plus the older SSE
 transport for clients that still use it). It is small and covered by tests,
@@ -1191,7 +1277,11 @@ service would need:
 - The upgrade from 1.x does not carry over the folders, settings, API keys
   or index of the 1.x built-in backend.
 - No token rotation command; delete the token file and run `service install`
-  again.
+  again. This matters more with remote access on, where the MCP token guards
+  a public address.
+- Remote access has no rate limiting or request log of its own on the public
+  path, and supports only ngrok; clients that can only sign in with OAuth
+  cannot connect. A real tunnel is not tested in CI (no ngrok account there).
 - No installers or services for macOS or Linux, and no automatic updates.
 - The text of each document is stored twice (documents table and FTS table).
 - Incremental syncs hash every file, including unchanged and oversized files.

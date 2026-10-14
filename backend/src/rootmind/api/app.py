@@ -88,6 +88,9 @@ class AppState:
     # Folders from the config that could not be used, by connector name, with
     # the reason (refused by the folder access policy, missing, not a folder).
     connector_errors: dict[str, str]
+    # The remote-access files (authtoken, status); None: <app home>/data with
+    # owner-only files. The Windows service passes its protected layout.
+    remote_access_files: Any = None
 
     def __init__(self) -> None:
         self.connector_errors = {}
@@ -382,6 +385,7 @@ def create_app(
     *,
     api_token: str | None = None,
     folder_access: FolderAccess | None = None,
+    remote_access_files: Any = None,
 ) -> FastAPI:
     """Create the FastAPI application.
 
@@ -394,6 +398,10 @@ def create_app(
             ``/openapi.json`` are off.
         folder_access: Policy for reading indexed folders (see
             :mod:`rootmind.access`). None means :data:`~rootmind.access.UNRESTRICTED`.
+        remote_access_files: Where ``/remote-access`` keeps the ngrok
+            authtoken and reads the tunnel's status
+            (:class:`rootmind.remote_access.RemoteAccessFiles`). None means
+            ``<app home>/data`` with owner-only files.
 
     Returns:
         Configured FastAPI application.
@@ -412,6 +420,7 @@ def create_app(
     app_state.auth_enabled = api_token is not None
     app_state.folder_access = folder_access if folder_access is not None else UNRESTRICTED
     app_state.connector_errors = {}
+    app_state.remote_access_files = remote_access_files
 
     docs: dict[str, Any] = {}
     if api_token is not None:

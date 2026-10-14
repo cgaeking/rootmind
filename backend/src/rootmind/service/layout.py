@@ -13,6 +13,8 @@ Administrators, ``U`` the installing account, ``M`` the virtual account
       data\\                inherited, M: nothing
         rest_token.txt     inherited (M: nothing)
         api_token.txt      inherited + M:R
+        ngrok_authtoken.txt  protected: SY F, BA F, M R (U: nothing)
+        remote_access.json inherited + M:RW (no delete, no permission change)
         db\\                inherited + M (OI)(CI)M
       logs\\                inherited
         backend\\           inherited
@@ -42,7 +44,7 @@ import stat
 import sys
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -86,6 +88,10 @@ _WRITE_DAC = 0x00040000
 _WRITE_OWNER = 0x00080000
 _FILE_SHARE_ALL = 0x1 | 0x2 | 0x4  # read, write, delete
 
+# Read and write data, attributes and extended attributes, without delete or
+# permission changes (FILE_GENERIC_READ | FILE_GENERIC_WRITE).
+READ_WRITE = 0x0012019F
+
 # Subfolders of the data folder in which M may write (and own files).
 MCP_WRITABLE = ("data/db", "logs/mcp-http")
 
@@ -93,6 +99,13 @@ DATA_SUBFOLDERS = ("data", "data/db", "logs", "logs/backend", "logs/mcp-http")
 TMP_FOLDER = "tmp"
 REST_TOKEN = "data/rest_token.txt"  # noqa: S105 (a file name, not a secret)
 MCP_TOKEN = "data/api_token.txt"  # noqa: S105 (a file name, not a secret)
+# Remote access (rootmind.remote_access): the ngrok authtoken, which only
+# SYSTEM, Administrators and M may read, and the tunnel's status, which M
+# writes in place.
+NGROK_AUTHTOKEN = "data/ngrok_authtoken.txt"
+REMOTE_STATUS = "data/remote_access.json"
+# Files M may write (never own: SYSTEM or Administrators create them).
+MCP_WRITABLE_FILES = (REMOTE_STATUS,)
 INSTALL_LOG = "logs/install.log"
 
 NOT_PROTECTED = (
@@ -172,6 +185,26 @@ def data_layout(user_sid: str, mcp: str | None) -> dict[str, Entry]:
             protected=True,
         ),
         MCP_TOKEN: Entry((Ace("", READ, mcp),) if mcp else (), is_dir=False),
+        **remote_access_layout(mcp),
+    }
+
+
+def remote_access_layout(mcp: str | None) -> dict[str, Entry]:
+    """The entries of the remote-access files (the same for every account).
+
+    - The ngrok authtoken is protected: SYSTEM and Administrators (full) and,
+      while MCP over HTTP is on, M (read). The installing account's read
+      entry is not inherited, so its standard (unelevated) token cannot read it.
+    - The status file inherits (whoever may read the data folder may read it;
+      it holds no secret) and lets M read and write it in place: no delete,
+      no permission or owner change.
+    """
+    secret = [Ace("", FULL_CONTROL, SYSTEM), Ace("", FULL_CONTROL, ADMINISTRATORS)]
+    if mcp:
+        secret.append(Ace("", READ, mcp))
+    return {
+        NGROK_AUTHTOKEN: Entry(tuple(secret), protected=True, is_dir=False),
+        REMOTE_STATUS: Entry((Ace("", READ_WRITE, mcp),) if mcp else (), is_dir=False),
     }
 
 
@@ -396,7 +429,8 @@ def validate_data_tree(
       ``logs\\mcp-http``, where it creates files);
     - no allow ACE grants a write right (write, append, delete, delete child,
       WRITE_DAC, WRITE_OWNER, generic write or all) to a SID other than
-      SYSTEM, Administrators, TrustedInstaller, and M in those two folders;
+      SYSTEM, Administrators, TrustedInstaller, and M in those two folders
+      and on ``data\\remote_access.json``;
     - no reparse points (links, junctions, mount points);
     - no file with more than one hard link.
 
@@ -425,7 +459,10 @@ def validate_data_tree(
         allowed_owners = owners | {mcp} if in_zone else owners
         if security.owner not in allowed_owners:
             problems.append(f"{shown}: owned by {security.owner}")
-        allowed_writers = writers | {mcp} if in_zone else writers
+        if in_zone or relative in MCP_WRITABLE_FILES:
+            allowed_writers = writers | {mcp}
+        else:
+            allowed_writers = writers
         problems.extend(
             f"{shown}: {sid} may change it" for sid in write_grants(security, allowed_writers)
         )
@@ -899,3 +936,96 @@ def safe_append(path: Path, text: str) -> bool:
     except OSError:
         return False
     return True
+
+
+def write_protected_file(path: Path, data: bytes, entry: Entry) -> None:
+    """Replace ``path`` with ``data``; the new file has ``entry``'s permissions from the start.
+
+    The data goes to a new temporary file in the same folder, created with
+    the security descriptor of ``entry`` (so no account outside it can open
+    it at any moment), and is then moved over ``path``. A move keeps the
+    file's own descriptor, and replacing a name never follows a link at it.
+    """
+    import pywintypes
+    import win32file
+    import win32security
+
+    descriptor = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
+        entry.dacl_sddl(), win32security.SDDL_REVISION_1
+    )
+    attributes = pywintypes.SECURITY_ATTRIBUTES()
+    attributes.SECURITY_DESCRIPTOR = descriptor
+    attributes.bInheritHandle = 0
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    handle = win32file.CreateFile(
+        str(temporary),
+        win32file.GENERIC_WRITE,
+        0,
+        attributes,
+        win32file.CREATE_NEW,
+        win32file.FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    try:
+        try:
+            win32file.WriteFile(handle, data)
+            win32file.FlushFileBuffers(handle)
+        finally:
+            handle.Close()
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
+
+
+class DataFileProtection:
+    """The remote-access files of the service's data folder, with their layout permissions.
+
+    Used by the backend service (LocalSystem) for ``POST /remote-access``
+    (:class:`rootmind.remote_access.RemoteAccessFiles`). M's entries are
+    added only while the MCP service exists, as ``service install`` does.
+
+    Args:
+        mcp_enabled: Whether MCP over HTTP is on (the MCP service exists).
+        mcp: M's SID (default: computed from the service name).
+        extra: Entries added to every file, for tests that run unelevated.
+    """
+
+    def __init__(
+        self,
+        mcp_enabled: Callable[[], bool],
+        *,
+        mcp: str | None = None,
+        extra: tuple[Ace, ...] = (),
+    ) -> None:
+        self._mcp_enabled = mcp_enabled
+        self._mcp = mcp
+        self._extra = extra
+
+    def _entries(self) -> dict[str, Entry]:
+        mcp = (self._mcp or mcp_sid()) if self._mcp_enabled() else None
+        entries = remote_access_layout(mcp)
+        return {
+            relative: Entry(entry.aces + self._extra, entry.protected, entry.is_dir)
+            for relative, entry in entries.items()
+        }
+
+    def write_secret(self, path: Path, text: str) -> None:
+        write_protected_file(path, text.encode("utf-8"), self._entries()[NGROK_AUTHTOKEN])
+
+    def share_status(self, path: Path) -> None:
+        entry = self._entries()[REMOTE_STATUS]
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(fd, "wb") as f:
+                f.write(INITIAL_STATUS)
+        _set_dacl(path, entry)
+
+
+# The status file as service install and the backend create it (the MCP
+# server overwrites it when it starts).
+INITIAL_STATUS = b'{"state": "off", "url": null, "error": null, "updated": null}'

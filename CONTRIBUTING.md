@@ -296,6 +296,15 @@ verify them.
      changes nothing;
    - **Serve MCP over HTTP** off and on again, including cancelling the
      approval prompt;
+   - **Remote access (ngrok)** with a real ngrok account (CI has none): save
+     the authtoken and a reserved domain, turn it on and confirm; the status
+     shows **Connected** and the public MCP endpoint, which answers
+     `initialize` with the MCP token and 401 without it; a wrong authtoken
+     and a domain in use elsewhere show ngrok's error; unticking closes the
+     public address within seconds; it comes back after a restart of the
+     computer and after an update; turning **Serve MCP over HTTP** off turns
+     it off; no log under `%ProgramData%\RootMind\logs` contains the
+     authtoken;
    - installing from an administrator account with User Account Control
      turned off;
    - Claude Code and n8n with the **MCP endpoint** and token from Settings,

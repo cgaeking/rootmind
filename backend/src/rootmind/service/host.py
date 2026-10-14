@@ -9,11 +9,14 @@ and then, inside the service:
    (known folder), and ``TEMP``/``TMP`` at its ``tmp\\`` for the backend;
 2. sends ``sys.stdout``/``sys.stderr`` and all logging to a rotating log
    (10 MB x 5) in ``logs\\<role>\\``;
-3. builds the app: the REST API with the token from ``data\\rest_token.txt`` and
-   the folder access policy of the installing account, or the MCP server with
-   the token from ``data\\api_token.txt`` (serving only);
+3. builds the app: the REST API with the token from ``data\\rest_token.txt``,
+   the folder access policy of the installing account and the protected
+   remote-access files, or the MCP server with the token from
+   ``data\\api_token.txt`` (serving only);
 4. binds ``127.0.0.1:<port>`` exclusively and runs uvicorn until the SCM asks
-   it to stop.
+   it to stop. The MCP server also runs remote access
+   (:class:`rootmind.remote_access.RemoteAccessManager`), which keeps an ngrok
+   tunnel to that port open while remote access is on and closes it on stop.
 
 A config, token or access error stops the service cleanly with the
 service-specific exit code 2, which the failure actions do not restart. Any
@@ -154,6 +157,30 @@ def _default_access_factory(user_sid: str):
     return WindowsUserAccess(user_sid)
 
 
+def _mcp_service_installed() -> bool:
+    """Whether the MCP service exists (its account then gets its file entries)."""
+    from . import MCP_SERVICE, scm
+
+    try:
+        with scm.Scm(write=False) as manager:
+            return manager.query(MCP_SERVICE) is not None
+    except OSError as e:
+        logger.warning("Cannot query %s; its account gets no entries: %s", MCP_SERVICE, e)
+        return False
+
+
+def _default_protection_factory():
+    from .layout import DataFileProtection
+
+    return DataFileProtection(_mcp_service_installed)
+
+
+def _default_remote_access_factory(home: Path, port: int):
+    from ..remote_access import RemoteAccessManager
+
+    return RemoteAccessManager(home=home, port=port, config_path=home / "config.yaml")
+
+
 class ServiceRunner:
     """Builds and runs the app of one role; independent of the SCM (testable).
 
@@ -164,6 +191,11 @@ class ServiceRunner:
         user_sid: The installing account (backend only).
         access_factory: Builds the folder access policy for ``user_sid``
             (default: :class:`~rootmind.winaccess.WindowsUserAccess`).
+        protection_factory: Builds how the backend writes the remote-access
+            files (default: :class:`~rootmind.service.layout.DataFileProtection`).
+        remote_access_factory: Builds the MCP server's remote access from
+            the home and the bound port (default:
+            :class:`~rootmind.remote_access.RemoteAccessManager`).
     """
 
     def __init__(
@@ -174,6 +206,8 @@ class ServiceRunner:
         home: Path,
         user_sid: str | None = None,
         access_factory: Callable[[str], Any] | None = None,
+        protection_factory: Callable[[], Any] | None = None,
+        remote_access_factory: Callable[[Path, int], Any] | None = None,
     ) -> None:
         if role not in SERVICE_BY_ROLE:
             raise ValueError(f"unknown role {role!r}")
@@ -182,6 +216,9 @@ class ServiceRunner:
         self.home = home
         self.user_sid = user_sid
         self._access_factory = access_factory or _default_access_factory
+        self._protection_factory = protection_factory or _default_protection_factory
+        self._remote_access_factory = remote_access_factory or _default_remote_access_factory
+        self.remote_access: Any = None
         self._stop_requested = False
         self._lock = threading.Lock()
         self.server: Any = None
@@ -249,8 +286,13 @@ class ServiceRunner:
                     f"cannot check folder access for {self.user_sid}: {e}"
                 ) from None
             from ..api.app import create_app
+            from ..remote_access import RemoteAccessFiles
 
-            app = create_app(api_token=token, folder_access=access)
+            app = create_app(
+                api_token=token,
+                folder_access=access,
+                remote_access_files=RemoteAccessFiles(self.home, self._protection_factory()),
+            )
         else:
             from .. import mcp_http
 
@@ -275,6 +317,8 @@ class ServiceRunner:
         from ..main import bind_socket
 
         self.sock = bind_socket("127.0.0.1", self.port)
+        if self.role == ROLE_MCP:
+            self.remote_access = self._remote_access_factory(self.home, self.sock.getsockname()[1])
         uvicorn_config = uvicorn.Config(
             app,
             host="127.0.0.1",
@@ -302,7 +346,14 @@ class ServiceRunner:
                     SERVICE_BY_ROLE[self.role],
                     self.sock.getsockname()[1],
                 )
-                self.server.run(sockets=[self.sock])
+                if self.remote_access is not None:
+                    self.remote_access.start()
+                try:
+                    self.server.run(sockets=[self.sock])
+                finally:
+                    # The tunnel never outlives the server it forwards to.
+                    if self.remote_access is not None:
+                        self.remote_access.stop()
         finally:
             self.sock.close()
         return self._stop_requested

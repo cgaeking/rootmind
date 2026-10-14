@@ -137,3 +137,37 @@ export interface SaveConfigResponse {
   reloaded?: boolean;
   restart_required: boolean;
 }
+
+/**
+ * State of remote access (GET /remote-access `status.state`): off, connecting
+ * (also while the MCP service picks up a change or reconnects), connected
+ * (with `url`), error (with `error`), or unavailable (the MCP over HTTP
+ * service does not report, for example because it is stopped).
+ */
+export type RemoteAccessState = "off" | "connecting" | "connected" | "error" | "unavailable";
+
+/** GET/POST /remote-access. The ngrok authtoken is never returned. */
+export interface RemoteAccessInfo {
+  enabled: boolean;
+  /** Reserved ngrok domain (host name), or null for one ngrok assigns. */
+  domain: string | null;
+  authtoken_saved: boolean;
+  sdk: { available: boolean; version: string | null };
+  status: {
+    state: RemoteAccessState;
+    /** The public address (https://…), only while connected. */
+    url: string | null;
+    error: string | null;
+    updated: string | null;
+  };
+}
+
+/**
+ * POST /remote-access: omitted fields stay. `authtoken`: a value saves it,
+ * "" removes it (which turns remote access off). `domain`: "" removes it.
+ */
+export interface RemoteAccessChange {
+  enabled?: boolean;
+  domain?: string;
+  authtoken?: string;
+}

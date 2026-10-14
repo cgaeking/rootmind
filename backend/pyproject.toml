@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rootmind-backend"
-version = "2.1.1"
+version = "2.2.0"
 description = "Local document search with an agentic LLM tool loop (SQLite FTS5), exposed via REST and MCP"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -25,6 +25,7 @@ dependencies = [
     "apscheduler>=3.11.3,<4",
     "fastapi>=0.143.0",
     "mcp>=2.3.0",
+    "ngrok>=1.7.0",
     "openai>=3.28.0",
     "openpyxl>=3.1.5",
     "pydantic>=2.14.0",

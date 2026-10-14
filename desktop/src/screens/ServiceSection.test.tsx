@@ -15,6 +15,13 @@ vi.mock("../api/backend", async (importOriginal) => ({
   serviceMcpToken: vi.fn(),
 }));
 
+// Remote access is tested in RemoteAccess.test.tsx; here only where it appears.
+vi.mock("../api/rlm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api/rlm")>()),
+  getRemoteAccess: vi.fn(),
+  updateRemoteAccess: vi.fn(),
+}));
+
 // The change itself is tested in backendActions.test.ts; here only the outcome matters.
 vi.mock("../state/backendActions", () => ({
   runServiceChange: vi.fn(async (op: () => Promise<ServiceResult>) => ({
@@ -24,6 +31,7 @@ vi.mock("../state/backendActions", () => ({
 }));
 
 const backend = await import("../api/backend");
+const rlm = await import("../api/rlm");
 const { ServiceSection } = await import("./ServiceSection");
 
 const SERVICE = "http://127.0.0.1:8000";
@@ -59,6 +67,13 @@ beforeEach(() => {
   });
   vi.mocked(backend.serviceInfo).mockResolvedValue(ours);
   vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: true, url: SERVICE, token: "v" });
+  vi.mocked(rlm.getRemoteAccess).mockResolvedValue({
+    enabled: false,
+    domain: null,
+    authtoken_saved: false,
+    sdk: { available: true, version: "1.7.0" },
+    status: { state: "off", url: null, error: null, updated: null },
+  });
   writeText.mockClear();
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
 });
@@ -91,6 +106,36 @@ describe("ServiceSection", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("mcp-secret"));
     expect(screen.queryByDisplayValue("mcp-secret")).toBeNull();
     expect(screen.queryByText(/mcp-secret/)).toBeNull();
+  });
+
+  it("shows remote access below MCP, and disables it while MCP over HTTP is off", async () => {
+    render(<ServiceSection />);
+    const remote = (await screen.findByRole("checkbox", {
+      name: "Reach MCP from the internet through ngrok",
+    })) as HTMLInputElement;
+    expect(screen.getByText("Remote access (ngrok)")).toBeTruthy();
+    expect(screen.queryByText("Turn on Serve MCP over HTTP first.")).toBeNull();
+    cleanup();
+
+    vi.mocked(backend.serviceInfo).mockResolvedValue({
+      ...ours,
+      mcp: { installed: false, state: null, port: null, url: null },
+    });
+    render(<ServiceSection />);
+    expect(await screen.findByText("Turn on Serve MCP over HTTP first.")).toBeTruthy();
+    const disabled = (await screen.findByRole("checkbox", {
+      name: "Reach MCP from the internet through ngrok",
+    })) as HTMLInputElement;
+    expect(disabled.disabled).toBe(true);
+    expect(remote).toBeTruthy();
+  });
+
+  it("hides remote access while the app uses another backend", async () => {
+    useStore.setState({ kind: "custom", baseUrl: "http://example.test:9000", token: null, conn: "online" });
+    render(<ServiceSection />);
+    await screen.findByText(/uses the backend at another address/);
+    expect(screen.queryByText("Remote access (ngrok)")).toBeNull();
+    expect(rlm.getRemoteAccess).not.toHaveBeenCalled();
   });
 
   it("turns MCP over HTTP off and reports a cancelled prompt", async () => {

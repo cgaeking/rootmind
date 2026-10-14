@@ -12,6 +12,8 @@ import type {
   RecentResponse,
   DocPathResponse,
   ConnectorsResponse,
+  RemoteAccessChange,
+  RemoteAccessInfo,
 } from "../types/api";
 import type { AppConfigDto, ConfigPatch } from "../types/config";
 
@@ -107,4 +109,14 @@ export const listLlmModels = (body: { provider?: string; api_key?: string | null
   api<{ provider: string; models: string[] }>("/llm/models", {
     method: "POST",
     body: JSON.stringify(body),
+  });
+
+/** Remote access (an ngrok tunnel to MCP over HTTP, run by the RootMind service). */
+export const getRemoteAccess = () => api<RemoteAccessInfo>("/remote-access");
+
+/** Change remote access; the authtoken is write-only (see RemoteAccessChange). */
+export const updateRemoteAccess = (change: RemoteAccessChange) =>
+  api<RemoteAccessInfo>("/remote-access", {
+    method: "POST",
+    body: JSON.stringify(change),
   });

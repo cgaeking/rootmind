@@ -338,8 +338,10 @@ try {
             if ($entry.Sid -in @("S-1-5-32-545", "S-1-1-0", "S-1-5-11", "S-1-5-4")) { Fail "$($entry.Sid) has an entry on $relative" }
             if ($entry.Sid -eq $McpSid) {
                 # Listed: the root (and through it the files directly in it),
-                # api_token.txt, and data\db and logs\mcp-http with everything below.
+                # api_token.txt, the remote-access files, and data\db and
+                # logs\mcp-http with everything below.
                 $listed = ($relative -eq "") -or ($relative -eq "data\api_token.txt") -or
+                    ($relative -eq "data\remote_access.json") -or ($relative -eq "data\ngrok_authtoken.txt") -or
                     ($relative -eq "data\db") -or ($relative -like "data\db\*") -or
                     ($relative -eq "logs\mcp-http") -or ($relative -like "logs\mcp-http\*") -or
                     (-not $item.PSIsContainer -and -not $relative.Contains("\"))
@@ -377,6 +379,39 @@ try {
     Pass "MCP lists the five tools"
     Assert-Status (Invoke-Http GET "$ApiUrl/status" -Token $McpToken) 401 "REST with the MCP token"
     Assert-Status (Invoke-Mcp $RestToken "initialize" $Initialize) 401 "MCP with the REST token"
+
+    # --- 4b. remote access (never turned on: that would contact ngrok) ----------------------------
+    $statusFile = Join-Path $DataRoot "data\remote_access.json"
+    $statusEntries = (Get-AllowEntries $statusFile).Entries
+    Assert-True ([bool]($statusEntries | Where-Object { $_.Sid -eq $McpSid -and -not $_.Inherited -and $_.Rights -eq 0x12019f })) "the MCP account may read and write remote_access.json (no delete)"
+    # The MCP service writes its status in place when it starts.
+    $deadline = (Get-Date).AddSeconds(30)
+    $reported = $null
+    while ((Get-Date) -lt $deadline) {
+        try { $reported = Get-Content -Raw -LiteralPath $statusFile | ConvertFrom-Json } catch { $reported = $null }
+        if ($reported -and $reported.updated) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    Assert-True ($reported -and $reported.updated -and $reported.state -eq "off") "the MCP service reports remote access off in remote_access.json"
+    $remote = Invoke-Http GET "$ApiUrl/remote-access" -Token $RestToken
+    Assert-Status $remote 200 "GET /remote-access"
+    Assert-True ($remote.Json.sdk.available -and -not $remote.Json.enabled -and $remote.Json.status.state -eq "off") "remote access is off by default and the ngrok SDK is bundled"
+    Assert-Status (Invoke-Http POST "$ApiUrl/remote-access" -Body @{ authtoken = "x" }) 401 "POST /remote-access without the token"
+    $fakeAuthtoken = "e2e_fake_ngrok_authtoken_000000000000"  # pragma: allowlist secret
+    $saved = Invoke-Http POST "$ApiUrl/remote-access" -Token $RestToken -Body @{ authtoken = $fakeAuthtoken }
+    Assert-Status $saved 200 "POST /remote-access saves an authtoken"
+    Assert-True ($saved.Json.authtoken_saved -and -not $saved.Json.enabled -and -not $saved.Text.Contains($fakeAuthtoken)) "the authtoken is saved, never returned, and remote access stays off"
+    $authtokenFile = Join-Path $DataRoot "data\ngrok_authtoken.txt"
+    $authtokenInfo = Get-AllowEntries $authtokenFile
+    $authtokenEntries = @($authtokenInfo.Entries | ForEach-Object { "$($_.Sid)|$('0x{0:x}' -f $_.Rights)|$($_.Inherited)" } | Sort-Object)
+    $expectedAuthtoken = @("S-1-5-18|0x1f01ff|False", "S-1-5-32-544|0x1f01ff|False", "$McpSid|0x120089|False") | Sort-Object
+    Assert-True ($authtokenInfo.Protected -and ($authtokenEntries -join ";") -eq ($expectedAuthtoken -join ";")) "ngrok_authtoken.txt: SYSTEM, Administrators and the MCP account (read) only ($($authtokenEntries -join '; '))"
+    Assert-True ((Get-Content -Raw -LiteralPath $authtokenFile) -eq $fakeAuthtoken) "the authtoken file holds the authtoken"
+    Assert-True (-not (Get-Content -Raw -LiteralPath (Join-Path $DataRoot "config.yaml")).Contains($fakeAuthtoken)) "the authtoken is not in config.yaml"
+    $logHits = @(Get-ChildItem -LiteralPath (Join-Path $DataRoot "logs") -Recurse -File | Select-String -SimpleMatch $fakeAuthtoken)
+    Assert-True ($logHits.Count -eq 0) "the authtoken is in no log"
+    $cleared = Invoke-Http POST "$ApiUrl/remote-access" -Token $RestToken -Body @{ authtoken = "" }
+    Assert-True ($cleared.Status -eq 200 -and -not $cleared.Json.authtoken_saved -and -not (Test-Path -LiteralPath $authtokenFile)) "POST /remote-access removes the authtoken"
 
     # --- 5. confinement ----------------------------------------------------------------------------
     New-Item -ItemType Directory -Path $Confine | Out-Null

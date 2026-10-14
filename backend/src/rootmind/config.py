@@ -142,6 +142,19 @@ class APIConfig(BaseModel):
     port: int = 8000
 
 
+class RemoteAccessConfig(BaseModel):
+    """Built-in remote access: an ngrok tunnel to MCP over HTTP (off by default).
+
+    The RootMind service's MCP server runs the tunnel while ``enabled`` is
+    true (see :mod:`rootmind.remote_access`). Only these non-secret settings
+    live here; the ngrok authtoken has its own file in ``data``.
+    """
+
+    enabled: bool = False
+    # A reserved ngrok domain (host name only); None: ngrok assigns one.
+    domain: str | None = None
+
+
 class AppConfig(BaseModel):
     """Main application configuration."""
 
@@ -150,6 +163,7 @@ class AppConfig(BaseModel):
     connectors: list[ConnectorConfig] = Field(default_factory=list)
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
     api: APIConfig = Field(default_factory=APIConfig)
+    remote_access: RemoteAccessConfig = Field(default_factory=RemoteAccessConfig)
 
 
 class Settings(BaseSettings):
@@ -250,8 +264,9 @@ def _merge_api_keys(incoming: dict[str, str | None], stored: dict[str, str]) -> 
 def save_config(data: dict, config_path: str | Path | None = None) -> AppConfig:
     """Persist editable config fields to the YAML file.
 
-    Only known, user-editable sections are merged in (``llm``, ``connectors``
-    and parts of ``indexer``); all other sections in the file are kept as-is.
+    Only known, user-editable sections are merged in (``llm``, ``connectors``,
+    parts of ``indexer`` and ``remote_access``); all other sections in the
+    file are kept as-is.
     The merged result is validated against ``AppConfig`` before anything is
     written, and a ``.bak`` backup of the previous file is created.
 
@@ -319,6 +334,13 @@ def save_config(data: dict, config_path: str | Path | None = None) -> AppConfig:
             raw["indexer"]["include"] = data["indexer"]["include"]
         if data["indexer"].get("exclude") is not None:
             raw["indexer"]["exclude"] = data["indexer"]["exclude"]
+
+    if "remote_access" in data and data["remote_access"] is not None:
+        section = raw.get("remote_access")
+        raw["remote_access"] = section = dict(section) if isinstance(section, dict) else {}
+        for key in ("enabled", "domain"):
+            if key in data["remote_access"]:
+                section[key] = data["remote_access"][key]
 
     # Validate the full merged config before touching disk.
     config = AppConfig.model_validate(raw)
