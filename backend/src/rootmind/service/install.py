@@ -62,19 +62,10 @@ keeps three properties the app's folder cannot give:
 from __future__ import annotations
 
 import contextlib
-import json
 import ntpath
-import os
-import secrets
-import stat
-import traceback
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 from . import (
     API_FALLBACK_PORTS,
@@ -97,18 +88,36 @@ from . import (
     release_zip_url,
     scm,
 )
+from .common import DEFAULT_CONFIG, Report, database_in_service_folder, read_token_file, status_json
+from .common import check_auth as _check_auth
+from .common import ensure_status_file as _ensure_status_file
+from .common import ensure_token as _ensure_token
+from .common import mcp_initialize as _mcp_initialize
+from .common import run_command as _run
+from .common import token_readable as _token_readable
+from .common import turn_remote_access_off as _turn_remote_access_off
+from .common import write_atomic as _write_atomic
 from .imagepath import ImagePath
+
+__all__ = [
+    "DEFAULT_CONFIG",
+    "InstallOptions",
+    "Report",
+    "format_status",
+    "install",
+    "read_token_file",
+    "status",
+    "status_json",
+    "uninstall",
+]
 
 STOP_TIMEOUT_SECONDS = 60
 DELETE_TIMEOUT_SECONDS = 30
 HEALTH_TIMEOUT_SECONDS = 90
-MAX_MCP_TOKEN_BYTES = 4096
 
 ROLE_BY_SERVICE = {BACKEND_SERVICE: ROLE_BACKEND, MCP_SERVICE: ROLE_MCP}
 MCP_ACCOUNT = f"NT SERVICE\\{MCP_SERVICE}"
 MCP_PRIVILEGES = ("SeChangeNotifyPrivilege",)
-
-DEFAULT_CONFIG = f"database:\n  path: {SERVICE_DATABASE_PATH}\n"
 
 
 @dataclass
@@ -121,42 +130,6 @@ class InstallOptions:
     mcp_token_from: Path | None = None
     user_sid: str | None = None
     start: bool = True
-
-
-@dataclass
-class Report:
-    """Messages for the console and ``logs\\install.log``.
-
-    The log is written only once the data folder is known to be ours
-    (created or validated in this run), never into an unchecked folder.
-    """
-
-    out: Callable[[str], None]
-    err: Callable[[str], None]
-    lines: list[str] = field(default_factory=list)
-    log_path: Path | None = None
-
-    def info(self, message: str) -> None:
-        self.lines.append(message)
-        self.out(message)
-
-    def warn(self, message: str) -> None:
-        self.lines.append(f"warning: {message}")
-        self.err(f"warning: {message}")
-
-    def error(self, message: str) -> None:
-        self.lines.append(f"error: {message}")
-        self.err(f"error: {message}")
-
-    def write_log(self, command: str, code: int, detail: str | None = None) -> None:
-        if self.log_path is None:
-            return
-        stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        text = f"{stamp} {command}: exit {int(code)}\n"
-        text += "".join(f"  {line}\n" for line in self.lines)
-        if detail:
-            text += "".join(f"  {line}\n" for line in detail.rstrip().splitlines())
-        layout.safe_append(self.log_path, text)
 
 
 # --- helpers -------------------------------------------------------------------------
@@ -203,75 +176,6 @@ def _ours(status: scm.ServiceStatus | None, program_files: str) -> ImagePath | N
 
 def _same_sid(a: str | None, b: str | None) -> bool:
     return a is not None and b is not None and a.upper() == b.upper()
-
-
-def _write_atomic(path: Path, text: str) -> None:
-    """Replace ``path`` with ``text`` (temporary file in the same folder, then a rename)."""
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(text.encode("utf-8"))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            temporary.unlink()
-        raise
-
-
-def _read_token(path: Path) -> str | None:
-    try:
-        return path.read_text(encoding="utf-8").strip() or None
-    except FileNotFoundError:
-        return None
-
-
-def _ensure_token(path: Path) -> str:
-    """The token in ``path``; a new one is created when the file is missing or empty."""
-    token = _read_token(path)
-    if token:
-        return token
-    with contextlib.suppress(FileNotFoundError):
-        path.unlink()
-    token = secrets.token_urlsafe(32)
-    from ..auth import write_private_file
-
-    write_private_file(path, token)
-    return token
-
-
-def read_token_file(source: Path) -> str:
-    """The token in ``--mcp-token-from FILE``: a regular file of at most 4 KB, one line.
-
-    Raises:
-        ServiceCommandError: exit 2 when the file is refused.
-    """
-
-    def refuse(reason: str) -> ServiceCommandError:
-        return ServiceCommandError(ExitCode.USAGE, f"--mcp-token-from {source}: {reason}")
-
-    try:
-        info = os.lstat(source)
-    except OSError as e:
-        raise refuse(e.strerror or "cannot be read") from None
-    attributes = getattr(info, "st_file_attributes", 0)
-    if stat.S_ISLNK(info.st_mode) or attributes & 0x400:
-        raise refuse("is a link or reparse point")
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink > 1:
-        raise refuse("is not a regular file")
-    if info.st_size > MAX_MCP_TOKEN_BYTES:
-        raise refuse("is larger than 4 KB")
-    try:
-        token = source.read_bytes().decode("utf-8-sig").strip()
-    except (OSError, UnicodeDecodeError):
-        raise refuse("cannot be read as UTF-8 text") from None
-    if not token:
-        raise refuse("is empty")
-    if any(c.isspace() for c in token):
-        raise refuse("must hold a single token on one line")
-    return token
 
 
 def _wait_stopped(env, manager, name: str) -> None:
@@ -534,30 +438,6 @@ def _check_listener(env, name: str, port: int, pid: int) -> None:
         )
 
 
-def _check_auth(name: str, results: list[tuple[str, int, int]]) -> None:
-    for what, status, expected in results:
-        if status != expected:
-            raise ServiceCommandError(
-                ExitCode.HEALTH_CHECK_FAILED,
-                f"{name}: {what} answered {status or 'nothing'} instead of {expected}.",
-            )
-
-
-def _mcp_initialize(env, url: str, token: str | None) -> int:
-    body = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "rootmind-service-install", "version": env.version},
-        },
-    }
-    status, _payload = env.http("POST", f"{url}/mcp", token=token, body=body)
-    return status
-
-
 def _start_and_check(env, manager, plan: _Plan, root: Path, tokens: dict[str, str]) -> None:
     api_url = f"http://127.0.0.1:{plan.api_port}"
     try:
@@ -599,56 +479,6 @@ def _start_and_check(env, manager, plan: _Plan, root: Path, tokens: dict[str, st
     )
 
 
-def _ensure_status_file(path: Path) -> None:
-    """Create the remote-access status file (``layout.INITIAL_STATUS``) when it is missing."""
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
-    except FileExistsError:
-        return
-    with os.fdopen(fd, "wb") as f:
-        f.write(layout.INITIAL_STATUS)
-
-
-def _turn_remote_access_off(config_file: Path, report: Report) -> None:
-    """Without MCP over HTTP there is no tunnel: turn remote access off in the config.
-
-    Otherwise turning MCP over HTTP on again later would open the public
-    address again without asking. The authtoken is kept.
-    """
-    try:
-        data = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        return  # the service reports an unreadable config
-    section = data.get("remote_access") if isinstance(data, dict) else None
-    if not isinstance(section, dict) or section.get("enabled") is not True:
-        return
-    section["enabled"] = False
-    _write_atomic(
-        config_file,
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False),
-    )
-    report.info("Remote access was turned off with MCP over HTTP.")
-
-
-def _database_in_service_folder(config_file: Path, root: Path) -> bool:
-    """Whether the config's ``database.path`` lies in ``<root>\\data\\db``.
-
-    An unreadable config counts as fine here: the service reports it.
-    """
-    try:
-        data = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        return True
-    database = data.get("database") if isinstance(data, dict) else None
-    raw = database.get("path") if isinstance(database, dict) else None
-    if not isinstance(raw, str) or not raw:
-        return False  # the default, ./data/index.db
-    folder = ntpath.normcase(ntpath.normpath(str(root / "data" / "db")))
-    path = raw if ntpath.isabs(raw) else ntpath.join(str(root), raw)
-    path = ntpath.normcase(ntpath.normpath(path))
-    return path.startswith(folder + "\\")
-
-
 def _prepare_files(
     env, plan: _Plan, root: Path, mcp_token: str | None, report: Report
 ) -> tuple[str, str | None, dict[str, str]]:
@@ -670,7 +500,7 @@ def _prepare_files(
     config_file = root / "config.yaml"
     if not config_file.exists():
         _write_atomic(config_file, DEFAULT_CONFIG)
-    elif not _database_in_service_folder(config_file, root):
+    elif not database_in_service_folder(config_file, root, ntpath):
         # A config edited by hand may name a database outside data\db, where
         # the MCP account cannot open it. The index is rebuilt in data\db.
         from ..config import import_config
@@ -873,13 +703,6 @@ def uninstall(env, purge: bool = False, out=print, err=None) -> int:
 # --- status ------------------------------------------------------------------------------
 
 
-def _token_readable(path: Path) -> bool:
-    try:
-        return bool(path.read_text(encoding="utf-8").strip())
-    except (OSError, UnicodeDecodeError):
-        return False
-
-
 def status(env) -> dict[str, Any]:
     """The state of the background service (no administrator rights needed)."""
     _require_windows(env)
@@ -976,26 +799,3 @@ def format_status(info: dict[str, Any]) -> str:
         lines.append(f"  MCP:      http://127.0.0.1:{mcp['port']}/mcp ({mcp['state']})")
     lines.extend(f"warning: {w}" for w in info["warnings"])
     return "\n".join(lines)
-
-
-def status_json(info: dict[str, Any]) -> str:
-    return json.dumps(info, indent=2)
-
-
-# --- shared ------------------------------------------------------------------------------
-
-
-def _run(command: str, report: Report, body: Callable[[], None]) -> int:
-    code: int = ExitCode.OK
-    detail = None
-    try:
-        body()
-    except ServiceCommandError as e:
-        report.error(e.message)
-        code = e.code
-    except Exception as e:
-        report.error(f"unexpected error: {e}")
-        detail = traceback.format_exc()
-        code = ExitCode.UNEXPECTED
-    report.write_log(command, code, detail)
-    return int(code)

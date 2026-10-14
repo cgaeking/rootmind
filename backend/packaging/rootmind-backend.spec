@@ -6,14 +6,18 @@ SOURCE_DATE_EPOCH, and installs with ``uv sync --locked --no-dev --group build``
 
     uv run --no-dev --group build pyinstaller packaging/rootmind-backend.spec --noconfirm --clean
 
-Output: ``dist/rootmind-backend/`` with ``rootmind-backend.exe`` and ``_internal/``.
-The desktop installer ships this folder as ``backend\\``, and the release zip
-``rootmind-backend-windows-x64.zip`` contains it.
+Output: ``dist/rootmind-backend/`` with ``rootmind-backend.exe`` (Linux:
+``rootmind-backend``) and ``_internal/``. The Windows installer and the Linux
+packages ship this folder as ``backend``, and the release archives
+``rootmind-backend-windows-x64.zip`` and ``rootmind-backend-linux-x64.tar.gz``
+contain it. The Linux build is made on the oldest supported glibc (Ubuntu
+22.04) and holds no symbolic links (see the end of this file).
 
 The executable carries the whole command line: the REST API (``api``, the
 default), ``index``, ``rebuild-trigrams``, both MCP servers (``mcp`` over
-stdio, ``mcp-http``) and, on Windows, the background service (``service``,
-hosted with pywin32). Smoke test: ``packaging/smoke-test.ps1``.
+stdio, ``mcp-http``) and the background service (``service``: Windows
+services hosted with pywin32, or systemd user units on Linux). Smoke test:
+``packaging/smoke-test.ps1`` (PowerShell 7 on Linux).
 """
 
 import os
@@ -178,3 +182,23 @@ coll = COLLECT(
     upx=False,
     name=DIST_NAME,
 )
+
+# On Linux PyInstaller links a few shared libraries into _internal/ (the
+# top-level names of files in pillow.libs/). The build must hold no links:
+# scripts/prepare_backend.py, `service install` and the packages copy only
+# regular files. Each link is replaced by a copy of its target, which must lie
+# inside the build.
+if not sys.platform.startswith("win"):
+    import shutil
+
+    _dist = os.path.realpath(os.path.join(DISTPATH, DIST_NAME))  # noqa: F821 (set by PyInstaller)
+    for _folder, _dirs, _files in os.walk(_dist):
+        for _name in _dirs + _files:
+            _path = os.path.join(_folder, _name)
+            if not os.path.islink(_path):
+                continue
+            _target = os.path.realpath(_path)
+            if not _target.startswith(_dist + os.sep) or not os.path.isfile(_target):
+                raise SystemExit(f"{_path} links outside the build or to a folder: {_target}")
+            os.unlink(_path)
+            shutil.copy2(_target, _path)

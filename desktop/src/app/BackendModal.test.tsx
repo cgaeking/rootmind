@@ -10,6 +10,7 @@ vi.mock("../api/backend", async (importOriginal) => ({
   serviceInfo: vi.fn(),
   serviceConnect: vi.fn(),
   serviceUpdate: vi.fn(),
+  serviceDetails: vi.fn(),
 }));
 
 const backend = await import("../api/backend");
@@ -142,6 +143,29 @@ describe("BackendModal for the RootMind service", () => {
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     await waitFor(() => expect(useStore.getState().kind).toBe("custom"));
     expect(useStore.getState().baseUrl).toBe("http://10.0.0.5:8000");
+  });
+});
+
+describe("BackendModal while the app sets the service up on its own (Linux)", () => {
+  it("shows the set-up in progress, then why it failed, with Set up and Details", async () => {
+    useStore.setState({
+      serviceProblem: "notInstalled",
+      autoService: { action: "setup", status: "running", message: null },
+    });
+    vi.mocked(backend.serviceInfo).mockResolvedValue(serviceInfoFixture());
+    const { rerender } = render(<BackendModal />);
+    expect(screen.getByText("Setting up the RootMind service for your account …")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Check again" }) as HTMLButtonElement).disabled).toBe(true);
+
+    vi.mocked(backend.serviceDetails).mockResolvedValue("service status --json (exit code 0): {}");
+    useStore.setState({
+      autoService: { action: "setup", status: "failed", message: "The port is in use." },
+    });
+    rerender(<BackendModal />);
+    expect(screen.getByText("The port is in use.")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Set up" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(await screen.findByText(/service status --json/)).toBeTruthy();
   });
 });
 

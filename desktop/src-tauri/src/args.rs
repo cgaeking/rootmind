@@ -9,6 +9,10 @@
 // Only arguments built in Rust from fixed parts and paths reach this module;
 // nothing comes from the webview.
 
+// Only the Windows build elevates; the Linux build runs the backend with an
+// argument list and keeps this module for its tests.
+#![cfg_attr(target_os = "linux", allow(dead_code))]
+
 use std::fmt;
 
 /// An argument that cannot be passed on a Windows command line.

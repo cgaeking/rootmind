@@ -16,11 +16,16 @@ import { fileURLToPath } from "node:url";
 
 import {
   ERROR_CODE,
+  LINUX_MESSAGES,
+  LINUX_PACKAGE_EXE,
   RELEASES_URL,
   createBridge,
   defaultBackendExe,
   defaultStatusCommand,
   interpretStatus,
+  linuxBackendExe,
+  linuxDataRoot,
+  messagesFor,
 } from "../server/bridge.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -163,7 +168,8 @@ function startSession(options) {
   const input = new PassThrough();
   const output = new PassThrough();
   const logs = [];
-  const bridge = createBridge({ input, output, log: (line) => logs.push(line), ...options });
+  // The Windows wording unless a test asks for Linux.
+  const bridge = createBridge({ input, output, log: (line) => logs.push(line), platform: "win32", ...options });
   const done = bridge.run();
   const messages = [];
   const waiters = [];
@@ -402,7 +408,7 @@ describe("failures answer requests with what to do", () => {
   });
 
   test("RootMind not installed: no rootmind-backend.exe", async () => {
-    const statusCommand = defaultStatusCommand({ ProgramFiles: path.join(workDir, "no-such-folder") });
+    const statusCommand = defaultStatusCommand({ ProgramFiles: path.join(workDir, "no-such-folder") }, "win32");
     const { response, request } = await firstAnswer({ statusCommand });
     assertFriendlyError(response, request.id, "not_installed", RELEASES_URL);
   });
@@ -553,6 +559,39 @@ describe("failures answer requests with what to do", () => {
 
 // --- re-discovery --------------------------------------------------------------
 
+describe("Linux wording", () => {
+  async function linuxAnswer(machine) {
+    const session = startSession({ statusCommand: machine.statusCommand, platform: "linux" });
+    const request = initialize();
+    const response = await session.request(request);
+    await session.close();
+    return { response, request };
+  }
+
+  test("a service that is not set up yet: start RootMind once", async () => {
+    const machine = makeMachine();
+    machine.setStatus({ installed: false, ours: false, state: null }, { installed: false, state: null, port: null });
+    const { response, request } = await linuxAnswer(machine);
+    assertFriendlyError(response, request.id, "service_missing", "Start RootMind once", "Set up");
+  });
+
+  test("a stopped MCP service: systemctl --user", async () => {
+    const machine = makeMachine();
+    machine.setStatus({}, { state: "stopped" });
+    const { response, request } = await linuxAnswer(machine);
+    assertFriendlyError(response, request.id, "mcp_stopped", "systemctl --user restart rootmind-mcp-http");
+  });
+
+  test("names neither Windows nor an installer", () => {
+    for (const [reason, message] of Object.entries(LINUX_MESSAGES)) {
+      const text = message("http://127.0.0.1:3000/mcp", "ECONNREFUSED");
+      assert.doesNotMatch(text, /Windows|installer|administrator/i, reason);
+    }
+    assert.equal(messagesFor("linux").not_installed, messagesFor("win32").not_installed);
+    assert.notEqual(messagesFor("linux").mcp_stopped, messagesFor("win32").mcp_stopped);
+  });
+});
+
 describe("re-discovery", () => {
   test("follows the service to another port after a restart", async () => {
     const first = await startServer({ name: "first" });
@@ -622,6 +661,8 @@ describe("process", () => {
       Object.entries(process.env).filter(([k]) => !/^(programfiles|programw6432)$/i.test(k)),
     );
     env.ProgramFiles = path.join(workDir, "empty-program-files");
+    // Linux: no service.json in an empty data folder.
+    env.XDG_DATA_HOME = path.join(workDir, "empty-data-home");
     const init = initialize();
     const { code, stdout, stderr } = await runProcess([path.join(BUNDLE, "server", "index.mjs")], env, [init]);
     assert.equal(code, 0);
@@ -671,16 +712,78 @@ describe("process", () => {
 describe("discovery helpers", () => {
   test("the backend is looked for under %ProgramFiles%", () => {
     assert.equal(
-      defaultBackendExe({ ProgramFiles: "C:\\Program Files" }),
+      defaultBackendExe({ ProgramFiles: "C:\\Program Files" }, "win32"),
       "C:\\Program Files\\RootMind\\backend\\rootmind-backend.exe",
     );
     assert.equal(
-      defaultBackendExe({ ProgramFiles: "C:\\Program Files (x86)", ProgramW6432: "D:\\Programs" }),
+      defaultBackendExe({ ProgramFiles: "C:\\Program Files (x86)", ProgramW6432: "D:\\Programs" }, "win32"),
       "D:\\Programs\\RootMind\\backend\\rootmind-backend.exe",
     );
-    assert.equal(defaultBackendExe({}), null);
-    assert.deepEqual(defaultStatusCommand({ ProgramFiles: "C:\\PF" }).args, ["service", "status", "--json"]);
-    assert.equal(defaultStatusCommand({}), null);
+    assert.equal(defaultBackendExe({}, "win32"), null);
+    assert.deepEqual(defaultStatusCommand({ ProgramFiles: "C:\\PF" }, "win32").args, ["service", "status", "--json"]);
+    assert.equal(defaultStatusCommand({}, "win32"), null);
+  });
+
+  test("Linux: the data folder follows XDG_DATA_HOME", () => {
+    assert.equal(linuxDataRoot({ HOME: "/home/me" }), "/home/me/.local/share/rootmind");
+    assert.equal(linuxDataRoot({ HOME: "/home/me", XDG_DATA_HOME: "/data" }), "/data/rootmind");
+    // A relative XDG_DATA_HOME is invalid and ignored.
+    assert.equal(linuxDataRoot({ HOME: "/home/me", XDG_DATA_HOME: "rel" }), "/home/me/.local/share/rootmind");
+    assert.equal(linuxDataRoot({}), null);
+  });
+
+  test("Linux: the program copy named in service.json, else the packaged backend", () => {
+    const env = { HOME: "/home/me" };
+    const copy = "/home/me/.local/share/rootmind/runtime/2.3.0-0a1b2c3d/rootmind-backend";
+    const files = (json, present) => ({
+      read: (file) => {
+        assert.equal(file, "/home/me/.local/share/rootmind/service.json");
+        if (json === null) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+        return json;
+      },
+      exists: (file) => present.includes(file),
+    });
+    const discovery = JSON.stringify({ executable: copy, version: "2.3.0" });
+    assert.equal(linuxBackendExe(env, files(discovery, [copy, LINUX_PACKAGE_EXE])), copy);
+    assert.equal(defaultBackendExe(env, "linux", files(discovery, [copy])), copy);
+    assert.deepEqual(defaultStatusCommand(env, "linux", files(discovery, [copy])), {
+      file: copy,
+      args: ["service", "status", "--json"],
+    });
+    // A copy that is gone, a path outside runtime/, or no service.json: the package.
+    assert.equal(linuxBackendExe(env, files(discovery, [LINUX_PACKAGE_EXE])), LINUX_PACKAGE_EXE);
+    for (const executable of [
+      "/tmp/rootmind-backend",
+      "/home/me/.local/share/rootmind/runtime/../x/rootmind-backend",
+      "/home/me/.local/share/rootmind/runtime/a/b/rootmind-backend",
+      "/home/me/.local/share/rootmind/runtime/a/other",
+      42,
+    ]) {
+      const json = JSON.stringify({ executable });
+      assert.equal(linuxBackendExe(env, files(json, [executable, LINUX_PACKAGE_EXE])), LINUX_PACKAGE_EXE);
+    }
+    assert.equal(linuxBackendExe(env, files(null, [LINUX_PACKAGE_EXE])), LINUX_PACKAGE_EXE);
+    assert.equal(linuxBackendExe(env, files("not json", [])), null);
+  });
+
+  test("the status command is looked up again for every discovery", async () => {
+    const server = await startServer();
+    const machine = machineWithServer(server);
+    let calls = 0;
+    const session = startSession({
+      statusCommand: () => {
+        calls += 1;
+        return calls === 1 ? null : machine.statusCommand;
+      },
+    });
+    const first = initialize();
+    assertFriendlyError(await session.request(first), first.id, "not_installed");
+    const second = initialize();
+    const answer = await session.request(second);
+    assert.equal(answer.result.serverInfo.name, "rootmind");
+    await session.close();
+    await server.close();
+    assert.ok(calls >= 2);
   });
 
   test("a starting service is used", () => {
@@ -701,11 +804,11 @@ describe("manifest", () => {
     assert.equal(manifest.tools_generated, false);
   });
 
-  test("starts the bridge with Node on Windows only", () => {
+  test("starts the bridge with Node on Windows and Linux", () => {
     assert.equal(manifest.server.type, "node");
     assert.equal(manifest.server.entry_point, "server/index.mjs");
     assert.deepEqual(manifest.server.mcp_config.args, ["${__dirname}/server/index.mjs"]);
-    assert.deepEqual(manifest.compatibility.platforms, ["win32"]);
+    assert.deepEqual(manifest.compatibility.platforms, ["win32", "linux"]);
     assert.equal(manifest.user_config, undefined);
   });
 

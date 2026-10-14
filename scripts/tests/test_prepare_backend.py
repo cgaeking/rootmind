@@ -257,3 +257,14 @@ def test_prerelease_versions_compare_in_normal_form(onedir, tmp_path, monkeypatc
 
 def test_expected_version_reads_pyproject(make_repo):
     assert prepare_backend.expected_version(make_repo(backend="1.2.0-rc.1")) == "1.2.0rc1"
+
+
+def test_a_linux_build(onedir, tmp_path, fake_version):
+    """A Linux onedir build has `rootmind-backend` without .exe; it is run under that name."""
+    calls, _ = fake_version
+    (onedir / "rootmind-backend.exe").rename(onedir / "rootmind-backend")
+    dest = tmp_path / "dest"
+    assert prepare(onedir, dest) == 0
+    assert calls[0][0] == [str(dest / "rootmind-backend"), "--version"]
+    # A previous Linux copy is replaced like a Windows one.
+    assert prepare(onedir, dest) == 0

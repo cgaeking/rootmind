@@ -5,14 +5,19 @@ mod app;
 mod args;
 mod conversations;
 mod imagepath;
+#[cfg(target_os = "linux")]
+mod linux;
+mod procnet;
 mod service;
 mod tcptable;
+mod unitfile;
 #[cfg(windows)]
 mod win;
 
 // RootMind desktop is a client of the RootMind backend REST API. Since 2.0
 // the backend always runs as a Windows service, which the per-machine
-// installer sets up for the account that installs the app:
+// installer sets up for the account that installs the app (on Linux: two
+// systemd user units, which the app sets up itself; service.rs, linux/):
 // - Background service: this side reads its state unelevated, hands out its
 //   token only after checking that the service's own process listens on its
 //   port, and runs the backend's `service install` elevated to repair it or to

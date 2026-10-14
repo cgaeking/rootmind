@@ -25,6 +25,10 @@ from check_versions import ROOT, VersionError, normalize_version, tag_version
 REPOSITORY = "cgaeking/rootmind"
 INSTALLER = "RootMind-Setup-x64.exe"
 BACKEND_ZIP = "rootmind-backend-windows-x64.zip"
+LINUX_DEB = "RootMind-amd64.deb"
+LINUX_RPM = "RootMind-x86_64.rpm"
+LINUX_APPIMAGE = "RootMind-x86_64.AppImage"
+LINUX_BACKEND = "rootmind-backend-linux-x64.tar.gz"
 MCP_BUNDLE = "rootmind.mcpb"
 CHECKSUMS = "SHA256SUMS.txt"
 
@@ -89,8 +93,12 @@ def footer(installer_size: int | None = None) -> str:
 | File | What it is |
 | --- | --- |
 | `{INSTALLER}` | The Windows app with its background service{size}. Installs for all users of the computer and sets up the service for your account; needs one administrator approval, no Python. |
+| `{LINUX_DEB}` | The Linux app for Ubuntu and Debian: `sudo apt install ./{LINUX_DEB}`. On its first start it sets up its background service as systemd user services of your account; no root needed for that. |
+| `{LINUX_RPM}` | The same for Fedora and openSUSE Tumbleweed: `sudo dnf install ./{LINUX_RPM}` (openSUSE: `sudo zypper install ./{LINUX_RPM}`). |
+| `{LINUX_APPIMAGE}` | The same as an AppImage for other distributions, without installation: `chmod +x {LINUX_APPIMAGE}`, then run it (needs FUSE 2, `libfuse2`). |
 | `{MCP_BUNDLE}` | RootMind for Claude Desktop: double-click it and Claude Desktop installs it. Needs RootMind installed with **Serve MCP over HTTP** on (the default). |
-| `{BACKEND_ZIP}` | The backend on its own, for the command line and servers. Not needed for the app. |
+| `{BACKEND_ZIP}` | The backend on its own for Windows, for the command line and servers. Not needed for the app. |
+| `{LINUX_BACKEND}` | The backend on its own for Linux (x86-64, glibc 2.35 or later), for the command line and servers. Not needed for the app. |
 | `{CHECKSUMS}` | SHA-256 checksums of these files. |
 
 ### Verify the download

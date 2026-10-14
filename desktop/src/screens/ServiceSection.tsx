@@ -58,7 +58,9 @@ function Labeled({ label, hint, children }: { label: string; hint?: string; chil
  * (state, address, version), with Set up when it was never set up, Repair
  * when it does not work, MCP over HTTP (on by default; switching it needs
  * administrator approval) and, below it, remote access through ngrok (through
- * the service's REST API, no approval).
+ * the service's REST API, no approval). On Linux the service is the
+ * account's systemd user services; the app sets it up and updates it on its
+ * own (state/autoSetup.ts), shown here while it runs and when it failed.
  */
 export function ServiceSection() {
   const kind = useStore((s) => s.kind);
@@ -67,14 +69,21 @@ export function ServiceSection() {
   const version = useStore((s) => s.version);
   const checkedProblem = useStore((s) => s.serviceProblem);
   const appVersion = useStore((s) => s.appMode?.version ?? null);
+  const auto = useStore((s) => s.autoService);
   const { info, failed: infoFailed, refresh } = useServiceInfo();
 
   const [busy, setBusy] = useState<Busy>(null);
-  const [message, setMessage] = useState<{ tone: "info" | "err"; text: string } | null>(null);
+  const [localMessage, setMessage] = useState<{ tone: "info" | "err"; text: string } | null>(null);
   const [details, setDetails] = useState<string | null>(null);
   const [detailsBusy, setDetailsBusy] = useState(false);
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+
+  // A failed change the app made on its own (Linux) shows like a failed click.
+  const message =
+    localMessage ??
+    (auto?.status === "failed" && auto.message ? { tone: "err" as const, text: auto.message } : null);
+  const autoRunning = auto?.status === "running";
 
   const custom = kind === "custom";
   const connected = kind === "service" && conn === "online";
@@ -165,6 +174,7 @@ export function ServiceSection() {
 
   let statusText: string | null = null;
   if (busy === "repair") statusText = labels.service[repairText.busy];
+  else if (autoRunning) statusText = labels.service[auto?.action === "setup" ? "autoSetup" : "autoUpdate"];
   else if (busy === "mcp") statusText = labels.service.applying;
   else if (custom) statusText = labels.service.customInUse;
   else if (kind === "service" && !connected && !problem) statusText = labels.service.connecting;
@@ -200,11 +210,11 @@ export function ServiceSection() {
           {needsAdmin && <p className="muted">{labels.service.repairNeedsAdmin}</p>}
           <Row>
             {repairable && (
-              <Button variant="primary" onClick={() => void run("repair", serviceUpdate)} disabled={!!busy}>
+              <Button variant="primary" onClick={() => void run("repair", serviceUpdate)} disabled={!!busy || autoRunning}>
                 {labels.service[repairText.action]}
               </Button>
             )}
-            <Button onClick={() => void checkAgain()} disabled={!!busy}>
+            <Button onClick={() => void checkAgain()} disabled={!!busy || autoRunning}>
               {busy === "check" ? labels.backendModal.checking : labels.backendModal.checkAgain}
             </Button>
           </Row>
@@ -215,7 +225,7 @@ export function ServiceSection() {
         <>
           <Banner tone="info">{labels.service.updateBanner(updateOffer.service, updateOffer.app)}</Banner>
           <Row>
-            <Button onClick={() => void run("repair", serviceUpdate)} disabled={!!busy}>
+            <Button onClick={() => void run("repair", serviceUpdate)} disabled={!!busy || autoRunning}>
               {labels.service.updateService}
             </Button>
           </Row>
@@ -242,7 +252,7 @@ export function ServiceSection() {
             <input
               type="checkbox"
               checked={info.mcp.installed}
-              disabled={!!busy || !info.canElevate}
+              disabled={!!busy || autoRunning || !info.canElevate}
               onChange={(e) => {
                 const enabled = e.currentTarget.checked;
                 void run("mcp", () => serviceSetMcp(enabled));

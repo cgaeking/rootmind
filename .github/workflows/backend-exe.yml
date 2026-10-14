@@ -1,9 +1,11 @@
 name: backend-exe
 
-# The packaged backend: a PyInstaller onedir build on Windows, its smoke test,
-# and the end-to-end test of the Windows background service. release.yml calls
-# this workflow for release builds (use-cache: false) and takes the tree hash,
-# the version and the artifact "rootmind-backend-windows-x64" from it.
+# The packaged backend: a PyInstaller onedir build on Windows and on Linux,
+# their smoke tests, and the end-to-end tests of the background service
+# (Windows services; systemd user units on Linux). release.yml calls this
+# workflow for release builds (use-cache: false) and takes the tree hashes,
+# the version and the artifacts "rootmind-backend-windows-x64" and
+# "rootmind-backend-linux-x64" from it.
 
 on:
   pull_request:
@@ -36,6 +38,9 @@ on:
       version:
         description: The backend version, as printed by rootmind-backend.exe --version
         value: ${{ jobs.build.outputs.version }}
+      linux-tree-sha256:
+        description: SHA-256 tree hash of the Linux onedir folder
+        value: ${{ jobs.build-linux.outputs.tree-sha256 }}
   workflow_dispatch:
     inputs:
       use-cache:
@@ -188,5 +193,153 @@ jobs:
         with:
           name: service-e2e-diagnostics
           path: ${{ runner.temp }}/service-e2e-diagnostics
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The Linux build, on the oldest supported glibc (Ubuntu 22.04: glibc 2.35),
+  # so it runs on newer distributions too. The artifact is a tar.gz because
+  # artifacts do not keep file modes (the executable bit).
+  build-linux:
+    name: Build and smoke test (onedir, Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    outputs:
+      tree-sha256: ${{ steps.tree.outputs.sha256 }}
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          working-directory: backend
+          enable-cache: ${{ format('{0}', inputs.use-cache) != 'false' && github.ref_type != 'tag' }}
+          cache-dependency-glob: uv.lock
+
+      - name: Install the build environment
+        run: uv sync --locked --no-dev --group build
+
+      # The spec replaces the links PyInstaller makes on Linux with copies.
+      - name: Build with PyInstaller
+        run: |
+          PYTHONHASHSEED=0 SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            PYINSTALLER_CONFIG_DIR="$RUNNER_TEMP/pyinstaller-config" \
+            uv run --no-sync pyinstaller packaging/rootmind-backend.spec --noconfirm --clean \
+            --distpath dist --workpath "$RUNNER_TEMP/pyinstaller-work"
+          if [ -n "$(find dist/rootmind-backend -type l)" ]; then
+            echo "::error::the build holds symbolic links"
+            exit 1
+          fi
+          files=$(find dist/rootmind-backend -type f | wc -l)
+          size=$(du -sm dist/rootmind-backend | cut -f1)
+          echo "Linux onedir build: $files files, $size MB" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Version
+        id: version
+        run: |
+          version=$(dist/rootmind-backend/rootmind-backend --version | awk '{print $NF}')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version (Linux): $version" >> "$GITHUB_STEP_SUMMARY"
+
+      # The same smoke test as on Windows, with PowerShell 7 (on the runner).
+      - name: Smoke test
+        shell: pwsh
+        run: >-
+          ./packaging/smoke-test.ps1 -ExeDir dist/rootmind-backend -ApiPort 18765 -McpPort 18766
+          -WorkDir (Join-Path $env:RUNNER_TEMP "smoke")
+
+      - name: Tree hash
+        id: tree
+        run: |
+          hash=$(uv run --no-sync python packaging/tree_hash.py dist/rootmind-backend)
+          if ! [[ "$hash" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::tree hash failed: $hash"
+            exit 1
+          fi
+          echo "sha256=$hash" >> "$GITHUB_OUTPUT"
+          echo "Tree SHA-256 (Linux): $hash" >> "$GITHUB_STEP_SUMMARY"
+
+      # rootmind-backend-linux-x64.tar.gz holds the folder rootmind-backend/
+      # with its modes; the release ships it as it is.
+      - name: Archive
+        run: |
+          mkdir -p "$RUNNER_TEMP/linux-backend"
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$(git log -1 --format=%ct)" \
+            -C dist -cf - rootmind-backend | gzip -n -9 > "$RUNNER_TEMP/linux-backend/rootmind-backend-linux-x64.tar.gz"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rootmind-backend-linux-x64
+          path: ${{ runner.temp }}/linux-backend/rootmind-backend-linux-x64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  service-e2e-linux:
+    name: Linux service end-to-end (systemd user units)
+    needs: build-linux
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # As on Windows: pull requests run it only when the service or what it
+      # relies on changed.
+      - name: Decide whether to run
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          run=true
+          if [ "$EVENT_NAME" = pull_request ]; then
+            pattern='^backend/src/rootmind/(service/|access\.py|auth\.py|main\.py|config\.py|connectors/|api/|mcp_http\.py|remote_access\.py)|^backend/(pyproject\.toml|uv\.lock)$|^backend/packaging/|^backend/tests/e2e/|^\.github/workflows/backend-exe\.yml$'
+            relevant=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" | grep -cE "$pattern" || true)
+            echo "Service-relevant changes: $relevant"
+            if [ "$relevant" = 0 ]; then run=false; fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.scope.outputs.run == 'true'
+        with:
+          name: rootmind-backend-linux-x64
+          path: ${{ runner.temp }}/linux-backend
+
+      # The runner's account has no systemd user manager until linger starts
+      # one; systemctl --user then finds it through XDG_RUNTIME_DIR.
+      - name: Start a systemd user manager for the runner account
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          sudo loginctl enable-linger "$USER"
+          runtime="/run/user/$(id -u)"
+          for _ in $(seq 1 30); do
+            if [ -S "$runtime/systemd/private" ]; then break; fi
+            sleep 1
+          done
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
+          XDG_RUNTIME_DIR="$runtime" systemctl --user show --property=Version
+
+      - name: Install, check, update and remove the user units
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          tar -xzf "$RUNNER_TEMP/linux-backend/rootmind-backend-linux-x64.tar.gz" -C "$RUNNER_TEMP/linux-backend"
+          python3 backend/tests/e2e/service_e2e_linux.py \
+            --exe-dir "$RUNNER_TEMP/linux-backend/rootmind-backend" \
+            --api-port 18080 --mcp-port 18081 \
+            --diagnostics-dir "$RUNNER_TEMP/service-e2e-linux-diagnostics"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure() && steps.scope.outputs.run == 'true'
+        with:
+          name: service-e2e-linux-diagnostics
+          path: ${{ runner.temp }}/service-e2e-linux-diagnostics
           if-no-files-found: ignore
           retention-days: 14

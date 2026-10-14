@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import DATA_DIR_NAME, MCP_SERVICE
+from .common import INITIAL_STATUS, safe_append  # noqa: F401 (shared with Linux, kept here)
 
 # Well-known SIDs.
 SYSTEM = "S-1-5-18"
@@ -903,41 +904,6 @@ def remove_program_base(base: Path) -> list[str]:
 # --- Files in the data folder --------------------------------------------------------------
 
 
-def safe_append(path: Path, text: str) -> bool:
-    """Append ``text`` to a log file in the data folder, refusing links and odd files.
-
-    Returns False (and writes nothing) when the file or its folder is a link
-    or reparse point, or the file has more than one hard link.
-    """
-    try:
-        folder = os.lstat(path.parent)
-        if _is_reparse(folder) or not stat.S_ISDIR(folder.st_mode):
-            return False
-        try:
-            before = os.lstat(path)
-        except FileNotFoundError:
-            before = None
-        if before is not None and (
-            _is_reparse(before) or not stat.S_ISREG(before.st_mode) or before.st_nlink > 1
-        ):
-            return False
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0)
-        fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0), 0o644)
-        try:
-            opened = os.fstat(fd)
-            if before is not None and (opened.st_dev, opened.st_ino) != (
-                before.st_dev,
-                before.st_ino,
-            ):
-                return False
-            os.write(fd, text.encode("utf-8"))
-        finally:
-            os.close(fd)
-    except OSError:
-        return False
-    return True
-
-
 def write_protected_file(path: Path, data: bytes, entry: Entry) -> None:
     """Replace ``path`` with ``data``; the new file has ``entry``'s permissions from the start.
 
@@ -1024,8 +990,3 @@ class DataFileProtection:
             with os.fdopen(fd, "wb") as f:
                 f.write(INITIAL_STATUS)
         _set_dacl(path, entry)
-
-
-# The status file as service install and the backend create it (the MCP
-# server overwrites it when it starts).
-INITIAL_STATUS = b'{"state": "off", "url": null, "error": null, "updated": null}'

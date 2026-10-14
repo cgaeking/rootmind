@@ -29,14 +29,23 @@ def test_prints_the_section_and_the_footer(capsys):
     assert "Not needed for the app" in footer
     assert "`rootmind.mcpb`" in footer
     assert "Claude Desktop" in footer
-    # The downloads table lists the installer, the bundle, the zip and the checksums.
+    # The downloads table lists the installer, the Linux packages, the bundle,
+    # the backend archives and the checksums.
     rows = [line for line in footer.splitlines() if line.startswith("| `")]
     assert [row.split("`")[1] for row in rows] == [
         "RootMind-Setup-x64.exe",
+        "RootMind-amd64.deb",
+        "RootMind-x86_64.rpm",
+        "RootMind-x86_64.AppImage",
         "rootmind.mcpb",
         "rootmind-backend-windows-x64.zip",
+        "rootmind-backend-linux-x64.tar.gz",
         "SHA256SUMS.txt",
     ]
+    assert "sudo apt install ./RootMind-amd64.deb" in footer
+    assert "sudo dnf install ./RootMind-x86_64.rpm" in footer
+    assert "chmod +x RootMind-x86_64.AppImage" in footer
+    assert "systemd user services" in footer
     assert "not code-signed" in footer
     assert "SmartScreen" in footer
     assert "sha256sum --check --ignore-missing SHA256SUMS.txt" in footer

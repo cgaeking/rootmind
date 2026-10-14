@@ -10,7 +10,7 @@
 [![backend CI](https://github.com/cgaeking/rootmind/actions/workflows/backend.yml/badge.svg?branch=main)](https://github.com/cgaeking/rootmind/actions/workflows/backend.yml?query=branch%3Amain)
 [![desktop CI](https://github.com/cgaeking/rootmind/actions/workflows/desktop.yml/badge.svg?branch=main)](https://github.com/cgaeking/rootmind/actions/workflows/desktop.yml?query=branch%3Amain)
 [![Lizenz: MIT](https://img.shields.io/github/license/cgaeking/rootmind)](LICENSE)
-[![Plattform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)](#installation)
+[![Plattform: Windows | Linux](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%7C%20Linux-0078D6)](#installation)
 [![Downloads](https://img.shields.io/github/downloads/cgaeking/rootmind/total)](https://github.com/cgaeking/rootmind/releases)
 
 > **Neu hier?** Der [Schnellstart](docs/QUICKSTART.de.md) führt in wenigen
@@ -29,9 +29,10 @@ Das Repository hat zwei Teile:
 - **Backend** (Python, FastAPI): Indexer, Volltextsuche, die Agenten-Schleife,
   eine REST-API auf localhost und MCP-Server über stdio und HTTP.
 - **Desktop-App** (Tauri 2 mit React und TypeScript, dazu eine Rust-Shell):
-  eine Chat- und Suchoberfläche für Windows, auf Deutsch und Englisch. Ihr
-  Installer richtet das Backend als Windows-Dienst ein, und die App spricht
-  mit diesem Dienst.
+  eine Chat- und Suchoberfläche für Windows und Linux, auf Deutsch und
+  Englisch. Unter Windows richtet ihr Installer das Backend als Windows-Dienst
+  ein, unter Linux richtet die App es als systemd-Benutzerdienste deines
+  Kontos ein. Die App spricht mit diesem Dienst.
 
 > **Status:** Dies ist ein persönliches Projekt. Es wird nicht kommerziell
 > gepflegt, und es gibt keine Support-Zusage. Issues und Pull Requests sind
@@ -40,7 +41,8 @@ Das Repository hat zwei Teile:
 ## Installation
 
 Jedes [Release](https://github.com/cgaeking/rootmind/releases/latest) enthält
-diese Downloads für Windows (x64):
+diese Downloads für Windows (x64); die Linux-Pakete beschreibt
+[Installation unter Linux](#installation-unter-linux):
 
 - **[RootMind-Setup-x64.exe](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-Setup-x64.exe)**,
   für die meisten, unter Windows 10 oder 11: die Desktop-App und ihr
@@ -100,6 +102,64 @@ Einstellungen → **Darstellung** → **Sprache** stellt sie um. Die Namen aus d
 Oberfläche stehen in dieser README so, wie die deutsche Oberfläche sie zeigt.
 Einstellungen → **Über RootMind** zeigt die Versionen von App und Backend und
 verlinkt Releases und Issues.
+
+### Installation unter Linux
+
+Jedes Release enthält auch die App für Linux auf x86-64 mit glibc 2.35 oder
+neuer (Ubuntu 22.04, Debian 12, Fedora 38, openSUSE Tumbleweed und neuer).
+Wähle das Paket für deine Distribution:
+
+| Distribution | Download | Installation |
+| --- | --- | --- |
+| Ubuntu, Debian und Ableger | [RootMind-amd64.deb](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-amd64.deb) | `sudo apt install ./RootMind-amd64.deb` |
+| Fedora, openSUSE Tumbleweed | [RootMind-x86_64.rpm](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-x86_64.rpm) | `sudo dnf install ./RootMind-x86_64.rpm` (openSUSE: `sudo zypper install ./RootMind-x86_64.rpm`) |
+| Jede andere Distribution | [RootMind-x86_64.AppImage](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-x86_64.AppImage) | `chmod +x RootMind-x86_64.AppImage`, dann starten |
+
+Die Pakete installieren die App und ihr Backend nach `/usr/lib/RootMind` und
+ziehen WebKitGTK 4.1 nach; nur dieser Schritt braucht root. Das AppImage
+braucht keine Installation; es braucht FUSE 2 (das Paket `libfuse2`, unter
+Ubuntu 24.04 `libfuse2t64`). Prüfe den Download mit
+`sha256sum --check --ignore-missing SHA256SUMS.txt` (siehe
+[Downloads prüfen](#downloads-prüfen)).
+
+**Was beim ersten Start passiert.** RootMind richtet seinen Hintergrunddienst
+für dein Konto ein, ohne Rückfrage und ohne root: zwei
+systemd-Benutzerdienste, `rootmind-backend.service` (REST-API und Indizierung)
+und `rootmind-mcp-http.service` (MCP über HTTP), in
+`~/.config/systemd/user/`. Sie starten eine Kopie des Backends in
+`~/.local/share/rootmind/runtime/`, damit der Dienst weiterläuft, wenn das
+AppImage geschlossen oder verschoben wird, und halten ihre Daten in
+`~/.local/share/rootmind`. Startet eine neuere Version der App, bringt sie den
+Dienst auf ihre Version. Scheitert die Einrichtung, sagt RootMind warum, und
+**Einrichten** (oder **Reparieren**) versucht es erneut; Einstellungen →
+**RootMind-Dienst** → **Details** zeigt den Zustand des Dienstes und das Ende
+seiner `logs/install.log`. Danach fügst du wie unter Windows unter **Ordner**
+einen Ordner hinzu.
+
+Die Dienste starten, wenn du dich anmeldest, und enden mit deiner letzten
+Sitzung. Damit sie auch laufen, wenn niemand angemeldet ist, zum Beispiel für
+n8n auf demselben Computer, schalte einmal Lingering für dein Konto ein:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+**Aktualisieren:** Installiere das Paket der neuen Version (wie oben, oder
+`sudo dnf upgrade ./RootMind-x86_64.rpm`) oder ersetze das AppImage; RootMind
+aktualisiert seinen Dienst beim Start.
+
+**Deinstallieren:** zuerst den Dienst, dann die App:
+
+```sh
+# .deb und .rpm (beim AppImage: ~/.local/share/rootmind/runtime/*/rootmind-backend)
+/usr/lib/RootMind/backend/rootmind-backend service uninstall
+sudo apt remove root-mind        # oder: sudo dnf remove root-mind
+```
+
+`service uninstall` hält die beiden Benutzerdienste an, entfernt sie und die
+Programmkopie und behält Einstellungen, API-Keys, Index und MCP-Token in
+`~/.local/share/rootmind`; `service uninstall --purge` löscht auch diese. Die
+Chats liegen in `~/.local/share/io.github.cgaeking.rootmind`.
 
 ### Umstieg von 1.x
 
@@ -182,6 +242,25 @@ das nur Administratoren ändern können.
   `%ProgramFiles%\RootMind Service\`, die nur Administratoren ändern können,
   und halten ihre Daten in `%ProgramData%\RootMind`.
 
+**Unter Linux** ist derselbe Dienst das Paar systemd-Benutzerdienste deines
+Kontos (siehe [Installation unter Linux](#installation-unter-linux)), und
+nichts daran braucht root oder eine Bestätigung:
+
+- Er läuft als dein Konto und liest, was dein Konto lesen kann, eingehängte
+  Netzwerkfreigaben eingeschlossen. Andere Konten auf dem Computer bekommen
+  eigene Dienste (auf anderen Ports), wenn sie RootMind starten.
+- Sein REST-Token liegt in `~/.local/share/rootmind/data/rest_token.txt`, das
+  nur dein Konto lesen kann (Modus 0600, in Ordnern mit Modus 0700). Die App
+  nutzt es erst, nachdem sie geprüft hat, dass der eigene Prozess der Unit auf
+  dem Port lauscht.
+- MCP über HTTP und der Fernzugriff funktionieren wie unter Windows;
+  **MCP über HTTP anbieten** fügt `rootmind-mcp-http.service` ohne Rückfrage
+  hinzu oder entfernt ihn.
+- `systemctl --user status rootmind-backend` und
+  `journalctl --user -u rootmind-backend` zeigen die Unit und ihr
+  systemd-Protokoll; RootMinds eigene Logs liegen in
+  `~/.local/share/rootmind/logs`.
+
 Einstellungen → **Erweitert** verbindet die App stattdessen mit einem
 RootMind-Backend unter einer anderen Adresse.
 [SECURITY.md](SECURITY.md#background-service) (englisch) beschreibt das
@@ -219,8 +298,10 @@ Einzurichten ist nichts. Die Erweiterung findet den RootMind-Dienst auf
 diesem Computer, liest dort Port und Token für MCP und verbindet sich mit MCP
 über HTTP auf 127.0.0.1. Sie braucht ein installiertes RootMind mit
 eingeschaltetem **MCP über HTTP anbieten** (Standard; Einstellungen →
-RootMind-Dienst), und Claude Desktop muss unter dem Windows-Konto laufen, das
-RootMind installiert hat, denn nur dieses Konto kann das Token lesen. Fehlt
+RootMind-Dienst), und Claude Desktop muss unter dem Konto laufen, das RootMind
+nutzt, denn nur dieses Konto kann das Token lesen. Unter Linux findet sie den
+Dienst über `~/.local/share/rootmind/service.json`, das die Programmkopie der
+Dienste nennt (kein Geheimnis). Fehlt
 etwas, sagt die Fehlermeldung der Erweiterung, was zu tun ist, etwa RootMind
 zu installieren oder MCP über HTTP einzuschalten; danach funktioniert die
 nächste Anfrage, ohne die Erweiterung neu zu installieren. Nach einer
@@ -543,6 +624,34 @@ Das Zip läuft auch ohne Dienst, zum Beispiel
 `rootmind-backend.exe api --require-token` oder
 `rootmind-backend.exe mcp-http`.
 
+**Linux-Server oder ein Rechner ohne die App.** Das Release enthält das
+Linux-Backend allein, `rootmind-backend-linux-x64.tar.gz` (x86-64, glibc 2.35
+oder neuer). Entpacke es als das Konto, dessen Ordner RootMind indizieren soll
+(nicht root), in einen Ordner, den nur du ändern kannst, und installiere den
+Dienst von dort:
+
+```sh
+base=https://github.com/cgaeking/rootmind/releases/latest/download
+curl -L -O "$base/rootmind-backend-linux-x64.tar.gz" -O "$base/SHA256SUMS.txt"
+sha256sum --check --ignore-missing SHA256SUMS.txt
+mkdir -p ~/opt && tar -xzf rootmind-backend-linux-x64.tar.gz -C ~/opt
+exe=~/opt/rootmind-backend/rootmind-backend
+"$exe" service install      # installieren oder die installierten Dienste aktualisieren
+"$exe" service status       # Zustand, Port, Version und Token-Dateien
+"$exe" service uninstall    # entfernen; --purge löscht auch die Daten
+loginctl enable-linger "$USER"   # auch ohne Anmeldung laufen lassen
+```
+
+`service install` kopiert das Programm nach
+`~/.local/share/rootmind/runtime/<version>-<id>/` und schreibt die beiden
+Units nach `~/.config/systemd/user/`; es braucht den systemd-Benutzermanager
+des Kontos, den eine Desktop- oder SSH-Anmeldung startet
+(Exit-Code 11 ohne ihn, zum Beispiel unter `su` oder `sudo`). Ports, Optionen
+und Tokens sind die von Windows; die Daten liegen in `~/.local/share/rootmind`
+(`config.yaml`, `data/rest_token.txt`, `data/api_token.txt`). Nach einer
+Änderung an `config.yaml` startest du den Dienst mit
+`systemctl --user restart rootmind-backend` neu.
+
 ## Aus dem Quellcode starten
 
 Du brauchst [uv](https://docs.astral.sh/uv/); es installiert bei Bedarf
@@ -713,7 +822,8 @@ backend/
     api/                   REST-API (FastAPI)
     auth.py, access.py     REST-Token; Schnittstelle der Ordner-Zugriffsregeln
     winaccess.py           Ordner-Zugriffsregeln des Windows-Dienstes (AuthZ)
-    service/               Windows-Dienst: install, uninstall, status, Dienst-Host
+    service/               Hintergrunddienst: install, uninstall, status, Dienst-Host;
+                           Windows-Dienste und Linux-systemd-Benutzer-Units (linux*.py, systemd.py)
     database/              SQLite-Modelle, FTS5- und Trigramm-Suche
     indexer/               Parser, Indexer, Sync-Scheduler
     connectors/            Connector für lokale Ordner
@@ -725,7 +835,8 @@ backend/
 desktop/
   src/                     React- und TypeScript-Oberfläche
   src-tauri/               Rust-Shell: Verbindung zum Dienst, Dienst-Befehle, Chat-Verlauf;
-                           installer/ mit NSIS-Vorlage und den Dienst-Hooks
+                           installer/ mit NSIS-Vorlage und den Dienst-Hooks;
+                           linux/ und tauri.linux.conf.json für Linux-Dienst und -Pakete
   scripts/                 Smoke-Test des Installers
 packaging/winget/          Vorlagen für winget-Manifeste
 packaging/mcpb/            Bundle für Claude Desktop (rootmind.mcpb): Brücke von stdio zu HTTP, Manifest, Tests
@@ -758,7 +869,9 @@ Engine. Jeder Test bekommt ein eigenes `RLM_HOME` und Arbeitsverzeichnis.
 Tests, die Dokumente brauchen, bekommen einen kleinen generierten Korpus mit
 je einer PDF-, DOCX-, XLSX-, PPTX-, CSV-, Markdown- und Textdatei. Tests der
 Windows-Ordner-Zugriffsregeln und der Ordnerrechte des Dienstes laufen nur
-unter Windows; echte Dienste installiert erst der End-to-End-Test in der CI.
+unter Windows, die der Linux-Dateimodi nur unter Linux (die Logik des
+Linux-Dienstes selbst, mit einem Fake-`systemctl`, läuft überall); echte
+Dienste installieren erst die End-to-End-Tests in der CI.
 
 **Evals.** [`scripts/run_evals.py`](backend/scripts/run_evals.py) indiziert den
 fiktiven Korpus in [`backend/evals/corpus/`](backend/evals/corpus/) mit dem
@@ -788,9 +901,9 @@ Secrets. Nur der Release-Job darf in das Repository schreiben:
 | Workflow | Was er ausführt |
 |---|---|
 | [`backend.yml`](.github/workflows/backend.yml) | ruff check und Format-Prüfung; die Versionsprüfung über Backend, Desktop und das Bundle für Claude Desktop; die Tests der Release-Skripte unter Ubuntu und Windows; pytest mit Coverage unter Ubuntu (Python 3.12 und 3.14) und Windows (Python 3.12); den Such-Regressionstest im Dry-Modus |
-| [`backend-exe.yml`](.github/workflows/backend-exe.yml) | Den PyInstaller-onedir-Build unter Windows, einen Smoke-Test der Programmdatei (REST, MCP über HTTP und stdio, Indizierung jedes Dateityps) und ihren Tree-Hash; danach einen End-to-End-Test des Windows-Dienstes auf dem Runner mit Administratorrechten: Installation, Berechtigungen, Tokens, Lese-Beschränkung, Update und Deinstallation. Bei Pull Requests läuft der Dienst-Test nur, wenn sich dienstbezogener Code geändert hat |
-| [`desktop.yml`](.github/workflows/desktop.yml) | ESLint, TypeScript-Typprüfung, vitest, Vite-Build, `cargo fmt`, `cargo clippy`, `cargo check`, `cargo test` unter Windows |
-| [`release.yml`](.github/workflows/release.yml) | Für einen Versions-Tag `v*`: das Backend über `backend-exe.yml`; den Installer für alle Benutzer mit diesem Backend, eine Prüfung, dass er eine installierte Version ohne Neuinstallations-Seite an Ort und Stelle aktualisiert, und einen Smoke-Test auf dem Runner mit Administratorrechten, der RootMind mit seinen Windows-Diensten installiert, aktualisiert, neu installiert und deinstalliert und es still als SYSTEM installiert (nur die App), den Dienst wie die App einrichtet und ihn als SYSTEM aktualisiert; die winget-Manifeste, gegen ihre Schemas geprüft; `rootmind.mcpb` für Claude Desktop, getestet, geprüft und gepackt; dann ein GitHub-Release mit Installer, Bundle, Backend-Zip, `SHA256SUMS.txt` und Attestierungen. Manuelle Läufe und Pull Requests, die das Packaging ändern, sind Probeläufe, die nichts veröffentlichen |
+| [`backend-exe.yml`](.github/workflows/backend-exe.yml) | Die PyInstaller-onedir-Builds unter Windows und unter Ubuntu 22.04, je einen Smoke-Test der Programmdatei (REST, MCP über HTTP und stdio, Indizierung jedes Dateityps) und ihre Tree-Hashes; danach End-to-End-Tests des Dienstes: auf dem Windows-Runner mit Administratorrechten die Windows-Dienste (Installation, Berechtigungen, Tokens, Lese-Beschränkung, Update und Deinstallation), unter Ubuntu die systemd-Benutzer-Units des Runner-Kontos (Ablehnungen, Installation, Dateimodi, Tokens, Indizierung, Neustarts, Update, MCP aus und an, Deinstallation). Bei Pull Requests laufen die Dienst-Tests nur, wenn sich dienstbezogener Code geändert hat |
+| [`desktop.yml`](.github/workflows/desktop.yml) | ESLint, TypeScript-Typprüfung, vitest, Vite-Build, `cargo fmt`, `cargo clippy`, `cargo check`, `cargo test` unter Windows; `cargo clippy` und `cargo test` unter Ubuntu 22.04 |
+| [`release.yml`](.github/workflows/release.yml) | Für einen Versions-Tag `v*`: das Backend über `backend-exe.yml`; den Installer für alle Benutzer mit diesem Backend, eine Prüfung, dass er eine installierte Version ohne Neuinstallations-Seite an Ort und Stelle aktualisiert, und einen Smoke-Test auf dem Runner mit Administratorrechten, der RootMind mit seinen Windows-Diensten installiert, aktualisiert, neu installiert und deinstalliert und es still als SYSTEM installiert (nur die App), den Dienst wie die App einrichtet und ihn als SYSTEM aktualisiert; die winget-Manifeste, gegen ihre Schemas geprüft; `rootmind.mcpb` für Claude Desktop, getestet, geprüft und gepackt; die Linux-Pakete (.deb, .rpm, AppImage) mit dem Linux-Backend, wobei das .deb auf dem Runner installiert und beide gepackten Backends gestartet werden; dann ein GitHub-Release mit Installer, Linux-Paketen, Bundle, beiden Backend-Archiven, `SHA256SUMS.txt` und Attestierungen. Manuelle Läufe und Pull Requests, die das Packaging ändern, sind Probeläufe, die nichts veröffentlichen |
 | [`mcpb.yml`](.github/workflows/mcpb.yml) | Das Bundle für Claude Desktop: die `node:test`-Tests der Brücke unter Ubuntu und Windows, dann das Manifest mit der mcpb-CLI geprüft und das Bundle gepackt |
 | [`secrets.yml`](.github/workflows/secrets.yml) | detect-secrets über alle versionierten Dateien, gegen die geprüfte Baseline `.secrets.baseline` |
 
@@ -808,7 +921,9 @@ monatlich Abhängigkeits-Updates für alle vier Ökosysteme vor.
   verlangst; ohne Token kann jeder lokale Prozess sie aufrufen.
 - Der Dienst läuft als LocalSystem, liest aber nur, was das installierende
   Konto ohne Administratorrechte lesen kann. Installieren und Reparieren
-  brauchen eine Bestätigung als Administrator.
+  brauchen eine Bestätigung als Administrator. Unter Linux läuft er als
+  systemd-Benutzerdienste deines eigenen Kontos, ohne root; Dateimodi halten
+  seine Daten und Tokens für das Konto privat.
 - Der MCP-HTTP-Server ist standardmäßig eingeschaltet; er verlangt ein
   Bearer-Token und bindet an 127.0.0.1. Der Fernzugriff (ngrok) ist
   standardmäßig aus; eingeschaltet kann jeder mit dem MCP-Token über die
@@ -825,9 +940,10 @@ Das vollständige Bedrohungsmodell steht in [SECURITY.md](SECURITY.md)
 
 ## Einschränkungen
 
-- Die Desktop-App, ihren Installer und den RootMind-Dienst gibt es nur für
-  Windows. Das Backend ist plattformunabhängiges Python; die CI führt seine
-  Tests unter Ubuntu und Windows aus.
+- Die Desktop-App und den RootMind-Dienst gibt es für Windows und Linux
+  (x86-64); einen macOS-Build gibt es nicht. Das Backend ist
+  plattformunabhängiges Python; die CI führt seine Tests unter Ubuntu und
+  Windows aus.
 - Die Release-Binärdateien sind noch nicht codesigniert (siehe
   [Installation](#installation)). RootMind ist noch nicht im
   winget-Repository; die erste Einreichung läuft.
@@ -838,9 +954,12 @@ Das vollständige Bedrohungsmodell steht in [SECURITY.md](SECURITY.md)
 - Kein Streaming: Die Desktop-App wartet auf die vollständige Antwort.
 - Die Volltextsuche kennt keine Synonyme und keinen sprachübergreifenden
   Abgleich (siehe die Tabelle der Abwägungen oben).
-- Die Installation braucht ein Administratorkonto, und der Dienst bedient ein
-  Konto pro Computer: das, das RootMind installiert hat.
-- Der RootMind-Dienst kann keine Netzlaufwerke oder Freigaben indizieren.
+- Unter Windows braucht die Installation ein Administratorkonto, und der
+  Dienst bedient ein Konto pro Computer: das, das RootMind installiert hat.
+  Unter Linux bekommt jedes Konto, das RootMind startet, eigene Dienste.
+- Der Windows-Dienst kann keine Netzlaufwerke oder Freigaben indizieren.
+- Unter Linux läuft der Dienst nur, solange du angemeldet bist, außer
+  Lingering ist eingeschaltet (`loginctl enable-linger`).
 - Pro Datenbank sollte nur ein Prozess indizieren. Die MCP-Server stellen
   standardmäßig nur bereit; setze `RLM_DISABLE_SCHEDULER=1` bei jeder
   weiteren REST-API, die dieselbe Datenbank nutzt.

@@ -2,14 +2,15 @@
 
 This folder is the source of `rootmind.mcpb`, an [MCP Bundle](https://github.com/modelcontextprotocol/mcpb)
 that installs RootMind in Claude Desktop with a double click and no configuration. Each release
-ships it next to the installer. It needs RootMind 2.0 or later, installed with the installer, and
-**Serve MCP over HTTP** turned on (Settings → RootMind service; on by default).
+ships it next to the installer. It needs RootMind 2.0 or later (on Linux 2.3 or later), installed
+with the installer or a Linux package, and **Serve MCP over HTTP** turned on (Settings → RootMind
+service; on by default).
 
 ## Files
 
 | File | Content |
 | --- | --- |
-| `manifest.json` | Bundle manifest (`manifest_version` 0.3), server type `node`, Windows only, no `user_config` |
+| `manifest.json` | Bundle manifest (`manifest_version` 0.3), server type `node`, Windows and Linux (`win32`, `linux`), no `user_config` |
 | `server/index.mjs` | Entry point that Claude Desktop starts with its built-in Node.js |
 | `server/bridge.mjs` | The stdio-to-HTTP bridge |
 | `icon.png` | A copy of `desktop/src-tauri/icons/icon.png` (512×512) |
@@ -27,6 +28,12 @@ token. The bridge connects the two:
 1. At start it runs `"%ProgramFiles%\RootMind\backend\rootmind-backend.exe" service status --json`
    (`ProgramW6432` first, so a 32-bit Node finds the 64-bit folder too). From `mcp_http` it takes
    the port and the token file (`%ProgramData%\RootMind\data\api_token.txt`) and reads the token.
+   On Linux it runs the program copy the systemd user units run, named in
+   `$XDG_DATA_HOME/rootmind/service.json` (default `~/.local/share/rootmind/service.json`, written
+   by `service install`, no secret; only a path of the form `<data>/runtime/<folder>/rootmind-backend`
+   is used), else the packaged `/usr/lib/RootMind/backend/rootmind-backend`; the token file is
+   `~/.local/share/rootmind/data/api_token.txt` (mode 0600). The program is looked up again for
+   every lookup, so a service the app sets up after Claude Desktop started is found.
 2. Every newline-delimited JSON-RPC message from stdin goes to `POST http://127.0.0.1:<port>/mcp`
    with `Authorization: Bearer <token>`. JSON-RPC answers (JSON, or an event stream) are written to
    stdout, one per line. A notification gets HTTP 202 and no output. After `initialize`, requests
@@ -40,17 +47,20 @@ token. The bridge connects the two:
 
 | `reason` | When | The message tells the user to |
 | --- | --- | --- |
-| `not_installed` | No `rootmind-backend.exe` under `%ProgramFiles%\RootMind\backend` | install RootMind from the latest release |
+| `not_installed` | No `rootmind-backend.exe` under `%ProgramFiles%\RootMind\backend` (Linux: no `service.json` and no package) | install RootMind from the latest release |
 | `too_old` | The status has no `mcp_http` | install the latest release |
 | `status_failed` | The status command fails or prints no JSON | open Settings → RootMind service or reinstall |
-| `service_missing` | No RootMind service (not set up yet) | choose Set up in RootMind, or reinstall |
+| `service_missing` | No RootMind service (not set up yet) | choose Set up in RootMind, or reinstall (Linux: start RootMind once) |
 | `mcp_off` | MCP over HTTP is off | turn on **Serve MCP over HTTP** |
 | `mcp_not_ours` | A `RootMind-MCP-HTTP` service RootMind did not install | remove it and reinstall |
-| `mcp_stopped` | The MCP service is stopped | switch **Serve MCP over HTTP** off and on, or restart Windows |
-| `token_unreadable` | The token file is not readable: the service belongs to another Windows account | use the account that installed RootMind, or reinstall from this one |
-| `unreachable` | Still no connection after the second lookup | check the service, switch MCP off and on, or restart Windows |
+| `mcp_stopped` | The MCP service is stopped | switch **Serve MCP over HTTP** off and on, or restart Windows (Linux: `systemctl --user restart rootmind-mcp-http`) |
+| `token_unreadable` | The token file is not readable: the service belongs to another account | use the account that installed RootMind, or reinstall from this one |
+| `unreachable` | Still no connection after the second lookup | check the service, switch MCP off and on, or restart Windows (Linux: restart the user unit) |
 | `token_rejected` | Still HTTP 401 after reading the token again | reinstall to repair the service |
 | `timeout`, `http_error`, `no_answer` | No answer in 300 s, an HTTP error without a JSON-RPC body, an empty answer to a request | (states the problem) |
+
+On Linux the messages name the systemd user units instead of Windows and the installer
+(`LINUX_MESSAGES` in `server/bridge.mjs`).
 
 The token is sent only in the `Authorization` header to 127.0.0.1. It is never written to stdout
 or to the log. Logs go to stderr (Claude Desktop's MCP log for the extension) with the prefix

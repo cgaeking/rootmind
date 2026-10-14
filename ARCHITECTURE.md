@@ -34,7 +34,7 @@ flowchart TB
         stdio["MCP stdio<br/>mcp_stdio.py"]
         http["MCP HTTP<br/>mcp_http.py"]
         cli["CLI<br/>main.py"]
-        host["Windows service host<br/>service/host.py"]
+        host["Service host (Windows, systemd)<br/>service/host.py"]
     end
     engine["Agent loop<br/>rlm_engine/engine.py"]
     tools["Tool layer<br/>tools.py"]
@@ -83,15 +83,17 @@ flowchart TB
 | MCP servers | `mcp_stdio.py`, `mcp_http.py` | The same tools for external MCP clients |
 | Remote access | `remote_access.py` | Optional ngrok tunnel to MCP over HTTP, run by the MCP service; its settings and status files |
 | CLI | `main.py` | One command tree: `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service`; bind and token resolution |
-| Windows service | `service/` | `service install`, `uninstall` and `status`, and the service host that the Service Control Manager starts |
-| Desktop app | `desktop/` | Tauri 2 UI; a client of the Windows service over REST: reads its state, connects with its token, repairs it and switches MCP over HTTP |
+| Background service | `service/` | `service install`, `uninstall` and `status`, and the service host that the Service Control Manager starts; on Linux the same commands manage two systemd user units of the account (`linux.py`, `systemd.py`, `linux_layout.py`, `procnet.py`) |
+| Desktop app | `desktop/` | Tauri 2 UI for Windows and Linux; a client of the background service over REST: reads its state, connects with its token, repairs it and switches MCP over HTTP; on Linux it also sets the service up and updates it on its own |
 | Installer | `desktop/src-tauri/installer/` | Per-machine NSIS installer; sets up the Windows service for the signed-in account when it runs as that account (else the app does), and removes it on uninstall |
+| Linux packages | `desktop/src-tauri/tauri.linux.conf.json` | .deb, .rpm and AppImage from the Tauri bundler, with the backend in `/usr/lib/RootMind/backend`; they install no service (the app sets it up per account) |
 
 ## Deployment modes
 
 | Mode | Started by | Home (`RLM_HOME`) | Address | REST token | MCP |
 |---|---|---|---|---|---|
 | **RootMind service** (the app's backend) | The Service Control Manager, at boot; the installer sets it up | `%ProgramData%\RootMind` | `127.0.0.1:8000`, or a port from 18300–18399 when 8000 is taken | `data\rest_token.txt` | Service `RootMind-MCP-HTTP` (on by default) on 3000 or 18400–18499, token in `data\api_token.txt` |
+| **RootMind service on Linux** | systemd, as two user units of the account (`default.target`: at login, or at boot with linger); the app sets them up | `$XDG_DATA_HOME/rootmind` (`~/.local/share/rootmind`) | as on Windows | `data/rest_token.txt` (0600) | Unit `rootmind-mcp-http.service` (on by default), ports and token as on Windows |
 | **Custom** (Settings → Advanced) | You | Whatever that backend uses | The address you enter (loopback only, because of the app's CSP) | Optional, entered by you | Not managed by the app |
 | **Command line** (development, other setups) | You (`rootmind api`, `uv run ...`, `rootmind-backend.exe api`) | `RLM_HOME`, or the working directory | `--host`/`--port`, then `RLM_HOST`/`RLM_PORT`, then `api.*` in `config.yaml`, then `127.0.0.1:8000` | Off unless `RLM_API_TOKEN` or `--require-token` | `rootmind mcp` / `rootmind-mcp`, `rootmind mcp-http` / `rootmind-mcp-http` |
 
@@ -170,18 +172,19 @@ the CI scripts.
 
 | Item | Value |
 |---|---|
-| Build output | `backend/dist/rootmind-backend/` with `rootmind-backend.exe` and `_internal\` |
-| In the installer | `$INSTDIR\backend\rootmind-backend.exe`, always `%ProgramFiles%\RootMind\backend\` (resource map from `desktop/src-tauri/binaries/rootmind-backend/`) |
-| Release assets | `RootMind-Setup-x64.exe`; `rootmind-backend-windows-x64.zip` with the folder `rootmind-backend/`; `SHA256SUMS.txt` |
+| Build output | `backend/dist/rootmind-backend/` with `rootmind-backend.exe` (Linux: `rootmind-backend`) and `_internal\` |
+| In the installer | `$INSTDIR\backend\rootmind-backend.exe`, always `%ProgramFiles%\RootMind\backend\` (resource map from `desktop/src-tauri/binaries/rootmind-backend/`); in the Linux packages `/usr/lib/RootMind/backend/rootmind-backend` (in the AppImage below its mount) |
+| Release assets | `RootMind-Setup-x64.exe`; `RootMind-amd64.deb`, `RootMind-x86_64.rpm`, `RootMind-x86_64.AppImage`; `rootmind-backend-windows-x64.zip` and `rootmind-backend-linux-x64.tar.gz` with the folder `rootmind-backend/`; `rootmind.mcpb`; `SHA256SUMS.txt` |
 | `--version` | `rootmind-backend <version>` (`rootmind <version>` from a Python install); the last word is the version in PEP 440 normal form |
 | Commands | `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service install\|uninstall\|status`, and `service run backend\|mcp-http` (started by the Service Control Manager, not listed in the help) |
 | `api` options | `--host`, `--port` (0 = a free port, which the log names), `--require-token`. The options of the removed built-in backend, `--exit-with-parent` and `--import-config`, are refused (exit 2) |
-| `service install` options | `--port N\|auto`, `--mcp-http` / `--no-mcp-http`, `--mcp-port N\|auto`, `--mcp-token-from FILE`, `--user-sid SID`, `--no-start` |
+| `service install` options | `--port N\|auto`, `--mcp-http` / `--no-mcp-http`, `--mcp-port N\|auto`, `--mcp-token-from FILE`, `--user-sid SID` (Windows only), `--no-start` |
 | Installer | Installs with `service install --port auto --mcp-port auto --user-sid <signed-in account>` (as SYSTEM, only to update an existing service: without `--user-sid`; skipped otherwise); uninstalls with `service uninstall`, `--purge` when the app data is to be deleted |
 | Token files | `<RLM_HOME>/data/rest_token.txt` (REST), `<RLM_HOME>/data/api_token.txt` (MCP) |
 | Remote access files | `<RLM_HOME>/data/ngrok_authtoken.txt` (the ngrok authtoken, written by the backend), `<RLM_HOME>/data/remote_access.json` (the tunnel's status, written by the MCP service); settings in `config.yaml`, section `remote_access` |
 | Open routes with a token | `GET`/`HEAD` on `/` (with `"auth": "bearer"` or `"none"`) and `/health`; everything else 401 |
-| Service names | `RootMind-Backend`, `RootMind-MCP-HTTP` |
+| Service names | `RootMind-Backend`, `RootMind-MCP-HTTP`; on Linux the user units `rootmind-backend.service`, `rootmind-mcp-http.service` |
+| Linux discovery file | `<data>/service.json`: `{"executable": <program copy>, "version": ...}`, no secret; read by the Claude Desktop bundle |
 
 The commands `mcp`, `mcp-http` and `service` are handed to their own entry
 points before logging and the config are set up, with the rest of the command
@@ -199,6 +202,15 @@ line unchanged, so `mcp` keeps stdout clean for JSON-RPC. Without a command,
 | `service_set_mcp({enabled})` | same as `service_update` | Elevated `service install --mcp-http --mcp-port auto` or `service install --no-mcp-http`, run with the program in the ImagePath under `%ProgramFiles%\RootMind Service\` |
 | `service_mcp_token` | string | Reads `data\api_token.txt` while the MCP service is ours |
 | `service_details` | string | `service status --json` (not elevated, from the app's backend folder, stopped after 30 seconds) and the last 60 lines of `logs\install.log` |
+
+On Linux the same commands answer from the account's user units:
+`service_info` reads the unit files in `~/.config/systemd/user/` and
+`systemctl --user show` (state and main PID); `service_connect` checks the
+listener in `/proc`; `service_update` runs `service install --port auto
+--mcp-port auto` (no `--user-sid`) and `service_set_mcp` the registered copy,
+both directly as the account (no elevation, `canElevate` is always true);
+`app_mode` also reports `platform` (`windows`, `linux` or `other`), which
+words the UI.
 
 In the results, `code` is the service exit code, or 1223 when the approval
 was cancelled. Only one change runs at a time. The webview cannot reach any
@@ -364,6 +376,14 @@ no longer installed (no uninstall entry in HKLM, and no 1.x entry in HKCU).
 | 8 | Account mismatch: the approving account is not the account in `--user-sid`, the service belongs to another account, or LocalSystem has no service to update |
 | 9 | The access context for the account could not be built |
 | 10 | The folder the program would be copied from can be changed by accounts other than administrators |
+| 11 | Linux: the account's systemd user manager cannot be reached (no systemd, or no session, as under `su` or `sudo`) |
+
+On Linux the codes mean the same where they apply: 2 also for `--user-sid`
+and for a system other than Windows and Linux, 3 for a unit file with our
+name that RootMind did not write (or a unit of that name that systemd loads
+from elsewhere), 6 for a data folder that is not the account's own or that
+others can change, 8 for a run as root, and 10 for a program folder that
+accounts other than root and the account can change. 5 and 9 do not occur.
 
 The installer exits with 10 on its own, before anything changes, when its
 install folder is not `%ProgramFiles%\RootMind`. Otherwise it exits with 0
@@ -372,6 +392,83 @@ command failed; it records the outcome and the command's exit code in its
 uninstall entry (see [Packaging](#packaging)). The app shows 1223 when the
 approval prompt was cancelled. Program and data locations and their
 permissions are described in [SECURITY.md](SECURITY.md#background-service).
+
+**On Linux: systemd user units** (`service/linux.py`, `systemd.py`,
+`linux_layout.py`, `procnet.py`). The service runs per account and
+without root: each account that starts RootMind gets two user units in
+`$XDG_CONFIG_HOME/systemd/user/` (default `~/.config/systemd/user/`):
+
+```
+# RootMind background service: written by "rootmind-backend service install"; it rewrites this file.
+[Unit]
+Description=RootMind backend (REST API and document indexing for the RootMind app)
+Documentation=https://github.com/cgaeking/rootmind#linux
+
+[Service]
+Type=notify
+ExecStart="/home/me/.local/share/rootmind/runtime/2.3.0-0a1b2c3d/rootmind-backend" service run backend --port 8000
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=2
+TimeoutStartSec=90
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
+```
+
+`rootmind-mcp-http.service` is the same with `service run mcp-http`. A unit
+counts as ours when the first line is that marker, `[Service]` has exactly
+one `ExecStart` in this form (the path quoted; `\` and `"` escaped with a
+backslash, `%` as `%%`, `$` as `$$`) and the program is
+`<data>/runtime/<folder>/rootmind-backend`. `service/systemd.py` and
+`desktop/src-tauri/src/unitfile.rs` parse it with the same rules and test
+strings. Updates read the ports back from `ExecStart`.
+
+The units run as the account, so there is no folder access policy
+(`UNRESTRICTED`) and no second account: file ownership and modes are the
+access control. The data folder `$XDG_DATA_HOME/rootmind` has the Windows
+layout (`config.yaml`, `data/` with the tokens, the remote-access files and
+`db/`, `logs/`, `tmp/`) plus `runtime/` and `service.json`; folders are 0700,
+the token, authtoken and config files 0600, each created with its final mode.
+An existing folder is used only when it and everything in it belong to the
+account, it holds no symbolic link and no file with a second hard link, the
+folder, `data/` and the secret files are writable by nobody else (the
+account's user private group counts as its own) and the folders above it do
+not let another account replace it; anything else in it loses its group and
+other bits. The service runs the same check on the folder, `data/` and the
+secret files when it starts and stops with exit code 2 on a problem.
+
+`service install` copies the program into `runtime/<version>-<8 hex>/` (an
+AppImage runs from a temporary mount; the packages get the same treatment for
+one code path), refusing a source folder that another account can change
+(exit 10), writes the units, runs `systemctl --user daemon-reload` and
+`enable`, starts the units and checks health and authentication, sending a
+token only after `/proc/net/tcp`, `/proc/net/tcp6` and `/proc/<MainPID>/fd`
+show that the unit's own process holds every socket that receives
+`127.0.0.1:<port>`. It then deletes older copies and writes `service.json`.
+An update stops the units first and restarts the old ones if something fails
+before the new units are written. `uninstall` stops, disables and deletes the
+units and the program copies and keeps the data (without the REST token)
+unless `--purge`. Linger is never turned on by RootMind; `service install`
+names `loginctl enable-linger` when it is off.
+
+The host (`service run`) finds its data folder next to its program copy, so it
+does not depend on the user manager's environment, logs to the same rotating
+files as on Windows, tells systemd it is ready (`sd_notify`) once it has bound
+its port, and treats SIGTERM as a stop (exit 0). A config, token or folder
+error ends it with exit code 2 (`RestartPreventExitStatus`); anything else
+is restarted after 5 seconds.
+
+**Who sets it up on Linux.** There is no installer step and no elevation, so
+the app does it: when the connectivity check finds no service
+(`notInstalled`), `src/state/autoSetup.ts` runs `service_update` once per app
+run, and when the running service reports an older version than the app it
+updates it once. Debug builds and a custom backend never do. Set up, Repair
+and Update service remain, and a failure is shown in the backend dialog and
+in Settings › RootMind service with **Details**.
 
 **Connecting from the app** (`desktop/src-tauri/src/service.rs`, `win/`). The
 app reads the ImagePath from the registry and the state from the Service
@@ -663,6 +760,24 @@ that elevates itself (`Scope: machine`, `ElevationRequirement: elevatesSelf`,
 install location `%ProgramFiles%\RootMind`). The release workflow measures the
 installer and states its size in the release notes. Build commands are in the
 README ([Build the installer yourself](README.md#build-the-installer-yourself)).
+
+**Linux packages.** `release.yml` builds the Linux backend on Ubuntu 22.04
+(glibc 2.35), where `backend-exe.yml` also smoke-tests it and runs the user
+units end to end, and passes it on as a tar.gz, which keeps the executable
+bit. The spec replaces the symbolic links PyInstaller makes on Linux (top-level
+names of `pillow.libs/` files) with copies, so the build holds regular files
+only. `scripts/prepare_backend.py` places it like the Windows build (it
+detects the executable's name), and `pnpm tauri build --config
+src-tauri/tauri.release.conf.json` builds the .deb, the .rpm and the AppImage
+(`tauri.linux.conf.json` is merged on Linux and selects them; the `linux`
+section of `tauri.conf.json` adds `Recommends: systemd`). Tauri adds the
+WebKitGTK 4.1 and GTK 3 dependencies, a desktop entry (category Office) and
+the icons. The Debian and RPM package name is `root-mind` (Tauri derives it
+from the product name). linuxdeploy rewrites the run paths of the backend's
+shared libraries inside the AppImage; the release job therefore runs the
+AppImage's backend as well as the one from the installed .deb. The packages
+install no service and no system unit: each account gets its own on the app's
+first start.
 
 **Claude Desktop bundle.** `release.yml` packs `packaging/mcpb/` with the
 mcpb CLI into `rootmind.mcpb` (manifest, icon and the bridge; Node's standard
@@ -1086,10 +1201,10 @@ How the API is protected, and what remains open, is described in
   changed with the page size, a partial `POST /config` that removed stored
   keys and folders, and citations that pointed one page early.
 
-**Executable, service and installer** (Windows, in CI):
+**Executable, service and installer** (Windows and Linux, in CI):
 
-- `backend/packaging/smoke-test.ps1` checks every onedir build (see
-  [Packaging](#packaging)).
+- `backend/packaging/smoke-test.ps1` checks every onedir build, the Linux one
+  with PowerShell 7 (see [Packaging](#packaging)).
 - `backend/tests/e2e/service_e2e.ps1` installs the services on the elevated
   CI runner and checks the refusals (foreign service, busy port, wrong
   account, unprotected data folder), an install with MCP over HTTP on by
@@ -1103,6 +1218,18 @@ How the API is protected, and what remains open, is described in
   switching MCP over HTTP off and on again from the Program Files copy (as
   the app does; the MCP token is kept), and uninstall with and without
   `--purge`. It refuses to run outside CI.
+- `backend/tests/e2e/service_e2e_linux.py` does the same for Linux on
+  GitHub's Ubuntu runner, as the runner's account with a user manager that
+  `loginctl enable-linger` starts: the refusals (foreign unit, busy port,
+  unprotected data folder, program folder others may change, `--user-sid`),
+  an install with MCP over HTTP on, the units (active, enabled), the modes of
+  the data folder and the secret files, the program copy and `service.json`
+  without a token, both tokens, the authtoken file (0600, in no log),
+  indexing a folder through the REST API and finding it through MCP without a
+  restart, `status --json`, a restart by systemd after `kill -9`, an update
+  from another copy (ports, tokens and index kept, the old copy deleted),
+  MCP over HTTP off and on again, and uninstall, again and with `--purge`. It
+  refuses to run outside CI, as root, or when RootMind's files exist.
 - `desktop/scripts/installer-smoke.ps1` runs the per-machine installer on the
   elevated CI runner, silently (`/S`, as winget runs it) and passively (`/P`).
   A fresh install creates the HKLM "Installed apps" entry and the install
@@ -1164,6 +1291,19 @@ use one index, and settings and data live in one place instead of two
 homes with an import between them. The costs are below: an administrator
 account to install, one account per computer, no network drives or shares,
 and parsers that run as SYSTEM.
+
+**systemd user services on Linux.** On Linux the service is two user units
+of each account, not a system daemon. They run with the account's own
+rights, so no read confinement layer (the Windows AuthZ check) is needed and
+nothing needs root after the package is installed: the app sets the service
+up on its first start and updates it after a package update, without a
+question. File modes are the access control, and the listener check guards
+the tokens as on Windows. The costs: the service runs only while the account
+is logged in unless linger is on (an agent such as n8n on the same computer
+needs `loginctl enable-linger`, which RootMind never turns on by itself), and
+every account runs its own pair of services and index. The program runs from
+a copy in the data folder for every package format, because an AppImage's
+mount disappears with the app.
 
 **Administrator rights to install.** The per-machine installer needs one
 administrator approval, and the account signed in to Windows must be the
@@ -1282,7 +1422,12 @@ service would need:
 - Remote access has no rate limiting or request log of its own on the public
   path, and supports only ngrok; clients that can only sign in with OAuth
   cannot connect. A real tunnel is not tested in CI (no ngrok account there).
-- No installers or services for macOS or Linux, and no automatic updates.
+- No macOS build and no automatic updates. The Linux packages come from the
+  release page only (no apt or dnf repository), are not signed, and the
+  .rpm leaves empty folders under `/usr/lib/RootMind` when it is removed
+  (Tauri's .rpm owns no folders). The first-start set-up and the AppImage on
+  a real desktop session are tested by hand; CI covers the user units through
+  the command line and the packages by installing the .deb.
 - The text of each document is stored twice (documents table and FTS table).
 - Incremental syncs hash every file, including unchanged and oversized files.
 - Files are parsed one after another; there is no parallel indexing.

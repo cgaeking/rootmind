@@ -8,8 +8,11 @@
 //
 // The port and the token file come from
 //   "%ProgramFiles%\RootMind\backend\rootmind-backend.exe" service status --json
-// which every account may run. The token is read from the file the status
-// names and is never logged. Logs go to stderr, which Claude Desktop writes to
+// which every account may run. On Linux the program is the copy the
+// account's systemd user units run, named in
+// ~/.local/share/rootmind/service.json (written by `service install`; it
+// holds no secret), else the packaged /usr/lib/RootMind/backend/rootmind-backend.
+// The token is read from the file the status names and is never logged. Logs go to stderr, which Claude Desktop writes to
 // its MCP log.
 //
 // When RootMind cannot be reached, every request is answered with a JSON-RPC
@@ -20,6 +23,7 @@
 // Node.js standard library only: the bundle ships no node_modules.
 
 import { execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -71,22 +75,88 @@ export const MESSAGES = {
   no_answer: (status) => `RootMind's MCP service sent no answer to the request (HTTP ${status}).`,
 };
 
+/** Linux wording: systemd user services of the account, no installer, no administrator. */
+export const LINUX_MESSAGES = {
+  service_missing: () =>
+    `The RootMind service is not set up yet. Start RootMind once: it sets up its background service for your account. If that does not work, open ${SETTINGS} and choose Set up; then try again.`,
+  mcp_not_ours: () =>
+    `A systemd user service named rootmind-mcp-http exists that RootMind did not install. Remove it from ~/.config/systemd/user, run systemctl --user daemon-reload, start RootMind, then try again.`,
+  mcp_stopped: () =>
+    `The RootMind MCP service (rootmind-mcp-http) is stopped. In ${SETTINGS}, turn "${MCP_TOGGLE}" off and on again, or run systemctl --user restart rootmind-mcp-http; then try again.`,
+  token_unreadable: () =>
+    "This account cannot read RootMind's MCP token in ~/.local/share/rootmind. Use Claude Desktop from the account that uses RootMind, or check who owns that folder.",
+  unreachable: (url, code) =>
+    `RootMind's MCP service does not answer at ${url} (${code}). In ${SETTINGS}, check that the service runs and turn "${MCP_TOGGLE}" off and on again, or run systemctl --user restart rootmind-mcp-http; then try again.`,
+  token_rejected: () =>
+    `RootMind's MCP service did not accept its token. Open ${SETTINGS} and choose Repair, then try again.`,
+};
+
+/** The messages for `platform` (a process.platform value). */
+export function messagesFor(platform) {
+  return platform === "linux" ? { ...MESSAGES, ...LINUX_MESSAGES } : MESSAGES;
+}
+
+// The platform the messages are worded for; createBridge sets it.
+let messages = messagesFor(process.platform);
+
 export class BridgeError extends Error {
   constructor(reason, ...args) {
-    super(MESSAGES[reason](...args));
+    super(messages[reason](...args));
     this.reason = reason;
   }
 }
 
-/** `%ProgramFiles%\RootMind\backend\rootmind-backend.exe`, or null without %ProgramFiles%. */
-export function defaultBackendExe(env = process.env) {
+/** Linux: the backend the packages install (the app's resources). */
+export const LINUX_PACKAGE_EXE = "/usr/lib/RootMind/backend/rootmind-backend";
+
+/** Linux: `$XDG_DATA_HOME/rootmind` (default `~/.local/share/rootmind`), or null without a home. */
+export function linuxDataRoot(env = process.env) {
+  const xdg = env.XDG_DATA_HOME;
+  if (xdg && path.posix.isAbsolute(xdg)) return path.posix.join(xdg, "rootmind");
+  return env.HOME && path.posix.isAbsolute(env.HOME)
+    ? path.posix.join(env.HOME, ".local", "share", "rootmind")
+    : null;
+}
+
+/** Whether `exe` is exactly `<root>/runtime/<folder>/rootmind-backend`. */
+function isProgramCopy(exe, root) {
+  const prefix = `${path.posix.join(root, "runtime")}/`;
+  if (typeof exe !== "string" || path.posix.normalize(exe) !== exe || !exe.startsWith(prefix)) return false;
+  const parts = exe.slice(prefix.length).split("/");
+  return parts.length === 2 && !["", ".", ".."].includes(parts[0]) && parts[1] === "rootmind-backend";
+}
+
+/**
+ * Linux: the program copy named in `service.json`, else the packaged
+ * backend; null when neither exists.
+ */
+export function linuxBackendExe(env = process.env, { read = readFileSync, exists = existsSync } = {}) {
+  const root = linuxDataRoot(env);
+  if (root) {
+    try {
+      const { executable } = JSON.parse(read(path.posix.join(root, "service.json"), "utf8"));
+      if (isProgramCopy(executable, root) && exists(executable)) return executable;
+    } catch {
+      // no service set up yet, or an unreadable file: the packaged backend
+    }
+  }
+  return exists(LINUX_PACKAGE_EXE) ? LINUX_PACKAGE_EXE : null;
+}
+
+/**
+ * The backend to ask for the status: on Windows
+ * `%ProgramFiles%\RootMind\backend\rootmind-backend.exe` (null without
+ * %ProgramFiles%), on Linux see linuxBackendExe.
+ */
+export function defaultBackendExe(env = process.env, platform = process.platform, files = {}) {
+  if (platform === "linux") return linuxBackendExe(env, files);
   // ProgramW6432 names the 64-bit Program Files folder even in a 32-bit process.
   const base = env.ProgramW6432 || env.ProgramFiles;
   return base ? path.win32.join(base, "RootMind", "backend", "rootmind-backend.exe") : null;
 }
 
-export function defaultStatusCommand(env = process.env) {
-  const file = defaultBackendExe(env);
+export function defaultStatusCommand(env = process.env, platform = process.platform, files = {}) {
+  const file = defaultBackendExe(env, platform, files);
   return file ? { file, args: ["service", "status", "--json"] } : null;
 }
 
@@ -238,25 +308,32 @@ function errorResponse(id, error) {
  * Create a bridge between `input`/`output` (newline-delimited JSON-RPC) and
  * the RootMind service.
  *
- * Options (tests replace them): `statusCommand` ({file, args} or null),
+ * Options (tests replace them): `statusCommand` ({file, args}, null, or a
+ * function returning one, called for every lookup),
  * `host`, `requestTimeoutMs`, `statusTimeoutMs`, `log` (a function taking a
- * line; default: stderr).
+ * line; default: stderr), `platform` (the wording of the messages; default:
+ * this system).
  */
 export function createBridge({
   input = process.stdin,
   output = process.stdout,
   log = (line) => process.stderr.write(`${new Date().toISOString()} [rootmind] ${line}\n`),
-  statusCommand = defaultStatusCommand(),
+  platform = process.platform,
+  // Looked up again for every discovery: on Linux the program copy the
+  // service runs from appears (or changes) after the bridge started.
+  statusCommand = () => defaultStatusCommand(process.env, platform),
   host = "127.0.0.1",
   requestTimeoutMs = REQUEST_TIMEOUT_MS,
   statusTimeoutMs = STATUS_TIMEOUT_MS,
 } = {}) {
+  messages = messagesFor(platform);
   let target = null; // {port, token, url}
   let discovering = null;
   const sessionHeaders = {};
 
   async function discover() {
-    const info = interpretStatus(await runStatus(statusCommand, statusTimeoutMs));
+    const command = typeof statusCommand === "function" ? statusCommand() : statusCommand;
+    const info = interpretStatus(await runStatus(command, statusTimeoutMs));
     const token = await readToken(info.tokenFile);
     const url = `http://${host}:${info.port}/mcp`;
     log(`RootMind MCP endpoint ${url} (service ${info.state})`);

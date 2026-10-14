@@ -1,6 +1,7 @@
 // Typed wrappers for the app's own Tauri commands that reach the RootMind
-// service (src-tauri/src/service.rs). The installer always sets the service
-// up; the app is a client of it. Field names are camelCase over IPC.
+// service (src-tauri/src/service.rs). On Windows the installer sets the
+// service up; on Linux the app sets up the account's systemd user services
+// itself (state/autoSetup.ts). The app is a client of it. Field names are camelCase over IPC.
 // Unexpected failures reject with a user-facing string.
 
 /** A backend the UI can talk to. */
@@ -14,17 +15,20 @@ export type SvcState = "stopped" | "start_pending" | "stop_pending" | "running" 
 export type ServiceBlockedReason = "unsupported" | "not_admin" | "other_account" | "foreign_service";
 
 export interface ServiceInfo {
-  /** A Windows build. */
+  /** A Windows or Linux build. */
   supported: boolean;
   installed: boolean;
-  /** The service program lies under %ProgramFiles%\RootMind Service\. */
+  /**
+   * The service program lies under %ProgramFiles%\RootMind Service\ (Linux:
+   * the unit runs the copy in ~/.local/share/rootmind/runtime/).
+   */
   ours: boolean;
   state: SvcState | null;
   port: number | null;
   /** REST base URL, only when the service is ours. */
   url: string | null;
   tokenReadable: boolean;
-  /** The app's account is a local administrator. */
+  /** The app's account is a local administrator (always true on Linux: no elevation). */
   canElevate: boolean;
   blockedReason: ServiceBlockedReason | null;
   mcp: {
@@ -50,11 +54,15 @@ export type ServiceResult =
   | { ok: true; backend: BackendInfo }
   | { ok: false; cancelled: boolean; code: number; backend: BackendInfo | null };
 
+/** The system the app runs on, for wording and the Linux service set-up. */
+export type AppPlatform = "windows" | "linux" | "other";
+
 export interface AppMode {
   /** The app's version. */
   version: string;
   /** A debug build. */
   dev: boolean;
+  platform: AppPlatform;
 }
 
 /** True inside the Tauri app; false in the plain browser preview (`pnpm dev`). */

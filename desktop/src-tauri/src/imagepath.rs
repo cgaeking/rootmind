@@ -8,6 +8,10 @@
 // service belongs to and whether it is ours at all. The parser is strict:
 // anything else is treated as a service this app did not install.
 
+// The Linux build reads unit files instead (unitfile.rs) and uses only the
+// types and is_sid here.
+#![cfg_attr(target_os = "linux", allow(dead_code))]
+
 /// The role a RootMind service runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {

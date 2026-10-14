@@ -4,6 +4,7 @@ import type { AppMode } from "../api/backend";
 import { applyDecision } from "../state/backendActions";
 import { decideBackend } from "../state/bootstrap";
 import { readStoredBackend, useStore } from "../state/store";
+import { useLanguageStore } from "../i18n/labels";
 
 async function readAppMode(): Promise<AppMode | null> {
   if (!inTauri()) return null;
@@ -18,6 +19,8 @@ async function readAppMode(): Promise<AppMode | null> {
 async function bootstrap() {
   const mode = await readAppMode();
   useStore.getState().setAppMode(mode);
+  // Word the service for the platform (Linux: systemd user services).
+  if (mode) useLanguageStore.getState().setPlatform(mode.platform);
   const stored = readStoredBackend();
   await applyDecision(
     decideBackend({

@@ -1,6 +1,6 @@
 [package]
 name = "rootmind-desktop"
-version = "2.2.0"
+version = "2.3.0"
 description = "RootMind desktop app: chat and search over your local documents"
 authors = ["Christian Gäking"]
 license = "MIT"

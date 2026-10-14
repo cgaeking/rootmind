@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "rootmind",
   "display_name": "RootMind",
-  "version": "2.2.0",
-  "description": "Search and read your own files on this Windows PC (the local folders RootMind indexes).",
-  "long_description": "Connects Claude Desktop to [RootMind](https://github.com/cgaeking/rootmind), a local document search for Windows. Claude gets RootMind's read-only tools: full-text and fuzzy search, a document list, reading a document or a part of it, and statistics. Answers can cite the page, slide or sheet.\n\nRequires RootMind 2.0 or later, installed from https://github.com/cgaeking/rootmind/releases/latest, with **Serve MCP over HTTP** turned on (RootMind → Settings → RootMind service; on by default). The bundle needs no configuration: it finds the RootMind service on this computer and connects to it on 127.0.0.1 with the service's token. Your documents stay on your computer; only what Claude reads through the tools goes into the conversation.",
+  "version": "2.3.0",
+  "description": "Search and read your own files on this computer (the local folders RootMind indexes).",
+  "long_description": "Connects Claude Desktop to [RootMind](https://github.com/cgaeking/rootmind), a local document search for Windows and Linux. Claude gets RootMind's read-only tools: full-text and fuzzy search, a document list, reading a document or a part of it, and statistics. Answers can cite the page, slide or sheet.\n\nRequires RootMind 2.0 or later, installed from https://github.com/cgaeking/rootmind/releases/latest, with **Serve MCP over HTTP** turned on (RootMind → Settings → RootMind service; on by default; on Linux, start RootMind once so it sets up its service). The bundle needs no configuration: it finds the RootMind service on this computer and connects to it on 127.0.0.1 with the service's token. Your documents stay on your computer; only what Claude reads through the tools goes into the conversation.",
   "author": {
     "name": "Christian Gäking",
     "url": "https://github.com/cgaeking"
@@ -29,7 +29,7 @@
   "tools": [
     {
       "name": "search_documents",
-      "description": "Search your own files on this PC: fast full-text search over the local folders RootMind indexes, with snippets and the page, slide or sheet of each hit."
+      "description": "Search your own files on this computer: fast full-text search over the local folders RootMind indexes, with snippets and the page, slide or sheet of each hit."
     },
     {
       "name": "search_fuzzy",
@@ -50,10 +50,10 @@
   ],
   "tools_generated": false,
   "prompts_generated": false,
-  "keywords": ["documents", "search", "full-text", "local", "windows", "pdf", "office"],
+  "keywords": ["documents", "search", "full-text", "local", "windows", "linux", "pdf", "office"],
   "license": "MIT",
   "compatibility": {
-    "platforms": ["win32"],
+    "platforms": ["win32", "linux"],
     "runtimes": {
       "node": ">=18.0.0"
     }

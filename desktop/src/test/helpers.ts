@@ -15,6 +15,7 @@ export function resetStore() {
     version: null,
     appMode: null,
     serviceProblem: null,
+    autoService: null,
     busy: false,
   });
 }

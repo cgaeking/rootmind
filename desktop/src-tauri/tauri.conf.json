@@ -43,6 +43,18 @@
         "template": "installer/installer.nsi",
         "installerHooks": "installer/hooks.nsh"
       }
+    },
+    "linux": {
+      "deb": {
+        "section": "utils",
+        "recommends": ["systemd"]
+      },
+      "rpm": {
+        "recommends": ["systemd"]
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
     }
   }
 }

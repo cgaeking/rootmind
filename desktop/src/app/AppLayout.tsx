@@ -4,6 +4,7 @@ import { Sidebar } from "./Sidebar";
 import { BackendModal } from "./BackendModal";
 import { useBackendHeartbeat } from "../hooks/useBackend";
 import { useBackendBootstrap } from "../hooks/useBackendBootstrap";
+import { useAutoServiceSetup } from "../hooks/useAutoSetup";
 import { useStore } from "../state/store";
 import { labels, useLanguage } from "../i18n/labels";
 import styles from "./AppLayout.module.css";
@@ -12,6 +13,8 @@ export function AppLayout() {
   // Choose the backend once at start, then keep checking it.
   useBackendBootstrap();
   useBackendHeartbeat();
+  // Linux: set the service up (first start) and update it on its own.
+  useAutoServiceSetup();
   // Re-render the sidebar and dialogs in a new language (the screens subscribe themselves).
   useLanguage();
   const conn = useStore((s) => s.conn);

@@ -1,4 +1,4 @@
-"""The ``service`` command line (``rootmind-backend.exe service ...``).
+"""The ``service`` command line (``rootmind-backend.exe service ...``, ``rootmind-backend service ...``).
 
 ::
 
@@ -14,12 +14,18 @@ only runs from the release build. MCP over HTTP is on for a new install. ``statu
 installs. ``service run backend|mcp-http`` is started by the Service Control
 Manager and not meant to be run by hand.
 
-Exit codes: 0 ok, 1 unexpected error, 2 usage (or not Windows, or not the
-release build), 3 a service with our name that RootMind did not install,
+On Linux the same commands manage the account's systemd user units
+(:mod:`.linux`): no elevation, no ``--user-sid``; ``service run`` is started by
+systemd.
+
+Exit codes: 0 ok, 1 unexpected error, 2 usage (or not Windows or Linux, or
+not the release build), 3 a service with our name that RootMind did not install,
 4 port busy, 5 not elevated, 6 data folder refused, 7 health check failed,
 8 account mismatch (also: run as LocalSystem without a service to update),
 9 the access check for the account cannot be built,
-10 the program folder to copy from can be changed by non-administrators.
+10 the program folder to copy from can be changed by non-administrators
+(Linux: by accounts other than root and this one), 11 (Linux) the account's
+systemd user manager cannot be reached. On Linux, 8 means run as root.
 """
 
 from __future__ import annotations
@@ -63,7 +69,10 @@ def _sid(value: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=_prog(),
-        description="Run RootMind in the background as a Windows service.",
+        description=(
+            "Run RootMind in the background: as Windows services, or on Linux as systemd user "
+            "units of this account."
+        ),
     )
     commands = parser.add_subparsers(
         dest="command", metavar="{install,uninstall,status}", required=True
@@ -71,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     install = commands.add_parser(
         "install",
-        help="Install or update the service (elevated prompt)",
+        help="Install or update the service (Windows: elevated prompt)",
         description=(
             "Install the background service, or update and repair it. A new install also "
             "serves MCP over HTTP (127.0.0.1, bearer token) unless --no-mcp-http is given. An "
@@ -131,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     uninstall = commands.add_parser(
         "uninstall",
-        help="Remove the service (elevated prompt)",
+        help="Remove the service (Windows: elevated prompt)",
         description=(
             "Stop and remove the services and the program folder. The data folder is kept "
             "(without the REST token) unless --purge is given."
@@ -140,13 +149,17 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall.add_argument(
         "--purge",
         action="store_true",
-        help="Also delete %%ProgramData%%\\RootMind (index, settings, MCP token)",
+        help=(
+            "Also delete the data folder (%%ProgramData%%\\RootMind; Linux: "
+            "~/.local/share/rootmind): index, settings, MCP token"
+        ),
     )
 
     status = commands.add_parser("status", help="Show the service's state")
     status.add_argument("--json", action="store_true", help="Print JSON")
 
-    # Started by the Service Control Manager (the ImagePath); not listed.
+    # Started by the Service Control Manager (the ImagePath) or by systemd (the
+    # unit's ExecStart); not listed.
     run = commands.add_parser("run")
     run.add_argument("role", choices=(ROLE_BACKEND, ROLE_MCP))
     run.add_argument("--port", type=_run_port, required=True)
@@ -164,16 +177,30 @@ def _reconfigure_output() -> None:
                 pass
 
 
+def _default_env():
+    """The real machine: Windows or Linux; None elsewhere."""
+    if sys.platform == "win32":
+        from .system import WindowsSystem
+
+        return WindowsSystem()
+    if sys.platform.startswith("linux"):
+        from .linux_system import LinuxSystem
+
+        return LinuxSystem()
+    return None
+
+
 def main(argv: list[str] | None = None, env=None) -> int:
     """Entry point of ``service``; returns the exit code.
 
     Args:
         argv: The arguments after ``service``.
-        env: The machine (:class:`~.system.WindowsSystem`); tests pass a fake.
+        env: The machine (:class:`~.system.WindowsSystem` or
+            :class:`~.linux_system.LinuxSystem`); tests pass a fake.
     """
     args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
     if args.command == "run":
-        if args.role == ROLE_BACKEND and args.user_sid is None:
+        if args.role == ROLE_BACKEND and args.user_sid is None and sys.platform == "win32":
             print("error: service run backend needs --user-sid", file=sys.stderr)
             return ExitCode.USAGE
         from .host import run_service
@@ -182,14 +209,16 @@ def main(argv: list[str] | None = None, env=None) -> int:
 
     _reconfigure_output()
     if env is None:
-        from .system import WindowsSystem
-
-        env = WindowsSystem()
-    if not env.is_windows():
-        print("error: the background service is Windows only", file=sys.stderr)
+        env = _default_env()
+    linux = env is not None and getattr(env, "is_linux", lambda: False)()
+    if env is None or not (linux or env.is_windows()):
+        print("error: the background service runs on Windows and Linux only", file=sys.stderr)
         return ExitCode.USAGE
 
-    from . import install as commands
+    if linux:
+        from . import linux as commands
+    else:
+        from . import install as commands  # type: ignore[no-redef]
 
     def err(message: str) -> None:
         print(message, file=sys.stderr)
@@ -212,8 +241,10 @@ def main(argv: list[str] | None = None, env=None) -> int:
     except ServiceCommandError as e:
         err(f"error: {e.message}")
         return int(e.code)
-    except OSError as e:  # the Service Control Manager or a known folder (ScmError too)
+    except OSError as e:  # the service manager or a known folder (ScmError too)
         err(f"error: cannot read the state of the background service: {e.strerror or e}")
         return ExitCode.UNEXPECTED
-    print(commands.status_json(info) if args.json else commands.format_status(info))
+    from .common import status_json
+
+    print(status_json(info) if args.json else commands.format_status(info))
     return ExitCode.OK

@@ -18,7 +18,8 @@ export type ServiceMessageKey =
   | "accountMismatch"
   | "accessContext"
   | "programFolderUnsafe"
-  | "blocked";
+  | "blocked"
+  | "noUserManager";
 
 /**
  * Whether a launch error means Windows security blocked the program: 225, 226
@@ -41,6 +42,8 @@ const CODE_KEYS: Record<number, ServiceMessageKey> = {
   8: "accountMismatch",
   9: "accessContext",
   10: "programFolderUnsafe",
+  // Linux: the account's systemd user manager cannot be reached.
+  11: "noUserManager",
 };
 
 /** The message for a failed service change. */
@@ -55,7 +58,7 @@ export function serviceResultKey(r: Extract<ServiceResult, { ok: false }>): Serv
  * connection banner and Settings › Service. Label keys: labels.service.problems.
  */
 export type ServiceProblem =
-  /** Not Windows, or the browser preview: there is no service to reach. */
+  /** Neither Windows nor Linux, or the browser preview: there is no service to reach. */
   | "unsupported"
   /** No RootMind service is installed: not set up yet (offered as "Set up"), or removed. */
   | "notInstalled"

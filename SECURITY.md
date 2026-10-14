@@ -16,9 +16,9 @@ RootMind is designed for **one person on their own computer**: the backend,
 the desktop app and the indexed folders all belong to the same user. The REST
 API and the MCP HTTP server listen on `127.0.0.1` by default.
 
-The desktop app uses the RootMind Windows service, which requires a token on
-every request, so other accounts on the same computer and web pages cannot use
-it. RootMind does not protect against malware that runs under your own
+The desktop app uses the RootMind service (a Windows service, or on Linux
+two systemd user services of the account), which requires a token on every
+request, so other accounts on the same computer and web pages cannot use it. RootMind does not protect against malware that runs under your own
 account, against local administrators, or against exposing its ports to a
 network. These are out of scope (see the end of this document). The one
 deliberate exception is **remote access** (off by default): it makes MCP over
@@ -46,6 +46,9 @@ not even load the SDK.
 The backend keeps its files in its home folder (`RLM_HOME`):
 
 - the RootMind service, which the desktop app uses: `%ProgramData%\RootMind`;
+  on Linux `$XDG_DATA_HOME/rootmind` (default `~/.local/share/rootmind`), with
+  the same layout, owner-only (see
+  [Background service on Linux](#background-service-on-linux));
 - command line: `RLM_HOME`, or the working directory when it is unset.
 
 | Data | Location | Notes |
@@ -57,7 +60,7 @@ The backend keeps its files in its home folder (`RLM_HOME`):
 | ngrok authtoken (remote access) | `data\ngrok_authtoken.txt` | Only in the service's folder: readable by SYSTEM, Administrators and the MCP service account, **not** by the installing account's standard token. Never in `config.yaml`, never returned by the API, never logged (see [Remote access](#remote-access-ngrok)). Kept by an uninstall without **Delete the application data** |
 | Remote access status | `data\remote_access.json` | State, public address, last error and time; no secrets. Written by the MCP service account in place |
 | Logs | Service: `logs\backend\`, `logs\mcp-http\` and `logs\install.log`. Command line: the console | Contain file paths, questions and tool arguments. RootMind never logs API keys or tokens, only a short fingerprint of a token; provider error messages are logged as the provider sends them |
-| Chat history | `%APPDATA%\io.github.cgaeking.rootmind\conversations` | Questions, answers and source paths in plain JSON |
+| Chat history | `%APPDATA%\io.github.cgaeking.rootmind\conversations`; Linux: `~/.local/share/io.github.cgaeking.rootmind/conversations` | Questions, answers and source paths in plain JSON |
 | Custom backend address and token | The desktop app's local storage | Only when you connect to a backend under Settings → Advanced |
 | Data of the RootMind 1.x built-in backend | `%LOCALAPPDATA%\io.github.cgaeking.rootmind\backend` | Left in place by the upgrade to 2.0 and no longer used: its `config.yaml` (with API keys saved in 1.x), index and logs. Delete the folder, or tick **Delete the application data** when uninstalling, which removes it with the chats |
 
@@ -333,6 +336,79 @@ and `service status` warns while RootMind is no longer installed. To rotate a
 token, delete its file from an elevated prompt and run `service install`
 again.
 
+### Background service on Linux
+
+On Linux the RootMind service is two **systemd user services** of the
+account that uses RootMind, `rootmind-backend.service` and
+`rootmind-mcp-http.service` in `~/.config/systemd/user/`. There is no system
+service, no root daemon and no second account: the units run as that account,
+with its rights. The app sets them up on its first start with `service
+install`, run as the account; nothing in the process needs root, and
+`service install` refuses to run as root (exit 8).
+
+**What the service can read.** Everything the account can read, mounted
+network shares included, and nothing more. There is no confinement layer as
+on Windows because there is no privileged process to confine: a folder the
+account cannot open is not indexed.
+
+**Who can reach it.** The REST API and MCP over HTTP bind to `127.0.0.1` and
+require their bearer tokens, exactly as on Windows. Other accounts on the
+computer can connect to the ports but have no token. Each account that starts
+RootMind gets its own pair of services (the second on the fallback ports),
+with its own data folder and tokens.
+
+**Files and modes.** The data folder `$XDG_DATA_HOME/rootmind` (default
+`~/.local/share/rootmind`) and every folder in it are mode 0700; the REST and
+MCP tokens, the ngrok authtoken, `config.yaml` (API keys) and the
+remote-access status are 0600, and the units run with `UMask=0077`, so the
+index, logs and temporary files are private too. New folders and files are
+created with their final mode (and `fchmod` against a lax umask), so no file
+is readable by others at any moment, and secrets are replaced atomically
+through a new owner-only file. An existing data folder is used only when it
+and everything in it belong to the account, it contains no symbolic link and
+no file with a second hard link, the folder, `data/` and the secret files are
+writable by nobody else (a user private group of the account's own name and
+no other member counts as the account), and the folders above it do not let
+another account replace it (writable by others only with the sticky bit).
+Otherwise `service install` stops with exit code 6 and changes nothing. Each
+service checks the folder, `data/` and the secret files again when it starts
+and refuses to start (exit code 2, not restarted) if they are not protected.
+
+**The program it runs.** An AppImage runs from a temporary mount, so
+`service install` copies the bundled backend into
+`~/.local/share/rootmind/runtime/<version>-<id>/` (mode 0700), verifying each
+file by SHA-256, and the units run that copy; older copies are deleted after
+a successful switch. It refuses to copy from a folder that accounts other than
+root and the account can change (exit 10): the packages' `/usr/lib/RootMind`
+belongs to root, and an AppImage's mount to the account. The copy lives in
+the account's own data folder, so only the account (and root) can change
+what the service runs, which is no more than the account can already do.
+`service.json` next to it names the copy for the Claude Desktop bundle and
+holds no secret.
+
+**Tokens and the listener check.** As on Windows, `service install` and the
+app send a token to the service only after checking that every socket that
+receives `127.0.0.1:<port>` belongs to the unit's main process (from
+`/proc/net/tcp`, `/proc/net/tcp6` and the process's `/proc/<pid>/fd`), so a
+program of another account that took the port first never receives a token.
+
+**The unit files** carry no secret: the program path, the role and the port.
+`service install` changes only units that carry its marker and run a copy
+from the account's data folder; a unit with RootMind's name that it did not
+write, in the account's folder or loaded by systemd from elsewhere, is left
+alone (exit 3).
+
+**Uptime.** The units start when the account logs in and stop when its last
+session ends. `loginctl enable-linger` keeps them running without a session;
+RootMind never turns that on by itself.
+
+**Uninstalling.** `service uninstall` stops, disables and deletes the units
+and the program copies and deletes `data/rest_token.txt`; the data folder
+stays unless `--purge`. Removing the .deb or .rpm does not reach the user
+units of each account (a package script cannot stop another account's user
+services reliably), so the README says to run `service uninstall` first; the
+units left behind would keep running from their own copy until then.
+
 ### MCP over stdio
 
 The MCP client starts `rootmind-mcp` (or `rootmind-backend.exe mcp`) as a
@@ -540,7 +616,9 @@ content you would open yourself.
   backend program from its install folder only for `service status --json`
   (not elevated) and for the elevated `service install` of Repair and
   "Update service"; switching MCP over HTTP runs the service's registered
-  copy.
+  copy. On Linux the same commands run `service install` as the account
+  itself (no elevation), with arguments built in Rust, and the app runs it on
+  its own once on the first start and once after an update of the app.
 - The app starts no backend of its own. A debug build never connects to the
   installed service on its own; it asks for a backend address.
 
@@ -559,8 +637,13 @@ content you would open yourself.
   [CONTRIBUTING.md](CONTRIBUTING.md#releasing)), published assets cannot be
   replaced.
 - The binaries are **not code-signed** yet. Windows SmartScreen will warn, and
-  Smart App Control may block them. Verify the checksum and the attestation,
-  or build from source.
+  Smart App Control may block them. The Linux packages are not signed with a
+  GPG key either (`dnf` and `zypper` install them as local files). Verify the
+  checksum and the attestation, or build from source.
+- The Linux packages contain exactly the Linux backend build that passed the
+  smoke and service tests (tree hash checked before packaging), except that
+  inside the AppImage linuxdeploy rewrites the run paths of its shared
+  libraries; the release job runs that backend as well.
 - Dependencies are locked (`uv.lock`, `pnpm-lock.yaml`, `Cargo.lock`) and CI
   installs from the lockfiles; the release build fails if `Cargo.lock` does
   not match. The Rust compiler version is pinned in the workflows as well.
@@ -576,7 +659,7 @@ content you would open yourself.
 ## Out of scope
 
 - Several users sharing one backend. The RootMind service belongs to the
-  account that installed it.
+  account that installed it (on Linux, every account has its own).
 - Exposing the REST API to a network, or the MCP HTTP server without TLS.
   Remote access is the supported way to expose MCP over HTTP; what ngrok
   and a cloud assistant's provider do with the traffic is under their terms.
