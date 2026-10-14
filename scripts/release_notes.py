@@ -110,7 +110,7 @@ Every file has a build provenance attestation that ties it to this repository an
 
 ### Code signing policy
 
-See [CODE_SIGNING.md](https://github.com/{REPOSITORY}/blob/main/CODE_SIGNING.md): free code signing provided by SignPath.io, certificate by SignPath Foundation; what is signed, team roles and the privacy policy.
+See [CODE_SIGNING.md](https://github.com/{REPOSITORY}/blob/main/CODE_SIGNING.md): the binaries are not code-signed yet; what will be signed, team roles and the privacy policy.
 """
 
 

@@ -764,8 +764,7 @@ Das vollständige Bedrohungsmodell steht in [SECURITY.md](SECURITY.md)
   Tests unter Ubuntu und Windows aus.
 - Die Release-Binärdateien sind noch nicht codesigniert (siehe
   [Installation](#installation)). RootMind ist noch nicht im
-  winget-Repository; die Einreichung ist geplant, sobald die Binärdateien
-  signiert sind.
+  winget-Repository; die erste Einreichung läuft.
 - Keine Texterkennung (OCR): Gescannte PDFs ohne Textebene liefern keinen
   Text.
 - Alte `.doc`- und `.xls`-Dateien gehen an die DOCX- und XLSX-Parser und
@@ -800,7 +799,7 @@ die ihre eigenen Lizenzen behalten.
 
 ## Code-Signing-Richtlinie
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate
-by [SignPath Foundation](https://signpath.org). Was signiert wird, die Rollen im
-Team und die Datenschutzerklärung stehen in [CODE_SIGNING.md](CODE_SIGNING.md)
-(englisch).
+Die Releases sind noch nicht codesigniert; stattdessen enthält jedes Release
+Prüfsummen und Herkunftsnachweise (siehe [Downloads prüfen](#downloads-prüfen)).
+Was künftig signiert wird, die Rollen im Team und die Datenschutzerklärung
+stehen in [CODE_SIGNING.md](CODE_SIGNING.md) (englisch).
