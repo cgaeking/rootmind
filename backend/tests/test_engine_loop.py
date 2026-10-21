@@ -153,7 +153,10 @@ async def test_iteration_cap_then_fallback(app_config, indexed_repo):
     # The limit prompt is merged into the trailing tool-result turn, not a second user turn.
     _assert_roles_alternate(final["messages"])
     assert final["messages"][-1]["content"][-1] == {"type": "text", "text": ITERATION_LIMIT_PROMPT}
-    assert all("tool_choice" not in call for call in fake.calls[:-1])
+    # First call forces a tool (search-first guarantee); the loop's own
+    # middle iterations stay free; the trailing fallback call forces none.
+    assert fake.calls[0]["tool_choice"] == {"type": "any"}
+    assert all("tool_choice" not in call for call in fake.calls[1:-1])
     assert result["answer"] == "Best answer so far."
     assert len(result["tool_calls"]) == 3
     _assert_no_empty_user_turn(fake)

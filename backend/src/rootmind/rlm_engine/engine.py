@@ -532,14 +532,26 @@ class KnowledgeBaseEngine:
 
         for iteration in range(max_iterations):
             logger.info(f"Agent iteration {iteration + 1}")
-            response = await self._llm_call(
-                client.messages.create,
-                model=model,
-                max_tokens=MAX_OUTPUT_TOKENS,
-                system=SYSTEM_PROMPT,
-                tools=tools.TOOLS,
-                messages=messages,
-            )
+            call_kwargs: dict[str, Any] = {
+                "model": model,
+                "max_tokens": MAX_OUTPUT_TOKENS,
+                "system": SYSTEM_PROMPT,
+                "tools": tools.TOOLS,
+                "messages": messages,
+            }
+            if iteration == 0:
+                # Force a real search before any text answer on the first call
+                # only. Some models default to a trained "I don't have access
+                # to that" refusal on questions that sound like they're about
+                # private/personal information (e.g. "do you know my tax
+                # number?"), without ever trying the tool that exists for
+                # exactly that. A soft prompt instruction ("start with
+                # search_documents") does not reliably override that reflex on
+                # every model. Forcing it structurally here removes the whole
+                # failure mode, for every provider, instead of depending on
+                # how tool-use-compliant a given model happens to be.
+                call_kwargs["tool_choice"] = {"type": "any"}
+            response = await self._llm_call(client.messages.create, **call_kwargs)
             usage.record(_anthropic_tokens(response), response.stop_reason)
 
             tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
@@ -611,14 +623,19 @@ class KnowledgeBaseEngine:
 
         for iteration in range(max_iterations):
             logger.info(f"Agent iteration {iteration + 1}")
-            response = await self._llm_call(
-                _openai_chat_create,
-                client,
-                model=model,
-                max_tokens=MAX_OUTPUT_TOKENS,
-                tools=openai_tools,
-                messages=messages,
-            )
+            call_kwargs: dict[str, Any] = {
+                "model": model,
+                "max_tokens": MAX_OUTPUT_TOKENS,
+                "tools": openai_tools,
+                "messages": messages,
+            }
+            if iteration == 0:
+                # See the matching comment in _loop_anthropic: force a real
+                # search before any text answer on the first call only, so a
+                # model's trained privacy-refusal reflex can't skip the tool
+                # it has for exactly that.
+                call_kwargs["tool_choice"] = "required"
+            response = await self._llm_call(_openai_chat_create, client, **call_kwargs)
             choice = response.choices[0]
             finish_reason = getattr(choice, "finish_reason", None)
             usage.record(_openai_tokens(response), finish_reason)

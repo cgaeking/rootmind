@@ -4,6 +4,17 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Fixed
+
+- The agent could answer a question without ever searching the user's documents, most
+  visibly on questions that sound like they are about private information ("do you know my
+  tax number?"): some models fall back to a trained "I don't have access to that" refusal
+  instead of trying the `search_documents` tool that exists for exactly that, and a soft
+  prompt instruction ("start with search_documents") did not reliably override it on every
+  model. The first LLM call of every query now forces a tool call (Anthropic
+  `tool_choice: {"type": "any"}`, OpenAI/xAI `tool_choice: "required"`); later iterations in
+  the same query are unaffected and the model can still answer once it has enough.
+
 ## [2.3.0] - 2026-10-14
 
 ### Added
