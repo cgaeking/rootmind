@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-10-21
+
 ### Added
 
 - Linux: installing the .deb or .rpm now prints how to start the app (`rootmind-desktop`); the README and quickstart say it too, and the README explains how to run RootMind under WSL (systemd on).
