@@ -63,6 +63,28 @@
   border-color: var(--accent);
 }
 
+/* WebKitGTK (Linux) draws native selects in the GTK theme and ignores the
+   background, so the dark theme's light text lands on a light box. Draw the
+   box ourselves; the arrow follows the palette. */
+select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 15px) 50%,
+    calc(100% - 10px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+
+select.input option {
+  background: var(--bg);
+  color: var(--text);
+}
+
 .button {
   padding: 8px 14px;
   border: 1px solid var(--border);

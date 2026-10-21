@@ -124,7 +124,7 @@ export const labels = {
       blocked:
         "Windows security blocked the RootMind service. Smart App Control or antivirus software may block apps that are not signed.",
       noUserManager:
-        "The systemd user manager of your account cannot be reached. Start RootMind from your desktop session (not through su or sudo) and try again.",
+        "The systemd user manager of your account cannot be reached. Start RootMind from your desktop session (not through su or sudo) and try again. Under WSL, turn systemd on first: add \"[boot]\" with \"systemd=true\" to /etc/wsl.conf and run \"wsl --shutdown\" in Windows.",
     },
     failed: (msg: string) => `The change failed: ${msg}`,
     details: "Details",

@@ -4,6 +4,15 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Added
+
+- Linux: installing the .deb or .rpm now prints how to start the app (`rootmind-desktop`); the README and quickstart say it too, and the README explains how to run RootMind under WSL (systemd on).
+
+### Fixed
+
+- Linux: with the dark theme, drop-down fields (theme, language, model) showed light text on a light box, because WebKitGTK draws native selects in the GTK theme; they now follow the app's palette.
+- Linux: when the systemd user manager cannot be reached, the message now also says how to turn systemd on under WSL.
+
 ## [2.3.1] - 2026-10-21
 
 ### Fixed

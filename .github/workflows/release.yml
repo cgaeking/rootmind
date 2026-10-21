@@ -365,7 +365,15 @@ jobs:
         run: |
           out="$RUNNER_TEMP/linux-packages"
           dpkg-deb -I "$out/RootMind-amd64.deb"
-          sudo apt-get install -y -q "$out/RootMind-amd64.deb"
+          log="$RUNNER_TEMP/deb-install.log"
+          sudo apt-get install -y -q "$out/RootMind-amd64.deb" > "$log" 2>&1 || { cat "$log"; exit 1; }
+          cat "$log"
+          # The package's postinst tells the user how to start the app.
+          if ! tr -d '\r' < "$log" | grep -Eq '^[[:space:]]+rootmind-desktop[[:space:]]*$'; then
+            grep -n "rootmind-desktop" "$log" | cat -A
+            echo "::error::installing the .deb did not print how to start the app"
+            exit 1
+          fi
           test -x /usr/bin/rootmind-desktop
           test -f /usr/share/applications/RootMind.desktop
           expected=$(uv run --no-project --python 3.12 python -c "import sys; sys.path.insert(0, 'scripts'); from check_versions import normalize_version; print(normalize_version('$VERSION'))")

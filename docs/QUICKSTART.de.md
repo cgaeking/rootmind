@@ -7,8 +7,9 @@ oder 11 (x64) mit einem Administratorkonto. Die vollständige Dokumentation
 steht in der [README](../README.de.md). Unter Linux installierst du das .deb,
 das .rpm oder das AppImage wie in
 [Installation unter Linux](../README.de.md#installation-unter-linux)
-beschrieben; RootMind richtet seinen Dienst beim ersten Start ein, und die
-Schritte 3 bis 5 sind dieselben.
+beschrieben und startest es über das App-Menü oder mit `rootmind-desktop`;
+RootMind richtet seinen Dienst beim ersten Start ein, und die Schritte 3 bis 5
+sind dieselben.
 
 1. **Herunterladen:**
    [RootMind-Setup-x64.exe](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-Setup-x64.exe)

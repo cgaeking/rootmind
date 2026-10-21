@@ -47,10 +47,12 @@
     "linux": {
       "deb": {
         "section": "utils",
-        "recommends": ["systemd"]
+        "recommends": ["systemd"],
+        "postInstallScript": "linux/postinst.sh"
       },
       "rpm": {
-        "recommends": ["systemd"]
+        "recommends": ["systemd"],
+        "postInstallScript": "linux/postinst.sh"
       },
       "appimage": {
         "bundleMediaFramework": false
