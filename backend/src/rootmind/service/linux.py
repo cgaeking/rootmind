@@ -116,7 +116,8 @@ def _manager(env) -> systemd.Systemctl:
             ExitCode.NO_USER_MANAGER,
             f"The systemd user manager of this account cannot be reached ({e}). Run the "
             "command in a desktop or SSH login of the account, not through su or sudo. "
-            "RootMind needs systemd.",
+            "RootMind needs systemd; under WSL, set systemd=true under [boot] in "
+            "/etc/wsl.conf and run 'wsl --shutdown' in Windows.",
         ) from None
     except systemd.SystemctlError as e:
         raise ServiceCommandError(ExitCode.UNEXPECTED, str(e)) from None
