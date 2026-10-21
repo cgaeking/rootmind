@@ -24,10 +24,7 @@ sources down to the page, slide or sheet. There is no embedding model and no
 vector database: indexing is plain full-text search in SQLite, and the model
 drives the retrieval.
 
-<!-- Demo: replace this comment with the short screen recording. Drag the .mp4
-into a pull request comment or an issue, copy the github.com/user-attachments
-URL it produces and paste it on its own line here; GitHub renders it as an
-inline video. -->
+https://github.com/user-attachments/assets/d3cc0249-a550-4de5-ae6b-55c1291a282f
 
 - **Cited answers.** Every answer names its files and, where it can be
   resolved, the page, slide or sheet.
