@@ -369,7 +369,8 @@ jobs:
           sudo apt-get install -y -q "$out/RootMind-amd64.deb" > "$log" 2>&1 || { cat "$log"; exit 1; }
           cat "$log"
           # The package's postinst tells the user how to start the app.
-          if ! grep -q "^    rootmind-desktop$" "$log"; then
+          if ! tr -d '\r' < "$log" | grep -Eq '^[[:space:]]+rootmind-desktop[[:space:]]*$'; then
+            grep -n "rootmind-desktop" "$log" | cat -A
             echo "::error::installing the .deb did not print how to start the app"
             exit 1
           fi
