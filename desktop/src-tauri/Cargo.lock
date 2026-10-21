@@ -2719,7 +2719,7 @@ dependencies = [
 
 [[package]]
 name = "rootmind-desktop"
-version = "2.3.3"
+version = "2.3.4"
 dependencies = [
  "glob",
  "serde",
