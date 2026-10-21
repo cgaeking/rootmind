@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Fixed
+
+- The agent gave up after one search when the hits did not contain the answer, e.g. "Mitarbeiterzahl der Telekom Austria" against an English annual report that lists "T‑Mobile Austria Holding GmbH" with its "average number of employees". It now searches again in the documents' language and with other names for the same thing, tries at least three searches before saying something is not there, and says when the documents name it differently.
+
 ## [2.3.2] - 2026-10-21
 
 ### Added
