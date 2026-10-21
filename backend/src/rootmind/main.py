@@ -288,7 +288,11 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in (
         ("mcp", "MCP server over stdio (see: mcp --help)"),
         ("mcp-http", "MCP server over HTTP with a bearer token (see: mcp-http --help)"),
-        ("service", "Windows background service: install, uninstall, status"),
+        (
+            "service",
+            "Background service (Windows services or systemd user units): "
+            "install, uninstall, status",
+        ),
     ):
         forwarded = subparsers.add_parser(name, help=help_text, add_help=False)
         forwarded.add_argument("rest", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
