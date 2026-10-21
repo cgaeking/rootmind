@@ -25,10 +25,7 @@ Seite, Folie oder Tabellenblatt. Es gibt kein Embedding-Modell und keine
 Vektordatenbank: Die Indizierung ist eine einfache Volltextsuche in SQLite,
 und das Modell steuert die Suche.
 
-<!-- Demo: Diesen Kommentar durch die kurze Bildschirmaufnahme ersetzen. Die
-.mp4 in einen Pull-Request- oder Issue-Kommentar ziehen, die erzeugte
-github.com/user-attachments-URL kopieren und hier in eine eigene Zeile
-einfügen; GitHub zeigt sie als eingebettetes Video. -->
+https://github.com/user-attachments/assets/d3cc0249-a550-4de5-ae6b-55c1291a282f
 
 - **Antworten mit Quellen.** Jede Antwort nennt ihre Dateien und, wo es sich
   bestimmen lässt, Seite, Folie oder Tabellenblatt.
