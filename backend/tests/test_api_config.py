@@ -29,7 +29,7 @@ def models_spy(monkeypatch):
     """Replace the provider call behind /llm/models with a recorder."""
     seen: list[tuple] = []
 
-    def fake_list(provider, api_key):
+    def fake_list(provider, api_key, base_url=None):
         seen.append((provider, api_key))
         return [f"{provider}-model"]
 
@@ -211,7 +211,7 @@ def test_config_path_from_init_config_is_used_for_saves(tmp_path, tiny_corpus):
 # --- validation -----------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("provider", ["ollama", "gemini", ""])
+@pytest.mark.parametrize("provider", ["gemini", ""])
 def test_unknown_provider_rejected(api, rlm_home, provider):
     body = api.get("/config").json()
     body["llm"]["provider"] = provider
@@ -273,7 +273,7 @@ _REQUEST = httpx.Request("GET", "http://127.0.0.1:9/v1/models")
     ],
 )
 def test_models_provider_errors_are_mapped(api, monkeypatch, error, status, detail):
-    def failing(provider, api_key):
+    def failing(provider, api_key, base_url=None):
         raise error
 
     monkeypatch.setattr(routes, "_list_chat_models", failing)
@@ -327,3 +327,56 @@ def test_failed_reload_keeps_the_previous_state(api, monkeypatch):
     assert response["reloaded"] is False and response["restart_required"] is True
     assert app_module.app_state.sync_manager is before
     assert api.get("/status").status_code == 200
+
+
+# --- Ollama --------------------------------------------------------------------------------
+
+
+def test_ollama_models_need_no_key_and_use_the_given_base_url(api, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        routes,
+        "_list_chat_models",
+        lambda p, k, base_url=None: seen.append((p, k, base_url)) or ["m"],
+    )
+
+    ok = api.post("/llm/models", json={"provider": "ollama", "base_url": "http://nas:11434"})
+    default = api.post("/llm/models", json={"provider": "ollama"})
+
+    assert ok.json() == {"provider": "ollama", "models": ["m"]}
+    assert default.status_code == 200
+    assert seen == [
+        ("ollama", None, "http://nas:11434"),
+        ("ollama", None, "http://localhost:11434"),
+    ]
+
+
+def test_ollama_models_reject_a_base_url_that_is_not_http(api, models_spy):
+    response = api.post("/llm/models", json={"provider": "ollama", "base_url": "file:///etc"})
+
+    assert response.status_code == 400
+    assert "http" in response.json()["detail"]
+    assert models_spy == []
+
+
+def test_ollama_provider_and_base_url_are_saved(api, rlm_home):
+    body = api.get("/config").json()
+    body["llm"].update(provider="ollama", model="qwen3:8b", base_url="http://nas:11434")
+
+    assert api.post("/config", json=body).status_code == 200
+
+    llm = _saved(rlm_home)["llm"]
+    assert (llm["provider"], llm["model"], llm["base_url"]) == (
+        "ollama",
+        "qwen3:8b",
+        "http://nas:11434",
+    )
+    assert api.get("/config").json()["llm"]["base_url"] == "http://nas:11434"
+
+
+def test_a_base_url_that_is_not_http_is_not_saved(api, rlm_home):
+    body = api.get("/config").json()
+    body["llm"].update(provider="ollama", base_url="ftp://nas")
+
+    assert api.post("/config", json=body).status_code == 400
+    assert _saved(rlm_home)["llm"]["provider"] == "anthropic"

@@ -31,8 +31,8 @@ https://github.com/user-attachments/assets/d3cc0249-a550-4de5-ae6b-55c1291a282f
 - **Your files stay on your computer.** Indexing and search are local and need
   no LLM and no API key. Answering a question sends the question and the
   excerpts the model reads to the provider you configure (Anthropic, OpenAI or
-  xAI). Local models through Ollama are planned
-  ([#37](https://github.com/cgaeking/rootmind/issues/37)).
+  xAI). With a local [Ollama](https://ollama.com) server as the provider,
+  nothing leaves your computer (see [Local models with Ollama](#local-models-with-ollama)).
 - **It reads, it does not stuff.** Instead of pasting whole documents into a
   chat, the model searches and reads targeted windows, and every step is a
   visible tool call. The cost is more model round trips than classic RAG; see
@@ -120,7 +120,7 @@ signed releases, which are planned, will avoid this (see the
 Then start RootMind and add a folder under **Folders**. Indexing starts within
 about a minute, and search works without an API key once the folder is
 indexed. To ask questions, add an API key for Anthropic, OpenAI or xAI under
-**Settings** and save it. The service keeps the index up to date while the
+**Settings** and save it, or choose **Ollama** to use a local model. The service keeps the index up to date while the
 app is closed.
 
 The app follows the Windows display language (English or German); Settings →
@@ -654,6 +654,36 @@ data is in `~/.local/share/rootmind` (`config.yaml`, `data/rest_token.txt`,
 `data/api_token.txt`). After editing `config.yaml`, restart the service with
 `systemctl --user restart rootmind-backend`.
 
+## Local models with Ollama
+
+Choose **Ollama** under **Settings → LLM** (or `provider: ollama` under `llm`
+in `config.yaml`) to run the question loop against a model on your own
+machine. There is no API key; the base URL defaults to
+`http://localhost:11434` and can point at another computer on your network.
+
+```yaml
+llm:
+  provider: ollama
+  model: qwen3:8b          # any model you pulled that supports tools
+  base_url: http://localhost:11434
+```
+
+- **What stays local:** with Ollama on this computer, the question, the
+  excerpts the model reads and the answer never leave it. With a base URL on
+  another computer, they go to that computer, unencrypted over plain `http://`.
+- **Tool support is required.** Pick a model Ollama lists as supporting tools
+  (`ollama show <model>`). A model without it fails with a clear message.
+- **Context length:** the loop reads document windows, and Ollama's default
+  context is small. Raise it (for example `OLLAMA_CONTEXT_LENGTH=16384` for the
+  server, or a Modelfile with `PARAMETER num_ctx 16384`), or long documents are
+  cut off without an error.
+- **Search first:** Ollama models are not forced to call a tool on the first
+  turn, since not every model supports that. If the first answer never looked at
+  the documents, RootMind asks once more with an explicit instruction.
+- Small local models follow the tool loop less reliably than the hosted ones.
+  Measure the one you use with `scripts/run_evals.py --mode live --provider
+  ollama --model <name>` (see [`backend/evals`](backend/evals/README.md)).
+
 ## Run from source
 
 You need [uv](https://docs.astral.sh/uv/); it installs Python 3.12 if
@@ -694,7 +724,8 @@ request. The docs pages are off while a token is required.
 ### 2. Ask a question
 
 Set a key for one provider (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
-`XAI_API_KEY`) in the environment or in `backend/.env` (see
+`XAI_API_KEY`; Ollama needs none, see
+[Local models with Ollama](#local-models-with-ollama)) in the environment or in `backend/.env` (see
 [`.env.example`](backend/.env.example)). Choose the provider and model under
 `llm` in `config.yaml`, restart the API, then:
 

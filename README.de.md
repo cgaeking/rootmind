@@ -32,8 +32,9 @@ https://github.com/user-attachments/assets/d3cc0249-a550-4de5-ae6b-55c1291a282f
 - **Deine Dateien bleiben auf deinem Rechner.** Indizierung und Suche laufen
   lokal und brauchen weder ein LLM noch einen API-Key. Beim Beantworten einer
   Frage gehen die Frage und die Auszüge, die das Modell liest, an den von dir
-  konfigurierten Anbieter (Anthropic, OpenAI oder xAI). Lokale Modelle über
-  Ollama sind geplant ([#37](https://github.com/cgaeking/rootmind/issues/37)).
+  konfigurierten Anbieter (Anthropic, OpenAI oder xAI). Mit einem lokalen
+  [Ollama](https://ollama.com)-Server als Anbieter verlässt nichts deinen Rechner
+  (siehe [Lokale Modelle mit Ollama](#lokale-modelle-mit-ollama)).
 - **Es liest gezielt, es kippt nicht alles hinein.** Statt ganze Dokumente in
   einen Chat zu kopieren, sucht das Modell und liest gezielte Ausschnitte;
   jeder Schritt ist ein sichtbarer Tool-Aufruf. Der Preis sind mehr
@@ -129,7 +130,7 @@ Releases, die geplant sind, vermeiden das (siehe die
 Starte danach RootMind und füge unter **Ordner** einen Ordner hinzu. Die
 Indizierung beginnt innerhalb etwa einer Minute, und die Suche funktioniert
 ohne API-Key, sobald der Ordner indiziert ist. Um Fragen zu stellen, trage
-unter **Einstellungen** einen API-Key für Anthropic, OpenAI oder xAI ein und
+unter **Einstellungen** einen API-Key für Anthropic, OpenAI oder xAI ein oder wähle **Ollama** für ein lokales Modell, und
 speichere ihn. Der Dienst hält den Index aktuell, auch während die App
 geschlossen ist.
 
@@ -707,6 +708,38 @@ und Tokens sind die von Windows; die Daten liegen in `~/.local/share/rootmind`
 (`config.yaml`, `data/rest_token.txt`, `data/api_token.txt`). Nach einer
 Änderung an `config.yaml` startest du den Dienst mit
 `systemctl --user restart rootmind-backend` neu.
+
+## Lokale Modelle mit Ollama
+
+Wähle unter **Einstellungen → LLM** den Anbieter **Ollama** (oder `provider:
+ollama` unter `llm` in `config.yaml`), damit die Frageschleife mit einem Modell
+auf deinem eigenen Rechner läuft. Es gibt keinen API-Key; die Basis-URL ist
+standardmäßig `http://localhost:11434` und kann auf einen anderen Rechner im
+Netzwerk zeigen.
+
+```yaml
+llm:
+  provider: ollama
+  model: qwen3:8b          # ein beliebiges geladenes Modell mit Tool-Unterstützung
+  base_url: http://localhost:11434
+```
+
+- **Was lokal bleibt:** Mit Ollama auf diesem Rechner verlassen Frage,
+  gelesene Auszüge und Antwort den Rechner nicht. Bei einer Basis-URL auf einem
+  anderen Rechner gehen sie dorthin, unverschlüsselt über `http://`.
+- **Tool-Unterstützung ist Pflicht.** Wähle ein Modell, das Ollama mit Tools
+  anzeigt (`ollama show <modell>`). Ohne sie gibt es eine klare Fehlermeldung.
+- **Kontextlänge:** Die Schleife liest Dokumentfenster, und Ollamas
+  Standardkontext ist klein. Erhöhe ihn (etwa `OLLAMA_CONTEXT_LENGTH=16384` am
+  Server oder ein Modelfile mit `PARAMETER num_ctx 16384`), sonst werden lange
+  Dokumente ohne Fehler abgeschnitten.
+- **Erst suchen:** Ollama-Modelle werden im ersten Schritt nicht zu einem
+  Tool-Aufruf gezwungen, weil nicht jedes Modell das kann. Hat die erste Antwort
+  die Dokumente nicht angesehen, fragt RootMind einmal mit einer ausdrücklichen
+  Anweisung nach.
+- Kleine lokale Modelle folgen der Tool-Schleife weniger zuverlässig als die
+  gehosteten. Miss dein Modell mit `scripts/run_evals.py --mode live --provider
+  ollama --model <name>` (siehe [`backend/evals`](backend/evals/README.md)).
 
 ## Aus dem Quellcode starten
 

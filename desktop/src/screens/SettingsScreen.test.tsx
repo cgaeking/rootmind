@@ -328,3 +328,93 @@ describe("SettingsScreen About", () => {
     }
   });
 });
+
+describe("SettingsScreen Ollama", () => {
+  const URL_FIELD = "http://localhost:11434";
+
+  function serveOllamaConfig(baseUrl?: string) {
+    const config = configFor("a", 11);
+    config.llm = { provider: "ollama", model: "qwen3:8b", api_keys: {}, base_url: baseUrl };
+    vi.mocked(rlm.getConfig).mockResolvedValue(structuredClone(config));
+  }
+
+  it("shows a server address instead of an API key and lists models without a key", async () => {
+    serveOllamaConfig(URL_FIELD);
+    vi.mocked(rlm.listLlmModels).mockResolvedValue({
+      provider: "ollama",
+      models: ["llama3.2:3b", "qwen3:8b"],
+    });
+    render(<SettingsScreen />);
+
+    expect(await screen.findByDisplayValue(URL_FIELD)).toBeTruthy();
+    expect(screen.queryByPlaceholderText("sk-…")).toBeNull();
+    await waitFor(() =>
+      expect(rlm.listLlmModels).toHaveBeenCalledWith({ provider: "ollama", base_url: URL_FIELD }),
+    );
+    const model = (await screen.findByLabelText(/^Model/)) as HTMLSelectElement;
+    await waitFor(() => expect(model.disabled).toBe(false));
+    expect(Array.from(model.options).map((o) => o.value)).toEqual(["llama3.2:3b", "qwen3:8b"]);
+  });
+
+  it("checks the address, then saves it with the provider and a listed model", async () => {
+    serveOllamaConfig(URL_FIELD);
+    vi.mocked(rlm.listLlmModels).mockResolvedValue({ provider: "ollama", models: ["llama3.2:3b"] });
+    render(<SettingsScreen />);
+    const input = await screen.findByDisplayValue(URL_FIELD);
+
+    fireEvent.change(input, { target: { value: "http://nas:11434" } });
+    fireEvent.click(screen.getByRole("button", { name: "Check and save the Ollama server address" }));
+
+    expect(await screen.findByText("Connected, 1 models found. Saved.")).toBeTruthy();
+    expect(rlm.listLlmModels).toHaveBeenLastCalledWith({
+      provider: "ollama",
+      base_url: "http://nas:11434",
+    });
+    expect(vi.mocked(rlm.saveConfig).mock.calls).toEqual([
+      [{ llm: { provider: "ollama", model: "llama3.2:3b", base_url: "http://nas:11434" } }],
+    ]);
+  });
+
+  it("does not save a server that has no models", async () => {
+    serveOllamaConfig(URL_FIELD);
+    vi.mocked(rlm.listLlmModels)
+      .mockResolvedValueOnce({ provider: "ollama", models: ["qwen3:8b"] })
+      .mockResolvedValue({ provider: "ollama", models: [] });
+    render(<SettingsScreen />);
+    const input = await screen.findByDisplayValue(URL_FIELD);
+
+    fireEvent.change(input, { target: { value: "http://nas:11434" } });
+    fireEvent.click(screen.getByRole("button", { name: "Check and save the Ollama server address" }));
+
+    expect(await screen.findByText(/has no models/)).toBeTruthy();
+    expect(rlm.saveConfig).not.toHaveBeenCalled();
+  });
+
+  it("shows the server's error and saves nothing when it cannot be reached", async () => {
+    serveOllamaConfig(URL_FIELD);
+    vi.mocked(rlm.listLlmModels)
+      .mockResolvedValueOnce({ provider: "ollama", models: ["qwen3:8b"] })
+      .mockRejectedValue(new ApiError(502, "Could not reach Ollama"));
+    render(<SettingsScreen />);
+    const input = await screen.findByDisplayValue(URL_FIELD);
+
+    fireEvent.change(input, { target: { value: "http://nowhere:11434" } });
+    fireEvent.click(screen.getByRole("button", { name: "Check and save the Ollama server address" }));
+
+    expect(await screen.findByText(/Not saved: .*Could not reach Ollama/)).toBeTruthy();
+    expect(rlm.saveConfig).not.toHaveBeenCalled();
+  });
+
+  it("switching to Ollama loads the models without a key", async () => {
+    serveConfigs();
+    vi.mocked(rlm.listLlmModels).mockResolvedValue({ provider: "ollama", models: ["qwen3:8b"] });
+    render(<SettingsScreen />);
+    await screen.findByDisplayValue("*.a");
+
+    fireEvent.change(screen.getByLabelText(/^Provider/), { target: { value: "ollama" } });
+
+    await waitFor(() => expect(rlm.listLlmModels).toHaveBeenCalled());
+    expect(screen.queryByPlaceholderText("sk-…")).toBeNull();
+    expect(screen.getByPlaceholderText(URL_FIELD)).toBeTruthy();
+  });
+});

@@ -2,6 +2,7 @@
 
 import contextlib
 import os
+import re
 import secrets
 import stat
 import time
@@ -12,7 +13,10 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-LlmProvider = Literal["anthropic", "openai", "xai"]
+LlmProvider = Literal["anthropic", "openai", "xai", "ollama"]
+
+# Where a local Ollama server listens by default.
+OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
 
@@ -49,6 +53,16 @@ def is_masked(value: str | None) -> bool:
         and value.startswith(MASK_PREFIX)
         and len(value) <= len(MASK_PREFIX) + MASK_VISIBLE_CHARS
     )
+
+
+def check_base_url(value: str) -> None:
+    """Reject a base URL that is not an http(s) address.
+
+    Raises:
+        ValueError: the value does not start with ``http://`` or ``https://``.
+    """
+    if not re.match(r"^https?://[^\s/]+", value.strip()):
+        raise ValueError("The base URL must start with http:// or https://")
 
 
 def check_api_key(value: str | None) -> None:
@@ -92,6 +106,9 @@ class LLMConfig(BaseModel):
     # provider's key (the engine reads api_key).
     api_key: str | None = None
     api_keys: dict[str, str] = Field(default_factory=dict)
+    # Ollama only: the server's address (a LAN host works too). Only the user
+    # can change it, through this file or the settings screen.
+    base_url: str = OLLAMA_DEFAULT_BASE_URL
     # Generous but bounded timeout for outgoing LLM calls, so a stalled
     # provider response can't hang a request forever.
     timeout_seconds: float = 120.0
@@ -300,7 +317,9 @@ def save_config(data: dict, config_path: str | Path | None = None) -> AppConfig:
         if raw_llm.get("api_key") and not stored_keys.get(stored_provider):
             stored_keys[stored_provider] = raw_llm["api_key"]
 
-        for key in ("provider", "model"):
+        if llm_in.get("base_url") is not None:
+            check_base_url(llm_in["base_url"])
+        for key in ("provider", "model", "base_url"):
             if key in llm_in:
                 raw_llm[key] = llm_in[key]
         check_api_key(llm_in.get("api_key"))

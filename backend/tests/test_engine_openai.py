@@ -14,10 +14,13 @@ from rootmind.rlm_engine import engine as engine_module
 from rootmind.rlm_engine.engine import (
     GENERIC_FAILURE_ANSWER,
     ITERATION_LIMIT_PROMPT,
+    SEARCH_FIRST_PROMPT,
     SYSTEM_PROMPT,
     TRUNCATED_NOTE,
     XAI_BASE_URL,
+    LLMProviderError,
     LLMTimeoutError,
+    provider_error,
 )
 
 
@@ -262,3 +265,124 @@ def test_tool_arguments_are_valid_json_schema_objects():
         json.dumps(tool)  # serializable as sent over the wire
         assert tool["type"] == "function"
         assert tool["function"]["parameters"]["type"] == "object"
+
+
+# --- Ollama ---------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ollama_config(app_config):
+    app_config.llm.provider = "ollama"
+    app_config.llm.model = "qwen3:8b"
+    app_config.llm.api_key = None
+    return app_config
+
+
+def test_ollama_client_needs_no_key_and_uses_the_v1_endpoint(
+    ollama_config, indexed_repo, monkeypatch
+):
+    import openai
+
+    constructed = []
+
+    class RecordingOpenAI:
+        def __init__(self, **kwargs):
+            constructed.append(kwargs)
+
+    monkeypatch.setattr(openai, "OpenAI", RecordingOpenAI)
+    ollama_config.llm.base_url = "http://nas:11434/"
+    ollama_config.llm.timeout_seconds = 30
+
+    engine = engine_module.KnowledgeBaseEngine(indexed_repo, ollama_config)
+
+    assert isinstance(engine._get_client(), RecordingOpenAI)
+    assert constructed == [
+        {
+            "api_key": "ollama",  # pragma: allowlist secret (placeholder, not a key)
+            "base_url": "http://nas:11434/v1",
+            "timeout": 30.0,
+            "max_retries": 1,
+        }
+    ]
+
+
+async def test_ollama_does_not_force_a_tool_call(ollama_config, indexed_repo):
+    fake = FakeOpenAI(
+        [
+            openai_response(
+                tool_calls=[openai_tool_call("c1", "search_documents", {"query": "time off"})]
+            ),
+            openai_response(content="21 days."),
+        ]
+    )
+
+    result = await make_engine(ollama_config, indexed_repo, fake).query("How much PTO?")
+
+    assert result["answer"] == "21 days."
+    assert all("tool_choice" not in call for call in fake.calls)
+
+
+async def test_ollama_answer_without_a_search_is_retried_once(ollama_config, indexed_repo):
+    fake = FakeOpenAI(
+        [
+            openai_response(content="From memory: 20 days."),
+            openai_response(
+                tool_calls=[openai_tool_call("c1", "search_documents", {"query": "time off"})]
+            ),
+            openai_response(content="21 days (handbook.txt)."),
+        ]
+    )
+
+    result = await make_engine(ollama_config, indexed_repo, fake).query("How much PTO?")
+
+    assert result["answer"] == "21 days (handbook.txt)."
+    retry = fake.calls[1]["messages"]
+    assert retry[-2] == {"role": "assistant", "content": "From memory: 20 days."}
+    assert retry[-1] == {"role": "user", "content": SEARCH_FIRST_PROMPT}
+
+
+async def test_ollama_second_answer_without_a_search_is_accepted(ollama_config, indexed_repo):
+    fake = FakeOpenAI([openai_response(content="Hi."), openai_response(content="Still no tool.")])
+
+    result = await make_engine(ollama_config, indexed_repo, fake).query("Hello?")
+
+    assert result["answer"] == "Still no tool."
+    assert len(fake.calls) == 2
+
+
+def test_openai_still_forces_the_first_tool_call(openai_config, indexed_repo):
+    import asyncio
+
+    fake = FakeOpenAI([openai_response(content="No tool.")])
+
+    asyncio.run(make_engine(openai_config, indexed_repo, fake).query("Q?"))
+
+    assert fake.calls[0]["tool_choice"] == "required"
+    assert len(fake.calls) == 1
+
+
+def _api_error(status, message, with_status=True):
+    import openai
+
+    request = httpx.Request("POST", "http://localhost:11434/v1/chat/completions")
+    if not with_status:
+        return openai.APIConnectionError(request=request)
+    return openai.APIStatusError(
+        message, response=httpx.Response(status, request=request), body=None
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (_api_error(0, "", with_status=False), "Could not reach Ollama"),
+        (_api_error(404, "model 'x' not found"), "ollama pull"),
+        (_api_error(400, "registry.ollama.ai/library/x does not support tools"), "tool-capable"),
+        (_api_error(500, "boom"), "Ollama returned HTTP 500"),
+    ],
+)
+def test_ollama_failures_are_readable(error, expected):
+    mapped = provider_error(error, "ollama")
+
+    assert isinstance(mapped, LLMProviderError)
+    assert expected in str(mapped)

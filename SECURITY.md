@@ -30,9 +30,9 @@ HTTP reachable from the internet through ngrok, protected by the MCP token
 | Action | What is sent | Where |
 |---|---|---|
 | Indexing, search, listing, reading | Nothing | Local only; no LLM is involved |
-| Asking a question (`POST /query`) | The question; for follow-ups, the last few chat turns (for the condense step); every tool result the model requests, which includes search snippets and document text of up to 50,000 characters per read | The LLM provider you configured (Anthropic, OpenAI or xAI) |
+| Asking a question (`POST /query`) | The question; for follow-ups, the last few chat turns (for the condense step); every tool result the model requests, which includes search snippets and document text of up to 50,000 characters per read | The LLM provider you configured (Anthropic, OpenAI or xAI), or the Ollama server at your base URL (nothing leaves the computer when it runs on the same one; a LAN address receives it over plain `http://`) |
 | Chat titles (`POST /chat/title`) | Up to 500 characters each of the first question and its answer | The configured provider |
-| Model list (`POST /llm/models`) | The API key, to list models | The configured provider |
+| Model list (`POST /llm/models`) | The API key, to list models (none for Ollama) | The configured provider, or the Ollama server |
 | MCP tool calls | Tool results go to the MCP client, and from there to whatever model that client uses | Decided by the MCP client |
 | Remote access, while it is on | The ngrok authtoken (to sign in), and every request and answer through the public address, including the MCP token in the `Authorization` header: ngrok terminates TLS at its edge | ngrok; a cloud assistant's requests and the document text it reads also go to that assistant's provider |
 
@@ -126,6 +126,12 @@ Remaining risks:
   cannot read the answers). Two endpoints accept an empty body:
   `POST /index/refresh` starts an incremental index sync, and
   `POST /llm/models` asks the configured provider for its model list.
+- **The Ollama base URL is an address the backend connects to.** Only
+  `config.yaml` and the authenticated settings screen can change it (it must
+  start with `http://` or `https://`). `POST /llm/models` accepts a base URL in
+  its body to test a server before saving, so with the API open to local
+  processes (no token), such a process can make the backend send a request to an
+  address of its choice; the response is only the list of model names.
 
 Never bind the REST API to a network interface. If you need remote access,
 use the MCP HTTP server.

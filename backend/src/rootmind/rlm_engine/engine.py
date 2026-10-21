@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .. import tools
-from ..config import AppConfig
+from ..config import OLLAMA_DEFAULT_BASE_URL, AppConfig
 from ..database.repository import DocumentRepository
 from ..tools import ToolContext
 
@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 # xAI (Grok) exposes an OpenAI-compatible Chat Completions API, so the
 # `openai` SDK is reused for it, pointed at a different base URL.
 XAI_BASE_URL = "https://api.x.ai/v1"
+
+# Providers that speak OpenAI Chat Completions and share `_loop_openai`.
+OPENAI_COMPATIBLE = ("openai", "xai", "ollama")
 
 DEFAULT_MAX_ITERATIONS = 10
 # Output token caps. Thinking tokens of reasoning models count against them,
@@ -62,6 +65,10 @@ MAX_TOOL_RESULT_CHARS = 200_000
 # Each history turn is cut to this length for the condense step.
 MAX_HISTORY_TURN_CHARS = 2_000
 
+SEARCH_FIRST_PROMPT = (
+    "Do not answer from memory. Call the search_documents tool first and answer only "
+    "from what the documents say."
+)
 GENERIC_FAILURE_ANSWER = (
     "The request could not be completed (maximum number of tool iterations reached)."
 )
@@ -148,6 +155,24 @@ def _is_timeout(exc: BaseException) -> bool:
     return isinstance(exc, TimeoutError) or _sdk_type(exc, "APITimeoutError")
 
 
+def _ollama_error(exc: Exception, status: int | None) -> LLMProviderError:
+    """Readable failures for a local Ollama server (down, model missing, no tools)."""
+    if status is None:
+        return LLMProviderError(
+            "Could not reach Ollama; check that the server is running and the base URL is right"
+        )
+    detail = str(exc).lower()
+    if status == 404 or "not found" in detail:
+        return LLMProviderError(
+            "Ollama does not have this model; pull it first with `ollama pull <model>`"
+        )
+    if "does not support tools" in detail:
+        return LLMProviderError(
+            "This Ollama model does not support tool calling; choose a tool-capable model"
+        )
+    return LLMProviderError(f"Ollama returned HTTP {status}")
+
+
 def provider_error(
     exc: Exception, provider: str, timeout_seconds: float | None = None
 ) -> Exception:
@@ -164,6 +189,8 @@ def provider_error(
         return exc
     logger.warning("LLM provider error (%s): %s", provider, exc)
     status = getattr(exc, "status_code", None)
+    if provider == "ollama":
+        return _ollama_error(exc, status)
     if status is None:
         return LLMProviderError(f"Could not reach the LLM provider ({provider})")
     if status in (401, 403):
@@ -303,6 +330,18 @@ class KnowledgeBaseEngine:
             return self._client
 
         provider = self.config.llm.provider
+        if provider == "ollama":
+            import openai
+
+            # Ollama needs no key; the SDK only insists on a non-empty one.
+            base = (self.config.llm.base_url or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+            self._client = openai.OpenAI(
+                api_key="ollama",  # pragma: allowlist secret
+                base_url=f"{base}/v1",
+                timeout=self.config.llm.timeout_seconds,
+                max_retries=LLM_MAX_RETRIES,
+            )
+            return self._client
         if not self.config.llm.api_key:
             env = API_KEY_ENV.get(provider, "the provider's API key variable")
             raise LLMConfigError(
@@ -452,7 +491,7 @@ class KnowledgeBaseEngine:
                 standalone = _anthropic_text(resp).strip()
                 tokens = _anthropic_tokens(resp)
                 truncated = resp.stop_reason == "max_tokens"
-            elif provider in ("openai", "xai"):
+            elif provider in OPENAI_COMPATIBLE:
                 resp = await self._llm_call(
                     _openai_chat_create,
                     client,
@@ -515,7 +554,7 @@ class KnowledgeBaseEngine:
             answer = await self._loop_anthropic(
                 client, standalone_question, ctx, max_iterations, usage
             )
-        elif provider in ("openai", "xai"):
+        elif provider in OPENAI_COMPATIBLE:
             answer = await self._loop_openai(
                 client, standalone_question, ctx, max_iterations, usage
             )
@@ -623,6 +662,8 @@ class KnowledgeBaseEngine:
         self, client, question: str, ctx: ToolContext, max_iterations: int, usage: _Usage
     ) -> str:
         model = self.config.llm.model
+        provider = self.config.llm.provider
+        nudged = False
         openai_tools = tools.openai_tools()
         # Chat Completions has no separate system parameter (unlike Anthropic's
         # `system=`), so the prompt goes in as a regular message.
@@ -644,7 +685,12 @@ class KnowledgeBaseEngine:
                 # search before any text answer on the first call only, so a
                 # model's trained privacy-refusal reflex can't skip the tool
                 # it has for exactly that.
-                call_kwargs["tool_choice"] = "required"
+                #
+                # Ollama is the exception: not every model or version accepts
+                # `required`, so it is left on auto and the search-first rule
+                # is enforced by the retry below.
+                if provider != "ollama":
+                    call_kwargs["tool_choice"] = "required"
             response = await self._llm_call(_openai_chat_create, client, **call_kwargs)
             choice = response.choices[0]
             finish_reason = getattr(choice, "finish_reason", None)
@@ -654,6 +700,14 @@ class KnowledgeBaseEngine:
             # No tool calls -> final answer. "length" means the output token
             # limit cut it off; "content_filter" usually leaves no text.
             if not msg.tool_calls:
+                if provider == "ollama" and iteration == 0 and not nudged:
+                    # No forced tool call here (see above): ask once more, with
+                    # an explicit instruction, before accepting an answer that
+                    # never looked at the documents.
+                    nudged = True
+                    messages.append({"role": "assistant", "content": msg.content or ""})
+                    messages.append({"role": "user", "content": SEARCH_FIRST_PROMPT})
+                    continue
                 if finish_reason == "length":
                     logger.warning("Answer cut off at the output token limit")
                 return _final_text(msg.content or "", finish_reason, finish_reason == "length")
@@ -744,7 +798,7 @@ class KnowledgeBaseEngine:
                 messages=[{"role": "user", "content": prompt}],
             )
             title = _anthropic_text(resp)
-        elif provider in ("openai", "xai"):
+        elif provider in OPENAI_COMPATIBLE:
             resp = _openai_chat_create(
                 client,
                 model=model,

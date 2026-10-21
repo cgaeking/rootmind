@@ -105,7 +105,11 @@ export const refreshIndex = (opts?: {
     body: JSON.stringify(opts ?? {}),
   });
 
-export const listLlmModels = (body: { provider?: string; api_key?: string | null }) =>
+export const listLlmModels = (body: {
+  provider?: string;
+  api_key?: string | null;
+  base_url?: string;
+}) =>
   api<{ provider: string; models: string[] }>("/llm/models", {
     method: "POST",
     body: JSON.stringify(body),

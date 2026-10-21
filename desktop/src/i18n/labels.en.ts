@@ -223,6 +223,15 @@ export const labels = {
     keyRejected: (msg: string) => `The key was not saved: ${msg}`,
     providerDetected: (name: string) =>
       `Detected from the key: ${name}. You can choose another provider.`,
+    ollamaUrlLabel: "Server address",
+    ollamaUrlHint:
+      "A local Ollama server needs no API key. Nothing leaves this computer unless the address points to another one.",
+    ollamaSaveAria: "Check and save the Ollama server address",
+    ollamaSaved: (n: number) => `Connected, ${n} models found. Saved.`,
+    ollamaNoModels: "The server answered but has no models. Pull one first, for example: ollama pull qwen3:8b",
+    ollamaRejected: (msg: string) => `Not saved: ${msg}`,
+    modelsErrorOllama: (msg: string) =>
+      `Could not load models: ${msg}. Check the server address and that Ollama is running.`,
     modelHintNoKey: "Save an API key for this provider first.",
     modelHintCount: (n: number) => `${n} chat models from the provider API`,
     modelHintLoading: "Loading models …",

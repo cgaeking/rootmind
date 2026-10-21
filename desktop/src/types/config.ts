@@ -1,6 +1,6 @@
 // Editable subset of the backend config, exchanged via GET/POST /config.
 
-export type LlmProvider = "anthropic" | "openai" | "xai";
+export type LlmProvider = "anthropic" | "openai" | "xai" | "ollama";
 
 export interface LlmConfigDto {
   provider: LlmProvider;
@@ -9,6 +9,8 @@ export interface LlmConfigDto {
   api_key?: string | null;
   /** Per-provider API keys (canonical). */
   api_keys: Record<string, string>;
+  /** Ollama only: the server's address. */
+  base_url?: string;
 }
 
 export interface ConnectorDto {
