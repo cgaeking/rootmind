@@ -34,12 +34,20 @@ def wait_for(condition, timeout: float = 10.0, what: str = "condition"):
     raise AssertionError(f"timed out waiting for {what}")
 
 
+def write_config(home: Path, text: str) -> None:
+    # Atomic like save_config: an in-place write lets the manager's poll read
+    # the empty file between the truncate and the write.
+    tmp = home / "config.yaml.tmp"
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, home / "config.yaml")
+
+
 def write_settings(home: Path, enabled: bool, domain: str | None = None) -> None:
     data = {
         "database": {"path": "./data/db/index.db"},
         "remote_access": {"enabled": enabled, "domain": domain},
     }
-    (home / "config.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+    write_config(home, yaml.safe_dump(data))
 
 
 def write_token(home: Path, token: str) -> None:
@@ -385,7 +393,7 @@ def test_an_unreadable_config_keeps_the_settings(home, sdk, start, caplog):
     write_settings(home, True)
     start()
     wait_for(state_is(home, ra.CONNECTED), what="connected")
-    (home / "config.yaml").write_text("remote_access: [not, a, mapping\n", encoding="utf-8")
+    write_config(home, "remote_access: [not, a, mapping\n")
     wait_for(lambda: "keeping the remote access settings" in caplog.text, what="a warning")
     assert status(home)["state"] == ra.CONNECTED
     assert not sdk.sessions[0].closed
