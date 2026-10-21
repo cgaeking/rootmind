@@ -1,11 +1,14 @@
+import { labels } from "../i18n/labels";
 import styles from "./ChatLoader.module.css";
 
 /**
  * Waiting animation for the chat while the LLM responds. An equalizer of
  * pulsing bars in the spirit of the provided Lottie bar motif; uses the accent
- * color so it reads on both light and dark themes.
+ * color so it reads on both light and dark themes. The default text follows
+ * the UI language; the default is evaluated on every render, so it reads the
+ * live `labels` binding.
  */
-export function ChatLoader({ label = "Denkt nach …" }: { label?: string }) {
+export function ChatLoader({ label = labels.chat.thinking }: { label?: string }) {
   return (
     <div className={styles.loader} role="status" aria-label={label}>
       <svg className={styles.bars} viewBox="0 0 100 44" width="46" height="20" aria-hidden="true">

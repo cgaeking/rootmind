@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Fixed
+
+- Desktop: the waiting hint in the chat ("Thinking …") was always German ("Denkt nach …"), also with the English interface. It now follows the interface language.
+
 ## [2.3.3] - 2026-10-21
 
 ### Fixed

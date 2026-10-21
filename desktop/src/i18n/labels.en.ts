@@ -309,6 +309,7 @@ export const labels = {
     hintNoKey: "Search works without a key; add one in Settings to ask questions.",
     hintNoKeyLink: "Open Settings",
     hintBuilding: "Building the index …",
+    thinking: "Thinking …",
     noResults: "No matches.",
     sourcesTitle: "Sources",
     hitsCount: (n: number) => `${n} matches`,
