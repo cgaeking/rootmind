@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-10-21
+
 ### Fixed
 
 - The agent could answer a question without ever searching the user's documents, most
