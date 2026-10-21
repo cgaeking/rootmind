@@ -1408,7 +1408,7 @@ wheels = [
 
 [[package]]
 name = "rootmind-backend"
-version = "2.3.2"
+version = "2.3.3"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
