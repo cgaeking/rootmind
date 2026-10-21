@@ -13,16 +13,55 @@
 [![Plattform: Windows | Linux](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%7C%20Linux-0078D6)](#installation)
 [![Downloads](https://img.shields.io/github/downloads/cgaeking/rootmind/total)](https://github.com/cgaeking/rootmind/releases)
 
-> **Neu hier?** Der [Schnellstart](docs/QUICKSTART.de.md) führt in wenigen
-> Schritten vom Download zum ersten Suchergebnis.
+[Installation](#installation) · [MCP-Clients verbinden](#mcp-clients-verbinden) · [So funktioniert es](#so-funktioniert-es) · [Warum eine Tool-Schleife](#warum-eine-tool-schleife-statt-embedding-rag) · [Sicherheit](#sicherheitsmodell-in-kürze) · [Einschränkungen](#einschränkungen)
 
-Lokale Dokumentensuche mit einer agentischen LLM-Schleife. RootMind indiziert
-die Dateien in Ordnern deiner Wahl in SQLite FTS5. Wenn du eine Frage stellst,
-entscheidet ein Sprachmodell, wonach gesucht wird und welche Dokumente es
-liest; dazu nutzt es eine kleine Zahl lesender Tools. Die Antwort nennt ihre
-Quellen, bis hinunter zu Seite, Folie oder Tabellenblatt, wo sich das
-bestimmen lässt. Dieselben Tools stehen anderen Agenten über MCP zur
-Verfügung.
+**Stell deinen Dokumenten eine Frage. Du bekommst die Antwort mit der Seite, aus der sie stammt.**
+
+RootMind indiziert die Ordner, die du auswählst, auf deinem eigenen Rechner
+(PDF, Word, Excel, PowerPoint, CSV, Markdown und Textdateien). Wenn du eine
+Frage stellst, durchsucht ein Sprachmodell diesen Index und liest die
+Textstellen, die es anfordert. Die Antwort nennt ihre Quellen bis hinunter zu
+Seite, Folie oder Tabellenblatt. Es gibt kein Embedding-Modell und keine
+Vektordatenbank: Die Indizierung ist eine einfache Volltextsuche in SQLite,
+und das Modell steuert die Suche.
+
+<!-- Demo: Diesen Kommentar durch die kurze Bildschirmaufnahme ersetzen. Die
+.mp4 in einen Pull-Request- oder Issue-Kommentar ziehen, die erzeugte
+github.com/user-attachments-URL kopieren und hier in eine eigene Zeile
+einfügen; GitHub zeigt sie als eingebettetes Video. -->
+
+- **Antworten mit Quellen.** Jede Antwort nennt ihre Dateien und, wo es sich
+  bestimmen lässt, Seite, Folie oder Tabellenblatt.
+- **Deine Dateien bleiben auf deinem Rechner.** Indizierung und Suche laufen
+  lokal und brauchen weder ein LLM noch einen API-Key. Beim Beantworten einer
+  Frage gehen die Frage und die Auszüge, die das Modell liest, an den von dir
+  konfigurierten Anbieter (Anthropic, OpenAI oder xAI). Lokale Modelle über
+  Ollama sind geplant ([#37](https://github.com/cgaeking/rootmind/issues/37)).
+- **Es liest gezielt, es kippt nicht alles hinein.** Statt ganze Dokumente in
+  einen Chat zu kopieren, sucht das Modell und liest gezielte Ausschnitte;
+  jeder Schritt ist ein sichtbarer Tool-Aufruf. Der Preis sind mehr
+  Modellaufrufe als bei klassischem RAG, siehe
+  [Warum eine Tool-Schleife statt Embedding-RAG](#warum-eine-tool-schleife-statt-embedding-rag).
+- **Aus deinen anderen Werkzeugen nutzbar.** Dieselben lesenden Tools stehen
+  über MCP bereit, für Claude Desktop, Claude Code, n8n und andere Agenten.
+- **Windows und Linux.** Die Desktop-App gibt es auf Deutsch und Englisch; die
+  Lizenz ist MIT.
+
+### In wenigen Minuten ausprobieren
+
+1. Lade
+   **[RootMind-Setup-x64.exe](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-Setup-x64.exe)**
+   (Windows 10 oder 11) oder das [.deb, .rpm oder AppImage](#installation-unter-linux)
+   (Linux) herunter.
+2. Starte RootMind und füge unter **Ordner** einen Ordner mit deinen Dokumenten
+   hinzu.
+3. Öffne **Chat**, hake **Nur Suche** an und such los. Dafür ist kein API-Key
+   nötig. Für Antworten trägst du unter **Einstellungen** einen Key ein und
+   nimmst den Haken bei **Nur Suche** wieder heraus.
+
+Der [Schnellstart](docs/QUICKSTART.de.md) hat die Details.
+
+## Was es ist
 
 Das Repository hat zwei Teile:
 

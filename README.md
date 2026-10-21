@@ -13,15 +13,51 @@
 [![Platform: Windows | Linux](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%7C%20Linux-0078D6)](#install)
 [![Downloads](https://img.shields.io/github/downloads/cgaeking/rootmind/total)](https://github.com/cgaeking/rootmind/releases)
 
-> **New here?** The [Quickstart](docs/QUICKSTART.md) gets you from download to
-> a first search result in a few steps.
+[Install](#install) · [Connect MCP clients](#connect-mcp-clients) · [How it works](#how-it-works) · [Why a tool loop](#why-a-tool-loop-instead-of-embedding-rag) · [Security](#security-model-in-short) · [Limitations](#limitations)
 
-Local document search with an agentic LLM loop. RootMind indexes the files in
-folders you choose into SQLite FTS5. When you ask a question, a language model
-decides what to search for and which documents to read, using a small set of
-read-only tools. It answers with sources, down to the page, slide or sheet
-where that can be resolved. The same tools are available to other agents over
-MCP.
+**Ask your documents a question. Get the answer with the page it came from.**
+
+RootMind indexes the folders you choose on your own computer (PDF, Word, Excel,
+PowerPoint, CSV, Markdown and text files). When you ask a question, a language
+model searches that index and reads the passages it asks for, then answers with
+sources down to the page, slide or sheet. There is no embedding model and no
+vector database: indexing is plain full-text search in SQLite, and the model
+drives the retrieval.
+
+<!-- Demo: replace this comment with the short screen recording. Drag the .mp4
+into a pull request comment or an issue, copy the github.com/user-attachments
+URL it produces and paste it on its own line here; GitHub renders it as an
+inline video. -->
+
+- **Cited answers.** Every answer names its files and, where it can be
+  resolved, the page, slide or sheet.
+- **Your files stay on your computer.** Indexing and search are local and need
+  no LLM and no API key. Answering a question sends the question and the
+  excerpts the model reads to the provider you configure (Anthropic, OpenAI or
+  xAI). Local models through Ollama are planned
+  ([#37](https://github.com/cgaeking/rootmind/issues/37)).
+- **It reads, it does not stuff.** Instead of pasting whole documents into a
+  chat, the model searches and reads targeted windows, and every step is a
+  visible tool call. The cost is more model round trips than classic RAG; see
+  [Why a tool loop instead of embedding RAG](#why-a-tool-loop-instead-of-embedding-rag).
+- **Usable from your other tools.** The same read-only tools are served over
+  MCP, for Claude Desktop, Claude Code, n8n and other agents.
+- **Windows and Linux.** The desktop app is in English and German; the license
+  is MIT.
+
+### Try it in a few minutes
+
+1. Download
+   **[RootMind-Setup-x64.exe](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-Setup-x64.exe)**
+   (Windows 10 or 11) or the [.deb, .rpm or AppImage](#install-on-linux)
+   (Linux).
+2. Start RootMind and add a folder with your documents under **Folders**.
+3. Open **Chat**, tick **Search only** and search. This needs no API key. For
+   answers, add a key under **Settings** and untick **Search only**.
+
+The [Quickstart](docs/QUICKSTART.md) has the details.
+
+## What it is
 
 The repository has two parts:
 
