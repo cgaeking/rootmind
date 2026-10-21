@@ -336,7 +336,7 @@ class KnowledgeBaseEngine:
             # Ollama needs no key; the SDK only insists on a non-empty one.
             base = (self.config.llm.base_url or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
             self._client = openai.OpenAI(
-                api_key="ollama",
+                api_key="ollama",  # pragma: allowlist secret
                 base_url=f"{base}/v1",
                 timeout=self.config.llm.timeout_seconds,
                 max_retries=LLM_MAX_RETRIES,

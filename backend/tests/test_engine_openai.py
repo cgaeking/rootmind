@@ -297,7 +297,12 @@ def test_ollama_client_needs_no_key_and_uses_the_v1_endpoint(
 
     assert isinstance(engine._get_client(), RecordingOpenAI)
     assert constructed == [
-        {"api_key": "ollama", "base_url": "http://nas:11434/v1", "timeout": 30.0, "max_retries": 1}
+        {
+            "api_key": "ollama",  # pragma: allowlist secret (placeholder, not a key)
+            "base_url": "http://nas:11434/v1",
+            "timeout": 30.0,
+            "max_retries": 1,
+        }
     ]
 
 

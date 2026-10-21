@@ -254,8 +254,9 @@ def _list_chat_models(provider: str, api_key: str | None, base_url: str | None =
         import openai
 
         base = (base_url or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
-        options = {**options, "api_key": "ollama"}
-        with openai.OpenAI(**options, base_url=f"{base}/v1") as client:
+        # No key; the SDK only insists on a non-empty one.
+        placeholder = "ollama"  # pragma: allowlist secret
+        with openai.OpenAI(**{**options, "api_key": placeholder}, base_url=f"{base}/v1") as client:
             return sorted({m.id for m in client.models.list().data})
 
     raise ValueError(f"Unknown provider: {provider}")
