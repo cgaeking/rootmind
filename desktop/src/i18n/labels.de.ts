@@ -312,6 +312,7 @@ export const labels = {
       "Die Suche funktioniert ohne Key; trage in den Einstellungen einen ein, um Fragen zu stellen.",
     hintNoKeyLink: "Einstellungen öffnen",
     hintBuilding: "Der Index wird aufgebaut …",
+    thinking: "Denkt nach …",
     noResults: "Keine Treffer.",
     sourcesTitle: "Quellen",
     hitsCount: (n: number) => `${n} Treffer`,
