@@ -30,7 +30,9 @@ uv run python scripts/make_demo_corpus.py               # regenerate corpus/ aft
 ```
 
 **Live mode** is the eval of the agent. It reads the key only from `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY` or `XAI_API_KEY` (never from `config.yaml`) and exits 2 without it. Each
+`OPENAI_API_KEY` or `XAI_API_KEY` (never from `config.yaml`) and exits 2 without it.
+`--provider ollama` needs no key (set `OLLAMA_BASE_URL` for a server other than
+localhost). Each
 case runs `--runs` times; a run passes when an expected source is cited and the string
 checks hold. The report shows the pass rate per case, how many distinct tool paths and
 source sets the runs produced (agent consistency), the median number of tool calls, tokens

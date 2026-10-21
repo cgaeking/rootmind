@@ -11,10 +11,12 @@ from .. import __version__
 from ..access import UNRESTRICTED, FolderAccess, FolderNotAllowed
 from ..config import (
     DEFAULT_MODEL,
+    OLLAMA_DEFAULT_BASE_URL,
     LlmProvider,
     active_config_path,
     app_home,
     check_api_key,
+    check_base_url,
     get_config,
     is_masked,
     load_config,
@@ -156,10 +158,11 @@ class LlmConfigBody(BaseModel):
     Sending a masked value back keeps the stored key; an empty value removes it.
     """
 
-    provider: LlmProvider = Field("anthropic", description="anthropic | openai | xai")
+    provider: LlmProvider = Field("anthropic", description="anthropic | openai | xai | ollama")
     model: str = DEFAULT_MODEL
     api_key: str | None = None
     api_keys: dict[str, str] = Field(default_factory=dict)
+    base_url: str = OLLAMA_DEFAULT_BASE_URL
 
 
 class ConnectorBody(BaseModel):
@@ -208,9 +211,10 @@ class LlmModelsRequest(BaseModel):
 
     provider: LlmProvider | None = None
     api_key: str | None = None
+    base_url: str | None = None
 
 
-def _list_chat_models(provider: str, api_key: str | None) -> list[str]:
+def _list_chat_models(provider: str, api_key: str | None, base_url: str | None = None) -> list[str]:
     """Return available chat model IDs for a provider (best-effort, filtered).
 
     The client is closed after the call, and the timeout matches the desktop's,
@@ -245,6 +249,14 @@ def _list_chat_models(provider: str, api_key: str | None) -> list[str]:
         with openai.OpenAI(**options, base_url=XAI_BASE_URL) as client:
             models = [m.id for m in client.models.list().data if m.id.startswith("grok")]
         return sorted(set(models))
+
+    if provider == "ollama":
+        import openai
+
+        base = (base_url or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+        options = {**options, "api_key": "ollama"}
+        with openai.OpenAI(**options, base_url=f"{base}/v1") as client:
+            return sorted({m.id for m in client.models.list().data})
 
     raise ValueError(f"Unknown provider: {provider}")
 
@@ -570,6 +582,7 @@ def create_router(app_state: Any) -> APIRouter:
                 model=cfg.llm.model,
                 api_key=mask_secret(cfg.llm.api_key) or None,
                 api_keys={k: mask_secret(v) for k, v in cfg.llm.api_keys.items() if v},
+                base_url=cfg.llm.base_url,
             ),
             connectors=[
                 ConnectorBody(
@@ -646,10 +659,16 @@ def create_router(app_state: Any) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(e)) from e
         if not api_key or is_masked(api_key):
             api_key = cfg.llm.api_keys.get(provider)
-        if not api_key:
+        base_url = body.base_url if body and body.base_url else cfg.llm.base_url
+        if provider == "ollama":
+            try:
+                check_base_url(base_url)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+        elif not api_key:
             raise HTTPException(status_code=400, detail=f"No API key for provider {provider}")
         try:
-            models = _list_chat_models(provider, api_key)
+            models = _list_chat_models(provider, api_key, base_url)
         except Exception as e:
             raise _llm_http_error(provider_error(e, provider), "Listing models") from e
         return {"provider": provider, "models": models}

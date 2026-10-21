@@ -127,16 +127,23 @@ export function SettingsScreen() {
   const [savingKey, setSavingKey] = useState(false);
   const [keyMsg, setKeyMsg] = useState<string | null>(null);
   const [keyError, setKeyError] = useState<string | null>(null);
+  // The Ollama server address: null shows the saved one.
+  const [urlDraft, setUrlDraft] = useState<string | null>(null);
 
   // Results for a backend that is no longer in use are dropped.
-  const loadModels = useCallback(async (provider: string, apiKey: string) => {
-    if (!apiKey) return;
+  const loadModels = useCallback(async (provider: string, apiKey: string, baseUrl?: string) => {
+    // Ollama needs no key; every other provider does.
+    if (!apiKey && provider !== "ollama") return;
     const from = useStore.getState().baseUrl;
     const stillCurrent = () => useStore.getState().baseUrl === from;
     setLoadingModels(true);
     setModelsError(null);
     try {
-      const res = await listLlmModels({ provider, api_key: apiKey });
+      const res = await listLlmModels(
+        provider === "ollama"
+          ? { provider, base_url: baseUrl }
+          : { provider, api_key: apiKey },
+      );
       if (stillCurrent()) setModels(res.models);
     } catch (e) {
       if (stillCurrent()) {
@@ -166,6 +173,7 @@ export function SettingsScreen() {
     setSavingKey(false);
     setKeyMsg(null);
     setKeyError(null);
+    setUrlDraft(null);
     if (!live) return;
     let cancelled = false;
     getConfig()
@@ -174,7 +182,9 @@ export function SettingsScreen() {
         setConfig(c);
         setConfigUrl(live);
         const key = (c.llm.api_keys ?? {})[c.llm.provider];
-        if (key) {
+        if (c.llm.provider === "ollama") {
+          void loadModels("ollama", "", c.llm.base_url);
+        } else if (key) {
           void loadModels(c.llm.provider, key);
         }
       })
@@ -215,7 +225,9 @@ export function SettingsScreen() {
     setModelsError(null);
     setReplacedFrom(null);
     const key = (config.llm.api_keys ?? {})[provider];
-    if (key) {
+    if (provider === "ollama") {
+      void loadModels("ollama", "", urlDraft ?? config.llm.base_url);
+    } else if (key) {
       void loadModels(provider, key);
     }
   }
@@ -305,6 +317,45 @@ export function SettingsScreen() {
     }
   }
 
+  /**
+   * Check the typed Ollama address by listing its models, then save it with
+   * Ollama as the provider and a model from the list (the selected one if
+   * listed, else the first). A server without models is not saved.
+   */
+  async function saveServer() {
+    if (!config || urlDraft === null) return;
+    const url = urlDraft.trim();
+    setKeyMsg(null);
+    setKeyError(null);
+    if (!isCurrentBackend(configUrl)) {
+      setKeyError(labels.settings.staleConfig);
+      return;
+    }
+    setSavingKey(true);
+    try {
+      const listed = (await listLlmModels({ provider: "ollama", base_url: url })).models;
+      if (listed.length === 0) {
+        setKeyError(labels.settings.ollamaNoModels);
+        return;
+      }
+      const model = listed.includes(config.llm.model) ? config.llm.model : listed[0];
+      await saveConfig({ llm: { provider: "ollama", model, base_url: url } });
+      if (!isCurrentBackend(configUrl)) return;
+      setConfig((c) =>
+        c ? { ...c, llm: { ...c.llm, provider: "ollama", model, base_url: url } } : c,
+      );
+      setReplacedFrom(null);
+      setUrlDraft(null);
+      setModels(listed);
+      setModelsError(null);
+      setKeyMsg(labels.settings.ollamaSaved(listed.length));
+    } catch (e) {
+      if (isCurrentBackend(configUrl)) setKeyError(labels.settings.ollamaRejected(errMsg(e)));
+    } finally {
+      setSavingKey(false);
+    }
+  }
+
   async function save() {
     if (!config) return;
     setSaveError(null);
@@ -331,6 +382,11 @@ export function SettingsScreen() {
   const keyValue = keyDraft ?? savedKey;
   const keyChanged =
     keyDraft !== null && keyDraft.trim() !== savedKey && (keyDraft.trim() !== "" || savedKey !== "");
+  const isOllama = config?.llm.provider === "ollama";
+  const serverValue = urlDraft ?? config?.llm.base_url ?? "http://localhost:11434";
+  const serverChanged = urlDraft !== null && urlDraft.trim() !== (config?.llm.base_url ?? "");
+  // Whether the models can be listed: a saved key, or no key at all for Ollama.
+  const canListModels = isOllama || !!savedKey;
   const modelOptions = models ?? (config?.llm.model ? [config.llm.model] : []);
 
   return (
@@ -397,46 +453,75 @@ export function SettingsScreen() {
               </Select>
             </Field>
 
-            <Field
-              label={labels.settings.apiKeyLabel}
-              hint={
-                savedKey
-                  ? labels.settings.apiKeyHintSaved(savedKey)
-                  : labels.settings.apiKeyHintUnsaved
-              }
-            >
-              <Row>
-                <TextInput
-                  type="password"
-                  value={keyValue}
-                  onChange={(e) => changeKey(e.currentTarget.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && keyChanged && !savingKey) void saveKey();
-                  }}
-                  // The field shows the masked stored key. Selecting it on focus
-                  // makes a paste replace the mask instead of appending to it.
-                  onFocus={(e) => e.currentTarget.select()}
-                  placeholder="sk-…"
-                  disabled={savingKey}
-                  spellCheck={false}
-                  autoComplete="off"
-                />
-                <Button
-                  onClick={() => void saveKey()}
-                  disabled={savingKey || !keyChanged}
-                  aria-label={labels.settings.saveKeyAria}
-                >
-                  {savingKey ? labels.settings.saving : labels.common.save}
-                </Button>
-              </Row>
-            </Field>
+            {isOllama ? (
+              <Field label={labels.settings.ollamaUrlLabel} hint={labels.settings.ollamaUrlHint}>
+                <Row>
+                  <TextInput
+                    value={serverValue}
+                    onChange={(e) => {
+                      setUrlDraft(e.currentTarget.value);
+                      setKeyMsg(null);
+                      setKeyError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && serverChanged && !savingKey) void saveServer();
+                    }}
+                    placeholder="http://localhost:11434"
+                    disabled={savingKey}
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                  <Button
+                    onClick={() => void saveServer()}
+                    disabled={savingKey || !serverChanged}
+                    aria-label={labels.settings.ollamaSaveAria}
+                  >
+                    {savingKey ? labels.settings.saving : labels.common.save}
+                  </Button>
+                </Row>
+              </Field>
+            ) : (
+              <Field
+                label={labels.settings.apiKeyLabel}
+                hint={
+                  savedKey
+                    ? labels.settings.apiKeyHintSaved(savedKey)
+                    : labels.settings.apiKeyHintUnsaved
+                }
+              >
+                <Row>
+                  <TextInput
+                    type="password"
+                    value={keyValue}
+                    onChange={(e) => changeKey(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && keyChanged && !savingKey) void saveKey();
+                    }}
+                    // The field shows the masked stored key. Selecting it on focus
+                    // makes a paste replace the mask instead of appending to it.
+                    onFocus={(e) => e.currentTarget.select()}
+                    placeholder="sk-…"
+                    disabled={savingKey}
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                  <Button
+                    onClick={() => void saveKey()}
+                    disabled={savingKey || !keyChanged}
+                    aria-label={labels.settings.saveKeyAria}
+                  >
+                    {savingKey ? labels.settings.saving : labels.common.save}
+                  </Button>
+                </Row>
+              </Field>
+            )}
             {keyMsg && <span className="muted">{keyMsg}</span>}
             {keyError && <Banner tone="err">{keyError}</Banner>}
 
             <Field
               label={labels.settings.modelLabel}
               hint={
-                !savedKey
+                !canListModels
                   ? labels.settings.modelHintNoKey
                   : modelsError
                     ? undefined
@@ -448,7 +533,7 @@ export function SettingsScreen() {
               <Select
                 value={config.llm.model}
                 onChange={(e) => updateLlm({ model: e.currentTarget.value })}
-                disabled={!savedKey || !models || loadingModels || savingKey}
+                disabled={!canListModels || !models || loadingModels || savingKey}
               >
                 {modelOptions.map((m) => (
                   <option key={m} value={m}>
@@ -460,7 +545,9 @@ export function SettingsScreen() {
 
             {modelsError && (
               <Banner tone="err">
-                {labels.settings.modelsError(modelsError)}
+                {isOllama
+                  ? labels.settings.modelsErrorOllama(modelsError)
+                  : labels.settings.modelsError(modelsError)}
               </Banner>
             )}
             {replacedFrom && replacedFrom !== config.llm.model && (

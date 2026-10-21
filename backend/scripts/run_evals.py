@@ -18,7 +18,8 @@ Modes:
 ``--mode live``
     Calls a real provider, so it costs money and is never run in CI. Needs
     ``--provider`` and ``--model``; the key is read only from the provider's
-    environment variable (never from ``config.yaml``). Every case runs
+    environment variable (never from ``config.yaml``); ``--provider ollama``
+    needs none (``OLLAMA_BASE_URL`` overrides ``http://localhost:11434``). Every case runs
     ``--runs`` times. Reports the pass rate (expected source cited, required
     strings present, forbidden strings absent), how much the tool path and
     the cited sources vary between runs, tool calls, tokens and latency.
@@ -66,6 +67,8 @@ INCLUDE = ["*.pdf", "*.docx", "*.xlsx", "*.pptx", "*.md", "*.txt", "*.csv"]
 DEFAULT_MIN_HIT = 1.0
 
 KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "xai": "XAI_API_KEY"}
+# Ollama needs no key; OLLAMA_BASE_URL points at a server other than localhost.
+PROVIDERS = sorted([*KEY_ENV, "ollama"])
 REQUIRED_FIELDS = (
     "id",
     "question",
@@ -421,7 +424,7 @@ class Args:
 def parse_args(argv: list[str] | None) -> Args:
     parser = argparse.ArgumentParser(description="Run the RootMind eval dataset.")
     parser.add_argument("--mode", choices=["dry", "live"], default="dry")
-    parser.add_argument("--provider", choices=sorted(KEY_ENV), help="live mode: LLM provider")
+    parser.add_argument("--provider", choices=PROVIDERS, help="live mode: LLM provider")
     parser.add_argument("--model", help="live mode: model id")
     parser.add_argument("--runs", type=int, default=3, help="live mode: runs per case")
     parser.add_argument("--cases", help="comma-separated case ids (default: all)")
@@ -463,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     api_key = None
-    if args.mode == "live":
+    if args.mode == "live" and args.provider != "ollama":
         api_key = os.environ.get(KEY_ENV[args.provider], "").strip()
         if not api_key:
             print(
@@ -494,6 +497,8 @@ def main(argv: list[str] | None = None) -> int:
                 config.llm.provider = args.provider
                 config.llm.model = args.model
                 config.llm.api_key = api_key
+                if args.provider == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
+                    config.llm.base_url = os.environ["OLLAMA_BASE_URL"]
                 engine = KnowledgeBaseEngine(repo, config)
                 rows = [asyncio.run(run_live_case(c, engine, args.runs)) for c in cases]
                 summary = summarize_live(rows)

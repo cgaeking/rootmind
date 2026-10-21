@@ -2,13 +2,14 @@
 
 import type { LlmProvider } from "../types/config";
 
-export const PROVIDERS: LlmProvider[] = ["anthropic", "openai", "xai"];
+export const PROVIDERS: LlmProvider[] = ["anthropic", "openai", "xai", "ollama"];
 
 /** Display names of the providers. */
 export const PROVIDER_NAMES: Record<LlmProvider, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   xai: "xAI",
+  ollama: "Ollama",
 };
 
 /**
