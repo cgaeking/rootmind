@@ -122,6 +122,26 @@ Ubuntu 24.04 `libfuse2t64`). Prüfe den Download mit
 `sha256sum --check --ignore-missing SHA256SUMS.txt` (siehe
 [Downloads prüfen](#downloads-prüfen)).
 
+**Starten** kannst du RootMind über das App-Menü oder im Terminal mit:
+
+```sh
+rootmind-desktop
+```
+
+Das .deb und das .rpm zeigen diesen Befehl bei der Installation an. Das
+AppImage startet, wenn du die Datei ausführst.
+
+**Windows-Subsystem für Linux.** Unter Windows 11 läuft RootMind auch in WSL,
+das Fenster erscheint auf dem Windows-Desktop (WSLg). Der Dienst braucht in
+WSL systemd: Trage Folgendes in `/etc/wsl.conf` ein, führe dann in Windows
+`wsl --shutdown` aus und öffne die Distribution neu. Ohne systemd meldet
+RootMind, dass es seinen Dienst nicht einrichten kann.
+
+```ini
+[boot]
+systemd=true
+```
+
 **Was beim ersten Start passiert.** RootMind richtet seinen Hintergrunddienst
 für dein Konto ein, ohne Rückfrage und ohne root: zwei
 systemd-Benutzerdienste, `rootmind-backend.service` (REST-API und Indizierung)

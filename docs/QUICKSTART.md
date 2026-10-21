@@ -5,8 +5,9 @@
 From download to a first search result in a few minutes, on Windows 10 or 11
 (x64) with an administrator account. The [README](../README.md) has the full
 documentation. On Linux, install the .deb, .rpm or AppImage as described in
-[Install on Linux](../README.md#install-on-linux); RootMind sets up its
-service on the first start, and steps 3 to 5 are the same.
+[Install on Linux](../README.md#install-on-linux) and start it from the app
+menu or with `rootmind-desktop`; RootMind sets up its service on the first
+start, and steps 3 to 5 are the same.
 
 1. **Download**
    [RootMind-Setup-x64.exe](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-Setup-x64.exe)

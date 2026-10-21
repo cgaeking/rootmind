@@ -113,6 +113,26 @@ installation; it needs FUSE 2 (the package `libfuse2`, on Ubuntu 24.04
 download with `sha256sum --check --ignore-missing SHA256SUMS.txt` (see
 [Verify downloads](#verify-downloads)).
 
+**Start** RootMind from your app menu, or in a terminal with:
+
+```sh
+rootmind-desktop
+```
+
+The .deb and .rpm print this command when they are installed. The AppImage
+starts when you run the file.
+
+**Windows Subsystem for Linux.** On Windows 11, RootMind runs in WSL too, and
+its window opens on the Windows desktop (WSLg). WSL needs systemd for the
+service: add the following to `/etc/wsl.conf`, then run `wsl --shutdown` in
+Windows and open the distribution again. Without systemd, RootMind says
+that it cannot set up its service.
+
+```ini
+[boot]
+systemd=true
+```
+
 **What happens on the first start.** RootMind sets up its background service
 for your account, without a question and without root: two systemd user
 services, `rootmind-backend.service` (REST API and indexing) and
