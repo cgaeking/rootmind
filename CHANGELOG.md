@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-22
+
 ### Added
 
 - Ollama as a fourth LLM provider ([#37](https://github.com/cgaeking/rootmind/issues/37)): the question loop runs against a local Ollama server through its OpenAI-compatible API, with no API key. Choose **Ollama** in Settings → LLM (server address, model list from the server; the address is checked before it is saved) or set `provider: ollama` and `base_url` in `config.yaml`. The first call is not forced to use a tool, because not every model supports that; an answer that never searched is retried once with an explicit instruction. A missing model, a model without tool support and an unreachable server give readable errors. `scripts/run_evals.py --provider ollama` needs no key. The README documents what stays local and how to raise Ollama's context length.

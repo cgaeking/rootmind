@@ -614,7 +614,7 @@ c09 (die Synonym-Falle) hält diese Schwäche sichtbar.
 es bei Bedarf):
 
 ```bash
-uv tool install "git+https://github.com/cgaeking/rootmind@v2.3.4#subdirectory=backend"
+uv tool install "git+https://github.com/cgaeking/rootmind@v2.4.0#subdirectory=backend"
 rootmind --help        # api, index, rebuild-trigrams, mcp, mcp-http, service
 ```
 
