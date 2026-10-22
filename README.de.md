@@ -738,7 +738,11 @@ llm:
   die Dokumente nicht angesehen, fragt RootMind einmal mit einer ausdrücklichen
   Anweisung nach.
 - Kleine lokale Modelle folgen der Tool-Schleife weniger zuverlässig als die
-  gehosteten. Miss dein Modell mit `scripts/run_evals.py --mode live --provider
+  gehosteten. Gemessen mit `granite4.1:8b` auf einer Grafikkarte mit 8 GB:
+  10 von 16 Eval-Fällen bestanden in allen drei Läufen, mittlere Quote 71 %
+  (Details in
+  [`backend/evals`](backend/evals/README.md#latest-live-run-with-a-local-model-ollama)).
+  Miss dein Modell mit `scripts/run_evals.py --mode live --provider
   ollama --model <name>` (siehe [`backend/evals`](backend/evals/README.md)).
 
 ## Aus dem Quellcode starten
