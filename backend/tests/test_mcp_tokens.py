@@ -302,6 +302,43 @@ def test_saving_folders_keeps_the_tokens(rest, rlm_home):
     assert [t.name for t in load_config(rlm_home / "config.yaml").mcp_http.tokens] == ["alice"]
 
 
+def test_rest_revoke_ignores_the_case_of_the_name(rest, rlm_home):
+    # Names are unique regardless of case, so "ALICE" can only mean alice.
+    assert rest.post("/mcp/tokens", json={"name": "alice"}).status_code == 200
+    assert rest.delete("/mcp/tokens/ALICE").status_code == 200
+    assert load_config(rlm_home / "config.yaml").mcp_http.tokens == []
+
+
+def test_a_removed_folder_leaves_the_token_scopes(rest, rlm_home, tmp_path):
+    # A scope names folders. A folder added later under a removed folder's name
+    # (here another path) must not become visible to the old folder's tokens.
+    rest.post("/mcp/tokens", json={"name": "alice", "folders": ["docs"]})
+    rest.post("/mcp/tokens", json={"name": "bob"})
+    body = rest.get("/config").json()
+    old = body["connectors"]
+    body["connectors"] = []
+    assert rest.post("/config", json=body).status_code == 200
+    other = tmp_path / "other-docs"
+    other.mkdir()
+    body["connectors"] = [{**old[0], "path": str(other)}]
+    assert rest.post("/config", json=body).status_code == 200
+
+    saved = {t.name: t.folders for t in load_config(rlm_home / "config.yaml").mcp_http.tokens}
+    assert saved == {"alice": [], "bob": None}
+    alice = load_config(rlm_home / "config.yaml").mcp_http
+    assert [identity.folders for _h, identity in mcp_http._named_tokens(alice)] == [
+        frozenset(),
+        None,
+    ]
+
+
+def test_saving_the_same_folders_keeps_the_token_scopes(rest, rlm_home):
+    rest.post("/mcp/tokens", json={"name": "alice", "folders": ["docs"]})
+    body = rest.get("/config").json()
+    assert rest.post("/config", json=body).status_code == 200
+    assert load_config(rlm_home / "config.yaml").mcp_http.tokens[0].folders == ["docs"]
+
+
 def test_rest_token_works_on_mcp_until_revoked(rest, rlm_home):
     """End to end in one home: the backend writes, the MCP server reads config.yaml."""
     config_module.init_config()
@@ -451,6 +488,23 @@ def test_network_listener_refuses_other_hosts(network_client):
     assert response.json() == {"detail": "Host not allowed"}
 
 
+def test_network_listener_ignores_a_port_in_allowed_hosts(two_folders):
+    app = create_app(TEST_TOKEN, two_folders)
+    wrapped = NetworkListener(app, lambda: ["rootmind.example:3443", "[fd00::5]"])
+    with TestClient(wrapped, base_url="https://rootmind.example:3443") as client:
+        assert _tool(client, BOB, "get_statistics", {}).status_code == 200
+    with TestClient(wrapped, base_url="https://[fd00::5]:3443") as client:
+        assert _tool(client, BOB, "get_statistics", {}).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("bind", "expected"), [("[::]", "::"), (" 10.0.0.5 ", "10.0.0.5"), ("", None), ("[]", None)]
+)
+def test_the_network_bind_address_is_plain(bind, expected):
+    # A socket cannot bind "[::]"; the service would fail with a restart loop.
+    assert McpNetworkConfig(bind=bind).bind == expected
+
+
 def test_network_listener_takes_named_tokens_only(network_client):
     assert _tool(network_client, BOB, "get_statistics", {}).status_code == 200
     assert _tool(network_client, TEST_TOKEN, "get_statistics", {}).status_code == 401
@@ -541,8 +595,12 @@ def test_the_service_refuses_incomplete_network_settings(home):  # noqa: F811
     assert runner.sock is None  # nothing was bound
 
 
-def test_the_service_refuses_the_loopback_mcp_port_twice(home):  # noqa: F811
-    _network_home(home, {"bind": "127.0.0.1", "port": 18431}, ["rm.example"])
+@pytest.mark.parametrize("bind", ["127.0.0.1", "0.0.0.0", "[::]"])  # noqa: S104
+def test_the_service_refuses_the_loopback_mcp_port_twice(home, bind):  # noqa: F811
+    # On a wildcard address the second bind would fail with an OSError, which
+    # the service manager answers with restart after restart.
+    network = {"bind": bind, "port": 18431, "insecure_http": True}
+    _network_home(home, network, ["rm.example"])
     with pytest.raises(host.ServiceConfigError, match="loopback MCP port"):
         host.ServiceRunner("mcp-http", 18431, home=home).prepare()
 
@@ -659,6 +717,72 @@ def test_a_rescan_syncs_only_its_folder(tmp_path, monkeypatch):
     asyncio.run(manager._rescan("share"))
     repo.engine.dispose()
     assert calls == [{"connector_name": "share"}]
+
+
+def test_rescans_cannot_starve_the_scheduled_sync(tmp_path, monkeypatch):
+    # A folder re-scanned every minute keeps the sync slot busy much of the
+    # time; the scheduled sync of every folder must not just be skipped then.
+    import asyncio
+
+    from rootmind.database.repository import DocumentRepository
+    from rootmind.indexer import SyncManager
+
+    repo = DocumentRepository(tmp_path / "db" / "s.db")
+    config = AppConfig(
+        connectors=[
+            ConnectorConfig(name="share", type="local", path=str(tmp_path), rescan_minutes=1),
+            ConnectorConfig(name="local", type="local", path=str(tmp_path)),
+        ]
+    )
+    manager = SyncManager(repo, {"share": object(), "local": object()}, config)
+    busy = [True]
+    started = []
+
+    def start_background(**kwargs):
+        if busy[0]:
+            return False
+        started.append(kwargs)
+        return True
+
+    class Scheduler:
+        def __init__(self):
+            self.jobs = []
+
+        def add_job(self, func, trigger, **kwargs):
+            self.jobs.append((trigger, kwargs["id"]))
+
+    monkeypatch.setattr(manager, "start_background", start_background)
+    manager._scheduler = Scheduler()
+    try:
+        asyncio.run(manager._scheduled_sync())  # a re-scan runs: deferred, retried
+        assert manager._scheduler.jobs == [("date", "scheduled_sync_retry")]
+        busy[0] = False
+        asyncio.run(manager._rescan("share"))  # waits for the scheduled sync
+        assert started == []
+        asyncio.run(manager._scheduled_sync())  # the retry
+        asyncio.run(manager._rescan("share"))
+    finally:
+        manager._scheduler = None
+        repo.engine.dispose()
+    assert started == [{}, {"connector_name": "share"}]
+
+
+def test_without_rescans_a_busy_scheduled_sync_is_skipped_as_before(tmp_path, monkeypatch):
+    import asyncio
+
+    from rootmind.database.repository import DocumentRepository
+    from rootmind.indexer import SyncManager
+
+    repo = DocumentRepository(tmp_path / "db" / "s.db")
+    manager = SyncManager(repo, {}, AppConfig())
+    monkeypatch.setattr(manager, "start_background", lambda **kwargs: False)
+    manager._scheduler = object()  # add_job would fail
+    try:
+        asyncio.run(manager._scheduled_sync())
+    finally:
+        manager._scheduler = None
+        repo.engine.dispose()
+    assert manager._scheduled_pending is False
 
 
 def test_rescan_minutes_survive_a_save_from_the_app(rest, rlm_home):

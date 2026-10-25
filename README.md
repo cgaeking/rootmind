@@ -700,7 +700,8 @@ Every command takes `--json` for scripts and `--help`.
   --authtoken-file FILE` saves the ngrok authtoken the same way. Tokens are
   never printed; `mcp tokens list` shows the fingerprint the MCP service logs,
   and `mcp tokens create` writes a new token to a new file (mode 0600
-  on Linux; `--out FILE`, or `--out -` to print it instead).
+  on Linux, readable by your account alone on Windows; `--out FILE`, or
+  `--out -` to print it instead).
 - **Another backend.** `--url http://127.0.0.1:18000 --token-file FILE` (or
   `RLM_URL` and `RLM_TOKEN_FILE`) uses that REST API instead, for example a
   development backend (`rootmind api`). Plain `http://` is accepted only for

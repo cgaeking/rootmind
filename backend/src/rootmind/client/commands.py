@@ -907,11 +907,18 @@ def cmd_mcp_tokens(ctx: Context) -> int:
     if network.get("enabled"):
         lines.append(f"Network:      {_network_line(network)}")
     for t in data.get("tokens") or []:
-        folders = ", ".join(t["folders"]) if t.get("folders") else "every folder"
+        folders = _scope_text(t.get("folders"))
         fingerprint = f"sha256:{t['fingerprint']}" if t.get("fingerprint") else "(not readable)"
         lines.append(f"  {t['name']:<16} {fingerprint:<16} {folders}")
     ctx.emit({**data, "mcp_http": endpoint}, lines)
     return ClientExit.OK
+
+
+def _scope_text(folders: list[str] | None) -> str:
+    """A token's folders as text: None is every folder, an empty list none at all."""
+    if folders is None:
+        return "every folder"
+    return ", ".join(folders) if folders else "no folder (its folders were removed)"
 
 
 def _network_line(network: dict[str, Any]) -> str:
@@ -927,7 +934,20 @@ def _network_line(network: dict[str, Any]) -> str:
 
 
 def _write_new_token(path: Path, token: str) -> None:
-    """Create ``path`` (it must not exist) with the token, owner-only on POSIX."""
+    """Create ``path`` (it must not exist) with the token, readable by this account only.
+
+    POSIX: mode 0600, no link followed. Windows: a protected access list with
+    this account alone (the mode bits mean nothing there, and the entries the
+    folder passes on could let other accounts read the file). A file that was
+    created but could not be written is removed again.
+
+    Raises:
+        ClientError: the file exists or cannot be created or written.
+    """
+    data = (token + "\n").encode("utf-8")
+    if sys.platform == "win32":
+        _write_new_windows_file(path, data)
+        return
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags, 0o600)
@@ -935,8 +955,55 @@ def _write_new_token(path: Path, token: str) -> None:
         raise ClientError(f"{path} exists; choose a new file", ClientExit.USAGE) from None
     except OSError as e:
         raise ClientError(f"cannot create {path}: {e.strerror or e}", ClientExit.USAGE) from None
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(token + "\n")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except OSError as e:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        raise ClientError(f"cannot write {path}: {e.strerror or e}", ClientExit.USAGE) from None
+
+
+def _write_new_windows_file(path: Path, data: bytes) -> None:
+    """Create a new file whose access list names only this account, and write ``data``."""
+    import pywintypes
+    import win32con
+    import win32file
+    import win32security
+
+    from ..winaccess import current_user_sid
+
+    try:
+        sddl = f"D:P(A;;FA;;;{current_user_sid()})"
+        attributes = win32security.SECURITY_ATTRIBUTES()
+        attributes.SECURITY_DESCRIPTOR = (
+            win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
+                sddl, win32security.SDDL_REVISION_1
+            )
+        )
+        handle = win32file.CreateFile(
+            str(path),
+            win32con.GENERIC_WRITE,
+            0,
+            attributes,
+            win32con.CREATE_NEW,  # never an existing file or link
+            win32con.FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    except (pywintypes.error, OSError) as e:
+        if getattr(e, "winerror", None) in (80, 183):  # ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS
+            raise ClientError(f"{path} exists; choose a new file", ClientExit.USAGE) from None
+        reason = getattr(e, "strerror", None) or e
+        raise ClientError(f"cannot create {path}: {reason}", ClientExit.USAGE) from None
+    try:
+        try:
+            win32file.WriteFile(handle, data)
+        finally:
+            handle.Close()
+    except pywintypes.error as e:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        raise ClientError(f"cannot write {path}: {e.strerror}", ClientExit.USAGE) from None
 
 
 def _mcp_token_create(ctx: Context) -> int:
@@ -969,15 +1036,17 @@ def _mcp_token_create(ctx: Context) -> int:
         return ClientExit.OK
     try:
         _write_new_token(path, token)
-    except ClientError as e:
+    except Exception as e:
         # The token exists in the service but could not be saved: revoke it again.
         with contextlib.suppress(ClientError):
             client.delete(f"/mcp/tokens/{urllib.parse.quote(created['name'], safe='')}")
-        raise ClientError(f"{e.message}; the token was revoked again", e.code) from None
+        message = e.message if isinstance(e, ClientError) else f"cannot write {path}: {e}"
+        code = e.code if isinstance(e, ClientError) else ClientExit.FAILED
+        raise ClientError(f"{message}; the token was revoked again", code) from None
     lines = [
         f"Created MCP token {created['name']} (sha256:{created.get('fingerprint')}), {scope}.",
         f"The token is in {path}"
-        + (" (mode 0600)" if os.name == "posix" else "")
+        + (" (mode 0600)" if os.name == "posix" else " (readable by this account only)")
         + "; it is stored nowhere else. Hand it over privately, then delete the file. "
         "Clients send it as: Authorization: Bearer <token>",
     ]

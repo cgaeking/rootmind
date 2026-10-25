@@ -555,7 +555,8 @@ stay as they are. What changes:
 - Secrets come from files or stdin, never from command-line arguments (which
   other accounts can see in the process list), and are never printed, not even
   masked. A new MCP token is written to a new file (`--out`, mode 0600 on
-  Linux), or to stdout only with `--out -`.
+  Linux, an access list for the account alone on Windows), or to stdout only
+  with `--out -`.
 
 ### Remote access (ngrok)
 

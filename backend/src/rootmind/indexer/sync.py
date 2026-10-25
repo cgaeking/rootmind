@@ -43,6 +43,10 @@ def _guard_for(db: DocumentRepository) -> _SyncGuard:
         return _GUARDS.setdefault(key, _SyncGuard())
 
 
+# How long a deferred scheduled sync waits before it tries again (with re-scans).
+SCHEDULED_RETRY_SECONDS = 60
+
+
 class SyncManager:
     """Runs full and incremental syncs, one at a time per database, and the schedule.
 
@@ -71,6 +75,9 @@ class SyncManager:
         self.indexer = indexer or Indexer(db, connectors, config)
         self._guard = _guard_for(db)
         self._scheduler = None
+        # The scheduled sync of every folder found another sync running and
+        # waits for its retry; re-scans of single folders hold back meanwhile.
+        self._scheduled_pending = False
 
     @property
     def is_running(self) -> bool:
@@ -334,17 +341,43 @@ class SyncManager:
         return intervals
 
     async def _rescan(self, connector_name: str) -> None:
-        """Start an incremental sync of one folder, unless a sync is running."""
+        """Start an incremental sync of one folder, unless a sync is running or due."""
+        if self._scheduled_pending:
+            logger.info("Re-scan of %s skipped: the scheduled sync goes first", connector_name)
+            return
         if self.start_background(connector_name=connector_name):
             logger.info("Re-scan of %s started", connector_name)
         else:
             logger.info("Re-scan of %s skipped: another sync is still running", connector_name)
 
     async def _scheduled_sync(self) -> None:
-        """Start an incremental sync in a worker thread, unless one is running."""
+        """Start an incremental sync in a worker thread, unless one is running.
+
+        With re-scans configured, a sync that finds another one running is
+        retried every :data:`SCHEDULED_RETRY_SECONDS` (and the re-scans wait
+        for it): frequent re-scans of one folder must not make the other
+        folders miss their scheduled sync again and again.
+        """
         logger.info("Starting scheduled sync")
-        if not self.start_background():
+        if self.start_background():
+            self._scheduled_pending = False
+            return
+        if not self.rescan_intervals() or self._scheduler is None:
             logger.info("Scheduled sync skipped: another sync is still running")
+            return
+        self._scheduled_pending = True
+        logger.info(
+            "Scheduled sync deferred: another sync is still running; retrying in %d s",
+            SCHEDULED_RETRY_SECONDS,
+        )
+        self._scheduler.add_job(
+            self._scheduled_sync,
+            "date",
+            run_date=datetime.now() + timedelta(seconds=SCHEDULED_RETRY_SECONDS),
+            id="scheduled_sync_retry",
+            name="Scheduled Index Sync (retry)",
+            replace_existing=True,
+        )
 
     def shutdown_scheduler(self) -> None:
         """Shut down the scheduler if running."""

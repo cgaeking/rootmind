@@ -757,7 +757,8 @@ kennt `--json` für Skripte und `--help`.
   ebenso. Tokens werden nie ausgegeben; `mcp tokens list` zeigt den
   Fingerabdruck, den auch der MCP-Dienst protokolliert, und
   `mcp tokens create` schreibt ein neues Token in eine neue Datei (unter
-  Linux mit Modus 0600; `--out DATEI`, oder `--out -` gibt es stattdessen aus).
+  Linux mit Modus 0600, unter Windows nur für dein Konto lesbar; `--out DATEI`,
+  oder `--out -` gibt es stattdessen aus).
 - **Ein anderes Backend.** `--url http://127.0.0.1:18000 --token-file DATEI`
   (oder `RLM_URL` und `RLM_TOKEN_FILE`) nimmt stattdessen diese REST-API,
   etwa ein Entwicklungs-Backend (`rootmind api`). Unverschlüsseltes `http://`

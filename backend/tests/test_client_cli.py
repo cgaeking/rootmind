@@ -786,6 +786,16 @@ def test_mcp_tokens_list(capsys, fake, token_file):
     assert "Network:      https://0.0.0.0:3443/mcp" in out
 
 
+def test_mcp_tokens_list_tells_no_folder_from_every_folder(capsys, fake, token_file):
+    # folders: [] (its folders were removed) sees nothing; it must not read as "every folder".
+    fake.state.mcp_tokens.append({"name": "alice", "folders": []})
+    code, out, _err = cli(capsys, "mcp", "tokens", "list", *remote(fake, token_file))
+    assert code == 0
+    alice = next(line for line in out.splitlines() if "alice" in line)
+    assert "no folder" in alice
+    assert "every folder" not in alice
+
+
 def test_mcp_tokens_create_writes_a_private_file(capsys, fake, token_file, tmp_path):
     out_file = tmp_path / "alice.token"
     code, out, err = cli(
@@ -804,6 +814,15 @@ def test_mcp_tokens_create_writes_a_private_file(capsys, fake, token_file, tmp_p
     assert out_file.read_text(encoding="utf-8").strip() == fake.state.created_token
     if os.name == "posix":
         assert out_file.stat().st_mode & 0o777 == 0o600
+    else:
+        # The mode bits mean nothing on Windows: the file gets a protected
+        # access list with this account alone, whatever its folder passes on.
+        from rootmind.service.layout import read_security
+        from rootmind.winaccess import current_user_sid
+
+        security = read_security(out_file)
+        assert security.protected
+        assert [(ace[0], ace[3]) for ace in security.aces] == [(0, current_user_sid())]
     assert fake.state.created_token not in out + err
     post = [r for r in fake.requests if r.path == "/mcp/tokens" and r.method == "POST"][0]
     assert post.body == {"name": "alice", "folders": ["projects", "marketing"]}
@@ -859,6 +878,73 @@ def test_mcp_tokens_create_refuses_an_existing_file(capsys, fake, token_file, tm
     assert code == ClientExit.USAGE
     assert "exists" in err
     assert existing.read_text(encoding="utf-8") == "keep me"
+    assert fake.state.mcp_tokens == []
+
+
+def test_mcp_tokens_create_revokes_when_the_file_cannot_be_written(
+    capsys, fake, token_file, tmp_path, monkeypatch
+):
+    out_file = tmp_path / "carol.token"
+    if sys.platform == "win32":
+        import pywintypes
+        import win32file
+
+        def write_file(handle, data):
+            raise pywintypes.error(112, "WriteFile", "There is not enough space on the disk.")
+
+        monkeypatch.setattr(win32file, "WriteFile", write_file)
+    else:
+
+        class FullDisk:
+            def __init__(self, fd):
+                self.fd = fd
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                os.close(self.fd)
+
+            def write(self, data):
+                raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(os, "fdopen", lambda fd, *args, **kwargs: FullDisk(fd))
+    code, out, err = cli(
+        capsys,
+        "mcp",
+        "tokens",
+        "create",
+        "carol",
+        "--out",
+        str(out_file),
+        *remote(fake, token_file),
+    )
+    assert code == ClientExit.USAGE
+    assert "the token was revoked again" in err
+    assert not out_file.exists()  # no half-written file is left
+    assert fake.state.mcp_tokens == []
+    assert fake.state.created_token not in out + err
+
+
+def test_mcp_tokens_create_revokes_after_any_error_while_saving(
+    capsys, fake, token_file, tmp_path, monkeypatch
+):
+    def broken(path, token):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(commands, "_write_new_token", broken)
+    code, _out, err = cli(
+        capsys,
+        "mcp",
+        "tokens",
+        "create",
+        "dave",
+        "--out",
+        str(tmp_path / "dave.token"),
+        *remote(fake, token_file),
+    )
+    assert code == ClientExit.FAILED
+    assert "the token was revoked again" in err
     assert fake.state.mcp_tokens == []
 
 

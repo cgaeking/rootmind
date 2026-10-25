@@ -413,7 +413,9 @@ class ServiceRunner:
             return None
         problems = mcp_network_problems(settings)
         loopback = network.bind.strip().strip("[]").lower() in LOOPBACK_ADDRESSES
-        if loopback and network.port == self.port:
+        # A wildcard address covers 127.0.0.1 as well: the same port cannot be bound twice.
+        wildcard = network.bind in ("0.0.0.0", "::")  # noqa: S104 (compared, not bound)
+        if (loopback or wildcard) and network.port == self.port:
             problems.append(
                 f"mcp_http.network.port {network.port} is the loopback MCP port; choose another"
             )

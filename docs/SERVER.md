@@ -88,7 +88,9 @@ server, so a mounted share is only seen to change when it is scanned.
 full schedule (`indexer.sync_interval_hours`). An incremental scan reads every
 file's metadata and hashes the files whose size or time changed, so choose N
 by the size of the share: minutes for a few thousand files, longer for very
-large shares.
+large shares. One sync runs at a time: a re-scan is skipped while another sync
+runs, and the scheduled sync of every folder, when it finds a re-scan running,
+retries every minute and holds the re-scans back until it has started.
 
 `--key-file -` reads the key from stdin instead (without echo in a terminal).
 For Ollama on another machine: `rootmind config llm --provider ollama --model
@@ -104,13 +106,15 @@ rootmind mcp tokens list
 rootmind mcp tokens revoke alice
 ```
 
-- The token is written to the `--out` file (created with mode 0600; it must
-  not exist yet) and stored nowhere else: `config.yaml` keeps only its
+- The token is written to the `--out` file (created with mode 0600, on
+  Windows with an access list for your account alone; it must not exist yet) and stored nowhere else: `config.yaml` keeps only its
   SHA-256. Hand the file over through a channel you trust, then delete it.
 - `--folders` limits what the token's searches, listings, reads and
   statistics can see. **Without `--folders` a token sees every folder**; the
   command warns about that. A folder added later is not visible to scoped
-  tokens until you create a new token for it.
+  tokens until you create a new token for it. A removed folder also leaves
+  the scopes (a token whose folders are all removed sees nothing), so a
+  folder added later under the same name is not visible to the old tokens.
 - `revoke` takes effect with the token's next request; the other tokens keep
   working. To change a token's folders, create a new one and revoke the old.
 - The `default` token in `~/.local/share/rootmind/data/api_token.txt` sees

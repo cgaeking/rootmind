@@ -177,7 +177,8 @@ class NetworkListener:
         if scope["type"] in ("http", "websocket"):
             headers = dict(scope.get("headers") or [])
             host = host_without_port(headers.get(b"host", b"").decode("latin-1"))
-            allowed = {h.strip().lower().strip("[]") for h in self._allowed_hosts()}
+            # Entries are names or addresses; a port given with one is ignored.
+            allowed = {host_without_port(h) for h in self._allowed_hosts()} - {None}
             if host is None or host not in allowed:
                 logger.warning("Network listener: refused a request for host %r", host)
                 response = JSONResponse({"detail": "Host not allowed"}, status_code=400)

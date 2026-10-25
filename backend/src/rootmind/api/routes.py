@@ -836,7 +836,8 @@ def create_router(app_state: Any) -> APIRouter:
             )
         with config_update_lock:
             cfg = load_config(active_config_path())
-            kept = [t for t in cfg.mcp_http.tokens if t.name != name]
+            # Names are unique regardless of case (see create_mcp_token).
+            kept = [t for t in cfg.mcp_http.tokens if t.name.lower() != name.lower()]
             if len(kept) == len(cfg.mcp_http.tokens):
                 raise HTTPException(status_code=404, detail=f"No token named {name}")
             saved = save_mcp_tokens(

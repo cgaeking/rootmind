@@ -231,6 +231,17 @@ class McpNetworkConfig(BaseModel):
     # listener only named tokens are accepted unless this is true.
     allow_default_token: bool = False
 
+    @field_validator("bind")
+    @classmethod
+    def _plain_address(cls, value: str | None) -> str | None:
+        # "[::]" as in a URL is the address "::" (a socket cannot bind the brackets).
+        if value is None:
+            return None
+        value = value.strip()
+        if value.startswith("[") and value.endswith("]"):
+            value = value[1:-1].strip()
+        return value or None
+
 
 class McpHttpConfig(BaseModel):
     """MCP over HTTP: named tokens, the network listener, and Host/Origin allowlists."""
@@ -459,7 +470,9 @@ def save_config(data: dict, config_path: str | Path | None = None) -> AppConfig:
             if rescan:
                 entry["rescan_minutes"] = rescan
             new_conns.append(entry)
+        removed = {n for n in stored_rescan if isinstance(n, str)} - {c["name"] for c in new_conns}
         raw["connectors"] = new_conns
+        _drop_folders_from_token_scopes(raw, removed)
 
     if "indexer" in data and data["indexer"] is not None:
         raw.setdefault("indexer", {})
@@ -489,6 +502,24 @@ def save_config(data: dict, config_path: str | Path | None = None) -> AppConfig:
     _write_private_atomic(path, text)
 
     return config
+
+
+def _drop_folders_from_token_scopes(raw: dict, removed: set[str]) -> None:
+    """Take removed folders out of the named MCP tokens' scopes (in place).
+
+    A scope names folders, and a folder added later under a removed folder's
+    name (often another path) must not become visible to the tokens that
+    could see the old one. A token whose folders are all gone sees nothing
+    (``folders: []``) until it is revoked or replaced.
+    """
+    section = raw.get("mcp_http")
+    if not removed or not isinstance(section, dict):
+        return
+    for token in section.get("tokens") or []:
+        if isinstance(token, dict) and isinstance(token.get("folders"), list):
+            kept = [f for f in token["folders"] if f not in removed]
+            if len(kept) != len(token["folders"]):
+                token["folders"] = kept
 
 
 def save_mcp_tokens(tokens: list[dict], config_path: str | Path | None = None) -> AppConfig:
