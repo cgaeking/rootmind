@@ -50,7 +50,20 @@ def test_help_lists_every_command(capsys):
     with pytest.raises(SystemExit):
         main(["--help"])
     out = capsys.readouterr().out
-    for command in ("api", "index", "rebuild-trigrams", "mcp", "mcp-http", "service"):
+    for command in (
+        "api",
+        "index",
+        "rebuild-trigrams",
+        "mcp",
+        "mcp-http",
+        "service",
+        "status",
+        "folders",
+        "search",
+        "ask",
+        "config",
+        "remote-access",
+    ):
         assert command in out
 
 

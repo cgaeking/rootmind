@@ -34,6 +34,7 @@ flowchart TB
         stdio["MCP stdio<br/>mcp_stdio.py"]
         http["MCP HTTP<br/>mcp_http.py"]
         cli["CLI<br/>main.py"]
+        client["Service client<br/>client/"]
         host["Service host (Windows, systemd)<br/>service/host.py"]
     end
     engine["Agent loop<br/>rlm_engine/engine.py"]
@@ -47,7 +48,8 @@ flowchart TB
     policy["Folder access policy<br/>access.py, winaccess.py"]
     remote["Remote access (ngrok SDK)<br/>remote_access.py"]
 
-    cli --> rest
+    cli --> client
+    client -->|"REST + token"| rest
     host --> rest
     host --> http
     host --> remote
@@ -83,7 +85,8 @@ flowchart TB
 | REST API | `api/app.py`, `api/routes.py`, `auth.py` | Localhost API for the desktop app with an optional bearer token; config hot reload |
 | MCP servers | `mcp_stdio.py`, `mcp_http.py` | The same tools for external MCP clients |
 | Remote access | `remote_access.py` | Optional ngrok tunnel to MCP over HTTP, run by the MCP service; its settings and status files |
-| CLI | `main.py` | One command tree: `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service`; bind and token resolution |
+| CLI | `main.py` | One command tree: `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service` and the client commands; bind and token resolution |
+| Service client | `client/` | `status`, `folders`, `index`, `search`, `ask`, `config llm`, `mcp tokens`, `remote-access`: finds the account's service (`service status`, the listener check), reads the REST token from its file and calls the REST API (see [Command-line client](#command-line-client)) |
 | Background service | `service/` | `service install`, `uninstall` and `status`, and the service host that the Service Control Manager starts; on Linux the same commands manage two systemd user units of the account (`linux.py`, `systemd.py`, `linux_layout.py`, `procnet.py`) |
 | Desktop app | `desktop/` | Tauri 2 UI for Windows and Linux; a client of the background service over REST: reads its state, connects with its token, repairs it and switches MCP over HTTP; on Linux it also sets the service up and updates it on its own |
 | Installer | `desktop/src-tauri/installer/` | Per-machine NSIS installer; sets up the Windows service for the signed-in account when it runs as that account (else the app does), and removes it on uninstall |
@@ -177,7 +180,7 @@ the CI scripts.
 | In the installer | `$INSTDIR\backend\rootmind-backend.exe`, always `%ProgramFiles%\RootMind\backend\` (resource map from `desktop/src-tauri/binaries/rootmind-backend/`); in the Linux packages `/usr/lib/RootMind/backend/rootmind-backend` (in the AppImage below its mount) |
 | Release assets | `RootMind-Setup-x64.exe`; `RootMind-amd64.deb`, `RootMind-x86_64.rpm`, `RootMind-x86_64.AppImage`; `rootmind-backend-windows-x64.zip` and `rootmind-backend-linux-x64.tar.gz` with the folder `rootmind-backend/`; `rootmind.mcpb`; `SHA256SUMS.txt` |
 | `--version` | `rootmind-backend <version>` (`rootmind <version>` from a Python install); the last word is the version in PEP 440 normal form |
-| Commands | `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service install\|uninstall\|status`, and `service run backend\|mcp-http` (started by the Service Control Manager, not listed in the help) |
+| Commands | `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service install\|uninstall\|status`, and `service run backend\|mcp-http` (started by the Service Control Manager, not listed in the help); the client commands `status`, `folders list\|add\|remove`, `search`, `ask`, `config llm`, `mcp tokens list`, `remote-access on\|off\|status` |
 | `api` options | `--host`, `--port` (0 = a free port, which the log names), `--require-token`. The options of the removed built-in backend, `--exit-with-parent` and `--import-config`, are refused (exit 2) |
 | `service install` options | `--port N\|auto`, `--mcp-http` / `--no-mcp-http`, `--mcp-port N\|auto`, `--mcp-token-from FILE`, `--user-sid SID` (Windows only), `--no-start` |
 | Installer | Installs with `service install --port auto --mcp-port auto --user-sid <signed-in account>` (as SYSTEM, only to update an existing service: without `--user-sid`; skipped otherwise); uninstalls with `service uninstall`, `--purge` when the app data is to be deleted |
@@ -189,8 +192,48 @@ the CI scripts.
 
 The commands `mcp`, `mcp-http` and `service` are handed to their own entry
 points before logging and the config are set up, with the rest of the command
-line unchanged, so `mcp` keeps stdout clean for JSON-RPC. Without a command,
-`rootmind` and `rootmind-backend.exe` run `api`.
+line unchanged, so `mcp` keeps stdout clean for JSON-RPC (`mcp tokens` goes to
+the client instead). Without a command, `rootmind` and `rootmind-backend.exe`
+run `api`.
+
+**Command-line client** (`backend/src/rootmind/client/`)
+
+The client commands are a third client of the service's REST API, next to the
+desktop app and the Claude Desktop bundle, and find it the same way:
+
+1. `service status` in-process (`service.install.status` on Windows,
+   `service.linux.status` on Linux; neither needs elevation) gives the REST
+   port and the token file;
+2. the service must be running, and the listener on `127.0.0.1:<port>` must
+   belong to the service's PID (Service Control Manager or `systemctl --user
+   show`), checked with the same listener tables as `service install`
+   (`service/listeners.py`, `service/procnet.py`); otherwise no token is sent.
+   The check is repeated before every request that carries the token, so a
+   command that polls (`index --wait`) stops (exit 3) when the service
+   restarts or another program takes the port meanwhile;
+3. the token is read from `data/rest_token.txt`. An account that cannot read
+   it (Windows: not the installing account and not elevated; Linux: not the
+   owner, or `sudo`) gets exit code 4 with that explanation.
+
+`--url`/`RLM_URL` skip the discovery; `http://` is accepted only for loopback
+hosts. Requests go without a proxy (loopback) and without following
+redirects, so the token never reaches an address that was not checked.
+`folders add|remove` read `GET /config` and send the connector list back with
+the LLM section as read: its keys are masked, and `POST /config` keeps a
+stored key for a masked value. `config llm` sends a new key only in
+`llm.api_keys` and keeps the other providers' masked keys. Secrets come from a
+file or stdin and are never printed. `index` goes through `POST
+/index/refresh` (`--wait` polls `GET /index/status`) unless it runs in the
+command's own process: with `--local`, a global `--config`, without `--url`
+when `RLM_HOME` is set, or when the account has no service.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Done |
+| 1 | The service refused or failed the request (its `detail` is shown) |
+| 2 | Wrong usage |
+| 3 | No service, stopped, not answering, or another program on its port |
+| 4 | The token cannot be read, or the service refused it |
 
 **Desktop commands** (Rust, `desktop/src-tauri/src/`; camelCase over IPC):
 

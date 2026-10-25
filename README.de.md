@@ -621,7 +621,7 @@ es bei Bedarf):
 
 ```bash
 uv tool install "git+https://github.com/cgaeking/rootmind@v2.4.0#subdirectory=backend"
-rootmind --help        # api, index, rebuild-trigrams, mcp, mcp-http, service
+rootmind --help        # api, index, mcp, mcp-http, service, status, folders, search, ask, ...
 ```
 
 Das installiert die Befehle `rootmind`, `rootmind-mcp` und
@@ -676,12 +676,13 @@ MCP-Einstellung, Tokens und Daten; `service install --help` listet alle
 Optionen. Das REST-Token liegt in `%ProgramData%\RootMind\data\rest_token.txt`
 und das MCP-Token in `%ProgramData%\RootMind\data\api_token.txt`.
 
-Ein neu installierter Dienst startet ohne Ordner. Trage sie unter
-`connectors` in `%ProgramData%\RootMind\config.yaml` ein (wie in
+Ein neu installierter Dienst startet ohne Ordner. Füge sie mit
+`& $exe folders add D:\Freigaben\Projekte` hinzu (siehe
+[Kommandozeile](#kommandozeile), ohne Administratorrechte), oder trage sie
+unter `connectors` in `%ProgramData%\RootMind\config.yaml` ein (wie in
 [`backend/config.example.yaml`](backend/config.example.yaml); die Datei lässt
 sich nur in einer Eingabeaufforderung als Administrator ändern) und starte den
-Dienst mit `Restart-Service RootMind-Backend` neu, oder schicke sie mit
-`POST /config` und dem REST-Token an die REST-API des Dienstes.
+Dienst mit `Restart-Service RootMind-Backend` neu.
 
 Das Zip läuft auch ohne Dienst, zum Beispiel
 `rootmind-backend.exe api --require-token` oder
@@ -711,9 +712,68 @@ Units nach `~/.config/systemd/user/`; es braucht den systemd-Benutzermanager
 des Kontos, den eine Desktop- oder SSH-Anmeldung startet
 (Exit-Code 11 ohne ihn, zum Beispiel unter `su` oder `sudo`). Ports, Optionen
 und Tokens sind die von Windows; die Daten liegen in `~/.local/share/rootmind`
-(`config.yaml`, `data/rest_token.txt`, `data/api_token.txt`). Nach einer
-Änderung an `config.yaml` startest du den Dienst mit
+(`config.yaml`, `data/rest_token.txt`, `data/api_token.txt`). Die
+Ordner und den LLM-Key setzt du mit `"$exe" folders add` und
+`"$exe" config llm` (siehe [Kommandozeile](#kommandozeile)); nach einer
+Änderung an `config.yaml` von Hand startest du den Dienst mit
 `systemctl --user restart rootmind-backend` neu.
+
+## Kommandozeile
+
+Dasselbe Programm, das den Dienst ausführt, verwaltet ihn auch. Diese Befehle
+sprechen über die REST-API mit dem RootMind-Dienst deines Kontos, unter
+Windows wie unter Linux, und brauchen nie root oder eine
+Administrator-Eingabeaufforderung:
+
+```sh
+rootmind status                                  # Dienst, Index, Ordner, MCP-Endpunkt, Fernzugriff
+rootmind folders list
+rootmind folders add /srv/shares/projekte --name projekte
+rootmind folders remove projekte
+rootmind index [--full] [--folder projekte] [--wait]
+rootmind search "rechnung telekom" [--limit 10] [--snippets]
+rootmind ask "Was sagt der Vertrag mit Fjordhaus zu Kündigungsfristen?"
+rootmind config llm                              # Anbieter, Modell, welche Keys gespeichert sind
+rootmind config llm --provider anthropic --model claude-sonnet-5-5 --key-file ~/anthropic.key
+rootmind mcp tokens list                         # Datei und Fingerabdruck des MCP-Tokens
+rootmind remote-access on|off|status             # der ngrok-Tunnel
+```
+
+`rootmind` ist der Befehl einer uv- oder pip-Installation. Mit der App oder
+dem Backend-Archiv rufst du das Backend selbst auf: `rootmind-backend` (Linux:
+`/usr/lib/RootMind/backend/rootmind-backend` aus dem .deb und .rpm,
+`~/opt/rootmind-backend/rootmind-backend` aus dem tar.gz) oder unter Windows
+`& "$env:ProgramFiles\RootMind\backend\rootmind-backend.exe"`. Jeder Befehl
+kennt `--json` für Skripte und `--help`.
+
+- **Wie er den Dienst findet.** Wie die App fragt er `service status` nach
+  dem Port und der Token-Datei, prüft, dass der Prozess des Dienstes selbst
+  auf dem Port lauscht, und schickt erst dann das REST-Token. Das Token steht
+  in `data/rest_token.txt` im Datenordner, den nur das Konto lesen kann, das
+  den Dienst eingerichtet hat (unter Windows auch SYSTEM und Administratoren
+  aus einer Eingabeaufforderung als Administrator). Von einem anderen Konto
+  oder mit `sudo` brechen die Befehle mit Exit-Code 4 ab und sagen, warum.
+- **Geheimnisse bleiben aus der Kommandozeile heraus.** `config llm` liest
+  den API-Key aus einer Datei (`--key-file DATEI`) oder von stdin
+  (`--key-file -`, im Terminal ohne Echo), nie aus einem Argument, und gibt
+  nie einen Key aus, auch nicht maskiert; `--remove-key` entfernt ihn.
+  `remote-access on --authtoken-file DATEI` speichert das ngrok-Authtoken
+  ebenso. Tokens werden nie ausgegeben; `mcp tokens list` zeigt den
+  Fingerabdruck, den auch der MCP-Dienst protokolliert.
+- **Ein anderes Backend.** `--url http://127.0.0.1:18000 --token-file DATEI`
+  (oder `RLM_URL` und `RLM_TOKEN_FILE`) nimmt stattdessen diese REST-API,
+  etwa ein Entwicklungs-Backend (`rootmind api`). Unverschlüsseltes `http://`
+  wird nur für `127.0.0.1`, `localhost` und `::1` angenommen; für alles andere
+  `https://` oder einen SSH-Tunnel verwenden.
+- **`index` in diesem Prozess.** `rootmind index --local` indiziert die
+  Ordner aus `config.yaml` (in `RLM_HOME` oder dem Arbeitsordner) im Prozess
+  des Befehls selbst, wie `rootmind index` vor 2.5. `--local` gilt auch bei
+  einem globalen `--config`, bei gesetztem `RLM_HOME` und wenn dein Konto
+  keinen RootMind-Dienst hat (dann sagt ein Hinweis das).
+- **Exit-Codes:** 0 erledigt, 1 der Dienst hat die Anfrage abgelehnt oder
+  sie ist fehlgeschlagen, 2 falscher Aufruf, 3 kein Dienst gefunden, gestoppt
+  oder keine Antwort (oder ein anderes Programm auf seinem Port), 4 das Token
+  ist nicht lesbar oder wurde abgelehnt.
 
 ## Lokale Modelle mit Ollama
 
@@ -787,7 +847,7 @@ oder neuer und unter Windows die MSVC Build Tools und WebView2.
 cd backend
 uv sync
 cp config.example.yaml config.yaml   # indiziert den fiktiven Demo-Korpus in evals/corpus
-uv run rootmind index                # baut data/index.db; kein LLM beteiligt
+uv run rootmind index --local        # baut data/index.db; kein LLM beteiligt
 uv run rootmind api                  # REST-API auf http://127.0.0.1:8000, ohne Token
 ```
 
@@ -836,7 +896,7 @@ Dokumentauszüge gehen an den konfigurierten Anbieter; siehe
 
 Die MCP-Server lesen dieselbe `config.yaml` und Datenbank wie die REST-API.
 Sie stellen nur bereit und indizieren nie; halte den Index also mit
-`rootmind index` oder einer laufenden REST-API aktuell.
+`rootmind index --local` oder einer laufenden REST-API aktuell.
 
 Claude Desktop (`claude_desktop_config.json`):
 

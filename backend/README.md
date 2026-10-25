@@ -11,7 +11,7 @@ The desktop app uses the REST API of the RootMind Windows service, which runs th
 cd backend
 uv sync                                   # Python 3.12+, creates .venv
 cp config.example.yaml config.yaml        # indexes the demo corpus in evals/corpus
-uv run rootmind index                     # build the full-text index (no LLM needed)
+uv run rootmind index --local             # build the full-text index (no LLM needed)
 uv run rootmind api                       # REST API on http://127.0.0.1:8000, docs at /docs
 ```
 
@@ -29,11 +29,12 @@ the command; without a command, `api` runs.
 | Command | What it does |
 |---|---|
 | `api [--host H] [--port P] [--require-token]` | REST API and background indexer |
-| `index [--full] [--connector NAME]` | One incremental (or full) sync, then exit |
+| `index [--full] [--folder NAME] [--wait] [--local]` | Ask the running service to index; with `--local` (or `--config`, `RLM_HOME`, or no service) one sync in this process, then exit |
 | `rebuild-trigrams` | Rebuild the trigram table for fuzzy search |
 | `mcp [--config FILE]` | MCP server over stdio (same as `rootmind-mcp`) |
 | `mcp-http [--host H] [--port P] [--config FILE] [--index]` | MCP server over HTTP with a bearer token (same as `rootmind-mcp-http`) |
 | `service install \| uninstall \| status` | Windows background service; see below |
+| `status`, `folders`, `search`, `ask`, `config llm`, `mcp tokens list`, `remote-access` | Client of the running service through its REST API (see "Command line" in the main README) |
 
 `api` options:
 
@@ -55,7 +56,7 @@ uv run rootmind-mcp          # stdio transport, e.g. for Claude Desktop or Claud
 uv run rootmind-mcp-http     # HTTP transport on 127.0.0.1:3000/mcp, bearer token required
 ```
 
-Both only serve; keep the index current with `rootmind api` or `rootmind index`
+Both only serve; keep the index current with `rootmind api` or `rootmind index --local`
 (`rootmind-mcp-http --index` indexes in that process, if nothing else does). The HTTP server
 picks up folder changes in `config.yaml` on its own; restart the stdio server after changing
 folders.

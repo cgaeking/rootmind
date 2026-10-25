@@ -571,7 +571,7 @@ trap) keeps that weakness visible.
 
 ```bash
 uv tool install "git+https://github.com/cgaeking/rootmind@v2.4.0#subdirectory=backend"
-rootmind --help        # api, index, rebuild-trigrams, mcp, mcp-http, service
+rootmind --help        # api, index, mcp, mcp-http, service, status, folders, search, ask, ...
 ```
 
 This installs the commands `rootmind`, `rootmind-mcp` and `rootmind-mcp-http`.
@@ -624,12 +624,13 @@ its ports, MCP setting, tokens and data; `service install --help` lists every
 option. The REST token is in `%ProgramData%\RootMind\data\rest_token.txt` and
 the MCP token in `%ProgramData%\RootMind\data\api_token.txt`.
 
-A new service starts without folders. Add them under `connectors` in
+A new service starts without folders. Add them with
+`& $exe folders add D:\Shares\Projects` (see [Command line](#command-line),
+no elevation needed), or under `connectors` in
 `%ProgramData%\RootMind\config.yaml` (as in
 [`backend/config.example.yaml`](backend/config.example.yaml); the file can
-only be changed from an elevated prompt) and restart the service with
-`Restart-Service RootMind-Backend`, or send them to the service's REST API
-with `POST /config` and the REST token.
+only be changed from an elevated prompt) followed by
+`Restart-Service RootMind-Backend`.
 
 The zip also runs without a service, for example
 `rootmind-backend.exe api --require-token` or `rootmind-backend.exe mcp-http`.
@@ -657,8 +658,64 @@ loginctl enable-linger "$USER"   # keep them running without a login
 which a desktop or SSH login starts (exit code 11 without one, for example
 under `su` or `sudo`). The ports, options and tokens are those of Windows; the
 data is in `~/.local/share/rootmind` (`config.yaml`, `data/rest_token.txt`,
-`data/api_token.txt`). After editing `config.yaml`, restart the service with
+`data/api_token.txt`). Add folders and the LLM key with `"$exe" folders add`
+and `"$exe" config llm` (see [Command line](#command-line)); after editing
+`config.yaml` by hand, restart the service with
 `systemctl --user restart rootmind-backend`.
+
+## Command line
+
+The same program that runs the service also manages it. These commands talk
+to the RootMind service of your account through its REST API, on Windows and
+Linux alike, and never need root or an administrator prompt:
+
+```sh
+rootmind status                                  # service, index, folders, MCP endpoint, remote access
+rootmind folders list
+rootmind folders add /srv/shares/projects --name projects
+rootmind folders remove projects
+rootmind index [--full] [--folder projects] [--wait]
+rootmind search "invoice telekom" [--limit 10] [--snippets]
+rootmind ask "What does the contract with Fjordhaus say about notice periods?"
+rootmind config llm                              # provider, model, which keys are saved
+rootmind config llm --provider anthropic --model claude-sonnet-5-5 --key-file ~/anthropic.key
+rootmind mcp tokens list                         # the MCP token's file and fingerprint
+rootmind remote-access on|off|status             # the ngrok tunnel
+```
+
+`rootmind` is the command of a uv or pip install. With the app or the
+backend archive, call the backend itself: `rootmind-backend` (Linux:
+`/usr/lib/RootMind/backend/rootmind-backend` from the .deb and .rpm,
+`~/opt/rootmind-backend/rootmind-backend` from the tar.gz) or
+`& "$env:ProgramFiles\RootMind\backend\rootmind-backend.exe"` on Windows.
+Every command takes `--json` for scripts and `--help`.
+
+- **How it finds the service.** Like the app, it asks `service status` for
+  the port and the token file, checks that the service's own process listens
+  on that port, and only then sends the REST token. The token is read from
+  `data/rest_token.txt` in the data folder, which only the account that set
+  up the service can read (on Windows also SYSTEM and administrators from an
+  elevated prompt). From another account, or with `sudo`, the commands stop
+  with exit code 4 and say why.
+- **Secrets stay off the command line.** `config llm` reads the API key from
+  a file (`--key-file FILE`) or from stdin (`--key-file -`, which asks
+  without echo in a terminal), never from an argument, and never prints a key,
+  not even masked; `--remove-key` removes it. `remote-access on
+  --authtoken-file FILE` saves the ngrok authtoken the same way. Tokens are
+  never printed; `mcp tokens list` shows the fingerprint the MCP service logs.
+- **Another backend.** `--url http://127.0.0.1:18000 --token-file FILE` (or
+  `RLM_URL` and `RLM_TOKEN_FILE`) uses that REST API instead, for example a
+  development backend (`rootmind api`). Plain `http://` is accepted only for
+  `127.0.0.1`, `localhost` and `::1`; use `https://` or an SSH tunnel for
+  anything else.
+- **`index` in this process.** `rootmind index --local` indexes the folders
+  of `config.yaml` (in `RLM_HOME` or the working folder) in the command's own
+  process, as `rootmind index` did before 2.5. `--local` is implied by a
+  global `--config`, by `RLM_HOME`, and when your account has no RootMind
+  service (then a note says so).
+- **Exit codes:** 0 done, 1 the service refused or failed the request,
+  2 wrong usage, 3 no service found, stopped or not answering (or another
+  program on its port), 4 the token cannot be read or was refused.
 
 ## Local models with Ollama
 
@@ -729,7 +786,7 @@ Windows, the MSVC build tools and WebView2.
 cd backend
 uv sync
 cp config.example.yaml config.yaml   # indexes the fictional demo corpus in evals/corpus
-uv run rootmind index                # builds data/index.db; no LLM involved
+uv run rootmind index --local        # builds data/index.db; no LLM involved
 uv run rootmind api                  # REST API on http://127.0.0.1:8000, no token
 ```
 
@@ -775,7 +832,7 @@ excerpts go to the provider you configured; see [SECURITY.md](SECURITY.md).
 ### 3. Use the tools from an MCP client
 
 The MCP servers read the same `config.yaml` and database as the REST API. They
-only serve and never index, so keep the index current with `rootmind index` or
+only serve and never index, so keep the index current with `rootmind index --local` or
 a running REST API.
 
 Claude Desktop (`claude_desktop_config.json`):
