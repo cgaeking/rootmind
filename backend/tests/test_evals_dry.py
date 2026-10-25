@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 
 import pytest
@@ -243,3 +244,82 @@ def test_checks_still_reject_wrong_answers():
         run_evals.run_checks(_case("c15"), "All items are **free**.", [])["no_forbidden"] is False
     )
     assert run_evals.normalize_for_check("A B – “C” `d`  **e**") == 'a b - "c" d e'
+
+
+# --- the LangGraph baseline option and the comparison (#48) -------------------------------
+
+
+def test_baseline_agent_needs_live_mode():
+    with pytest.raises(SystemExit) as exc:
+        run_evals.main(["--agent", "langgraph"])
+    assert exc.value.code == 2
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("langgraph") is not None, reason="the baseline is installed here"
+)
+def test_baseline_agent_without_its_environment_exits_2(tmp_path, capsys):
+    out = tmp_path / "results"
+    argv = ["--mode", "live", "--agent", "langgraph", "--provider", "ollama", "--model", "m"]
+    assert run_evals.main([*argv, "--out", str(out)]) == 2
+    assert "uv run --project evals/baselines/langgraph" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def _live_payload(agent: str, passed: list[bool], tool_calls: int, tokens: int) -> dict:
+    runs = [
+        {
+            "run": i + 1,
+            "passed": ok,
+            "tool_path": "search_documents(x)",
+            "tool_calls": tool_calls,
+            "sources": ["a.pdf"] if ok else [],
+            "tokens": tokens,
+            "stop_reasons": ["tool_calls", "stop"],
+            "latency_s": 2.0,
+        }
+        for i, ok in enumerate(passed)
+    ]
+    case = {
+        "id": "c01",
+        "runs": runs,
+        "pass_rate": round(sum(passed) / len(passed), 3),
+        "distinct_tool_paths": 1,
+        "distinct_source_sets": len({tuple(r["sources"]) for r in runs}),
+        "median_tool_calls": tool_calls,
+        "mean_tokens": tokens,
+        "p50_latency_s": 2.0,
+        "errors": [],
+    }
+    return {"mode": "live", "agent": agent, "model": "m", "cases": [case]}
+
+
+def test_compare_prints_both_agents_side_by_side(tmp_path, capsys):
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    a.write_text(json.dumps(_live_payload("rootmind", [True, True, True], 2, 4000)), "utf-8")
+    b.write_text(json.dumps(_live_payload("langgraph", [True, False, True], 3, 5000)), "utf-8")
+
+    assert run_evals.main(["--compare", str(a), str(b)]) == 0
+
+    out = capsys.readouterr().out
+    assert "| | rootmind (m) | langgraph (m) |" in out
+    assert "| mean pass rate | 100% | 67% |" in out
+    assert "| cases with more than one source set | 0 | 1 |" in out
+    assert "| tokens, total | 12,000 | 15,000 |" in out
+    assert "| c01 | 100% / 67% | 1 / 1 | 1 / 2 |" in out
+
+
+def test_compare_rejects_dry_results(tmp_path, capsys):
+    path = tmp_path / "dry.json"
+    path.write_text(json.dumps({"mode": "dry", "model": "dry-policy", "cases": []}), "utf-8")
+    assert run_evals.main(["--compare", str(path)]) == 2
+    assert "live" in capsys.readouterr().err
+
+
+def test_summary_counts_runs_at_the_step_limit():
+    payload = _live_payload("langgraph", [True, False], 1, 100)
+    payload["cases"][0]["runs"][1]["stop_reasons"] = ["tool_calls"] * 10 + ["recursion_limit"]
+    summary = run_evals.summarize_live(payload["cases"])
+    assert summary["runs_at_step_limit"] == 1
+    assert summary["tool_calls_total"] == 2 and summary["tokens_total"] == 200

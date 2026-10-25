@@ -27,6 +27,16 @@ Modes:
 Results go to ``evals/results/<utc-timestamp>-<mode>-<model>.json`` (gitignored)
 and a Markdown summary table is printed.
 
+``--agent langgraph`` (live mode) runs the LangGraph baseline instead of RootMind's
+loop: the same tools, system prompt, model endpoint and scoring in LangChain's stock
+agent (``evals/baselines/langgraph``, #48). It needs that folder's own environment
+(``uv run --project evals/baselines/langgraph ...``); the backend does not depend on
+LangChain. Its results are named ``<time>-live-langgraph-<model>.json`` and record the
+package versions.
+
+``--compare A.json B.json`` prints side-by-side tables of finished live runs (pass rate,
+tool-path and source consistency, tool calls, tokens, latency) and runs nothing.
+
 ``--trace DIR`` (both modes) writes a trace of every run: ``DIR/<same name>.jsonl``
 (one record per model call, tool call and answer) and ``DIR/<same name>.md``
 (the steps of each run, readable). Each run's result row gets its ``trace_id``.
@@ -42,6 +52,8 @@ Usage (from backend/)::
         --runs 3 --trace evals/results/traces
     ANTHROPIC_API_KEY=... uv run python scripts/run_evals.py --mode live \\
         --provider anthropic --model <model id> --runs 3
+    uv run --project evals/baselines/langgraph python scripts/run_evals.py --mode live \\
+        --agent langgraph --provider ollama --model granite4.1:8b --runs 3
 """
 
 from __future__ import annotations
@@ -74,6 +86,9 @@ INCLUDE = ["*.pdf", "*.docx", "*.xlsx", "*.pptx", "*.md", "*.txt", "*.csv"]
 # excluded as a known miss), rounded down to 0.05. Any retrieval regression on
 # the 15 gated cases fails CI; lower it with --min-hit only for a reason.
 DEFAULT_MIN_HIT = 1.0
+# RootMind's iteration cap (rlm_engine.engine.DEFAULT_MAX_ITERATIONS): a run with
+# more loop calls than this hit it and answered in the fallback call.
+MAX_LOOP_CALLS = 10
 
 KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "xai": "XAI_API_KEY"}
 # Ollama needs no key; OLLAMA_BASE_URL points at a server other than localhost.
@@ -89,6 +104,9 @@ REQUIRED_FIELDS = (
     "tags",
 )
 DRY_NO_HITS_ANSWER = "I could not find this in the documents."
+AGENTS = ("rootmind", "langgraph")
+# Imported only by the baseline; missing in the backend environment.
+BASELINE_PACKAGES = {"langchain", "langchain_core", "langgraph", "langchain_openai"}
 
 
 # --- dataset -----------------------------------------------------------------------------
@@ -358,6 +376,11 @@ async def run_live_case(case, engine, runs: int) -> dict[str, Any]:
                 ),
                 "tool_path": tool_path(result["tool_calls"]),
                 "tool_calls": len(result["tool_calls"]),
+                **(
+                    {"invalid_tool_calls": result["invalid_tool_calls"]}
+                    if "invalid_tool_calls" in result
+                    else {}
+                ),
                 "sources": sorted(set(names)),
                 "tokens": result["tokens_used"],
                 "stop_reasons": result.get("stop_reasons", []),
@@ -382,12 +405,32 @@ async def run_live_case(case, engine, runs: int) -> dict[str, Any]:
     }
 
 
+def _hit_step_limit(run: dict[str, Any]) -> bool:
+    reasons = run.get("stop_reasons") or []
+    return "recursion_limit" in reasons or len(reasons) > MAX_LOOP_CALLS
+
+
 def summarize_live(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    runs = [run for r in rows for run in r["runs"] if "error" not in run]
+
+    def median(key: str) -> float | None:
+        return round(statistics.median(run[key] for run in runs), 2) if runs else None
+
     return {
         "cases": len(rows),
         "pass_rate": round(statistics.mean(r["pass_rate"] for r in rows), 3) if rows else None,
         "cases_always_passing": sum(r["pass_rate"] == 1.0 for r in rows),
+        "cases_with_varying_tool_paths": sum(r["distinct_tool_paths"] > 1 for r in rows),
         "cases_with_varying_sources": sum(r["distinct_source_sets"] > 1 for r in rows),
+        "runs": sum(len(r["runs"]) for r in rows),
+        "runs_with_error": sum(len(r["errors"]) for r in rows),
+        "runs_at_step_limit": sum(_hit_step_limit(run) for run in runs),
+        "tool_calls_total": sum(run["tool_calls"] for run in runs),
+        "tool_calls_median": median("tool_calls"),
+        "tokens_total": sum(run["tokens"] for run in runs),
+        "tokens_median": median("tokens"),
+        "latency_median_s": median("latency_s"),
+        "latency_total_s": round(sum(run["latency_s"] for run in runs), 1),
     }
 
 
@@ -442,6 +485,71 @@ def markdown_live(rows: list[dict[str, Any]], summary: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _label(payload: dict[str, Any]) -> str:
+    return f"{payload.get('agent', 'rootmind')} ({payload['model']})"
+
+
+def _num(value: float | None, digits: int = 0) -> str:
+    if value is None:
+        return "-"
+    return f"{value:,.{digits}f}" if digits else f"{round(value):,}"
+
+
+def compare_markdown(payloads: list[dict[str, Any]]) -> str:
+    """Side-by-side tables of live results (for example RootMind's loop and the baseline).
+
+    The summaries are recomputed from the runs, so results written by an older
+    version of this script compare the same way.
+    """
+    if any(p.get("mode") != "live" for p in payloads):
+        raise ValueError("--compare takes results of live runs")
+    summaries = [summarize_live(p["cases"]) for p in payloads]
+    head = "| | " + " | ".join(_label(p) for p in payloads) + " |"
+    rule = "|---" * (len(payloads) + 1) + "|"
+    metrics = [
+        ("mean pass rate", lambda s: f"{s['pass_rate']:.0%}"),
+        ("cases passing every run", lambda s: f"{s['cases_always_passing']} of {s['cases']}"),
+        ("cases with more than one tool path", lambda s: str(s["cases_with_varying_tool_paths"])),
+        ("cases with more than one source set", lambda s: str(s["cases_with_varying_sources"])),
+        ("runs ending in an error", lambda s: f"{s['runs_with_error']} of {s['runs']}"),
+        ("runs that hit the step limit", lambda s: str(s["runs_at_step_limit"])),
+        ("tool calls, total", lambda s: _num(s["tool_calls_total"])),
+        ("tool calls per run, median", lambda s: _num(s["tool_calls_median"], 1)),
+        ("tokens, total", lambda s: _num(s["tokens_total"])),
+        ("tokens per run, median", lambda s: _num(s["tokens_median"])),
+        ("latency per run, median (s)", lambda s: _num(s["latency_median_s"], 1)),
+        ("latency, total (s)", lambda s: _num(s["latency_total_s"])),
+    ]
+    lines = [head, rule]
+    for name, show in metrics:
+        lines.append(f"| {name} | " + " | ".join(show(s) for s in summaries) + " |")
+
+    by_id = [{c["id"]: c for c in p["cases"]} for p in payloads]
+    ids = [c["id"] for c in payloads[0]["cases"] if all(c["id"] in b for b in by_id)]
+
+    def cells(case_id: str, show) -> str:
+        return " / ".join(show(b[case_id]) for b in by_id)
+
+    lines += [
+        "",
+        "Per case, values in the column order above:",
+        "",
+        "| case | pass | tool paths | source sets | median tool calls | mean tokens | "
+        "p50 latency (s) |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for case_id in ids:
+        lines.append(
+            f"| {case_id} | {cells(case_id, lambda c: format(c['pass_rate'], '.0%'))} | "
+            f"{cells(case_id, lambda c: str(c['distinct_tool_paths']))} | "
+            f"{cells(case_id, lambda c: str(c['distinct_source_sets']))} | "
+            f"{cells(case_id, lambda c: _num(c['median_tool_calls'], 1))} | "
+            f"{cells(case_id, lambda c: _num(c['mean_tokens']))} | "
+            f"{cells(case_id, lambda c: _num(c['p50_latency_s'], 1))} |"
+        )
+    return "\n".join(lines)
+
+
 def result_stem(mode: str, model: str, stamp: str | None = None) -> str:
     """``<utc-timestamp>-<mode>-<model>``, shared by the results and the trace files."""
     stamp = stamp or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -475,6 +583,8 @@ class Args:
     verbose: bool
     trace: Path | None = None
     langfuse: bool = False
+    agent: str = "rootmind"
+    compare: list[Path] | None = None
 
 
 def parse_args(argv: list[str] | None) -> Args:
@@ -482,6 +592,12 @@ def parse_args(argv: list[str] | None) -> Args:
     parser.add_argument("--mode", choices=["dry", "live"], default="dry")
     parser.add_argument("--provider", choices=PROVIDERS, help="live mode: LLM provider")
     parser.add_argument("--model", help="live mode: model id")
+    parser.add_argument(
+        "--agent",
+        choices=AGENTS,
+        default="rootmind",
+        help="live mode: RootMind's loop (default) or the LangGraph baseline (#48)",
+    )
     parser.add_argument("--runs", type=int, default=3, help="live mode: runs per case")
     parser.add_argument("--cases", help="comma-separated case ids (default: all)")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="results folder")
@@ -505,11 +621,20 @@ def parse_args(argv: list[str] | None) -> Args:
         action="store_true",
         help="also export traces to Langfuse (tracing extra, LANGFUSE_* variables)",
     )
+    parser.add_argument(
+        "--compare",
+        type=Path,
+        nargs="+",
+        metavar="RESULT",
+        help="print side-by-side tables of live result files (no run)",
+    )
     ns = parser.parse_args(argv)
     if ns.mode == "live" and (not ns.provider or not ns.model):
         parser.error("--mode live needs --provider and --model")
     if ns.runs < 1:
         parser.error("--runs must be at least 1")
+    if ns.agent != "rootmind" and ns.mode != "live":
+        parser.error("--agent langgraph needs --mode live")
     cases = [c.strip() for c in ns.cases.split(",") if c.strip()] if ns.cases else None
     return Args(
         ns.mode,
@@ -524,6 +649,8 @@ def parse_args(argv: list[str] | None) -> Args:
         ns.verbose,
         ns.trace,
         ns.langfuse,
+        ns.agent,
+        ns.compare,
     )
 
 
@@ -548,8 +675,45 @@ def make_tracer(args: Args, stem: str):
     return tracers[0] if len(tracers) == 1 else MultiTracer(tracers)
 
 
+def load_baseline():
+    """The LangGraph baseline module, or None when its environment is not installed."""
+    if str(BACKEND) not in sys.path:
+        sys.path.insert(0, str(BACKEND))
+    try:
+        from evals.baselines.langgraph import agent
+    except ImportError as e:
+        if (e.name or "").split(".")[0] in BASELINE_PACKAGES:
+            return None
+        raise
+    return agent
+
+
+def ollama_version(base_url: str | None) -> str | None:
+    """The version the Ollama server reports, or None when it cannot be asked."""
+    import urllib.request
+
+    from rootmind.config import OLLAMA_DEFAULT_BASE_URL
+
+    url = (base_url or OLLAMA_DEFAULT_BASE_URL).rstrip("/") + "/api/version"
+    if not url.startswith(("http://", "https://")):
+        return None
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:  # noqa: S310 (scheme checked)
+            return json.loads(response.read().decode("utf-8")).get("version")
+    except (OSError, ValueError):
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.compare:
+        try:
+            payloads = [json.loads(p.read_text(encoding="utf-8")) for p in args.compare]
+            print(compare_markdown(payloads))
+        except (OSError, ValueError, KeyError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        return 0
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
@@ -572,8 +736,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
+    baseline = None
+    if args.agent == "langgraph":
+        baseline = load_baseline()
+        if baseline is None:
+            print(
+                "error: --agent langgraph needs the baseline's environment; run it from "
+                "backend/ with `uv run --project evals/baselines/langgraph python "
+                "scripts/run_evals.py ...`",
+                file=sys.stderr,
+            )
+            return 2
+
     model = "dry-policy" if args.mode == "dry" else args.model
-    stem = result_stem(args.mode, model)
+    mode_label = args.mode if args.agent == "rootmind" else f"{args.mode}-{args.agent}"
+    stem = result_stem(mode_label, model)
     try:
         tracer = make_tracer(args, stem)
     except RuntimeError as e:
@@ -595,7 +772,10 @@ def main(argv: list[str] | None = None) -> int:
                 config.llm.api_key = api_key
                 if args.provider == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
                     config.llm.base_url = os.environ["OLLAMA_BASE_URL"]
-                engine = KnowledgeBaseEngine(repo, config, tracer=tracer)
+                if baseline is not None:
+                    engine = baseline.LangGraphAgent(repo, config, tracer=tracer)
+                else:
+                    engine = KnowledgeBaseEngine(repo, config, tracer=tracer)
                 rows = [asyncio.run(run_live_case(c, engine, args.runs)) for c in cases]
                 summary = summarize_live(rows)
                 table = markdown_live(rows, summary)
@@ -606,6 +786,7 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = {
         "mode": args.mode,
+        "agent": args.agent,
         "provider": args.provider,
         "model": model,
         "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -614,6 +795,10 @@ def main(argv: list[str] | None = None) -> int:
         "summary": summary,
         "cases": rows,
     }
+    if args.provider == "ollama":
+        payload["ollama_version"] = ollama_version(config.llm.base_url)
+    if baseline is not None:
+        payload["versions"] = baseline.package_versions()
     path = write_results(args.out, args.mode, model, payload, stem)
     print(table)
     print(f"\nResults: {path}")
