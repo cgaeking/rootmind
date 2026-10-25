@@ -13,7 +13,8 @@ when ``tracing.local`` is on in ``config.yaml``, by the backend (under
 - ``tool_call``: name, arguments, result size, the result text (capped at
   ``max_result_chars``), the documents a search returned (``hits``) and the
   windows a read returned (``reads``), or why it was not run (``skipped``);
-- ``event``: loop decisions (``search_nudge``, ``iteration_limit``);
+- ``event``: loop decisions (``search_nudge``, ``empty_answer_retry``,
+  ``empty_answer_fallback``, ``iteration_limit``);
 - ``answer``: the answer, sources, tokens, stop reasons and tool-call count,
   or the error.
 
