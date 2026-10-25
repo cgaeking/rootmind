@@ -737,10 +737,13 @@ llm:
   Tool-Aufruf gezwungen, weil nicht jedes Modell das kann. Hat die erste Antwort
   die Dokumente nicht angesehen, fragt RootMind einmal mit einer ausdrücklichen
   Anweisung nach.
-- Kleine lokale Modelle folgen der Tool-Schleife weniger zuverlässig als die
-  gehosteten. Gemessen mit `granite4.1:8b` auf einer Grafikkarte mit 8 GB:
-  10 von 16 Eval-Fällen bestanden in allen drei Läufen, mittlere Quote 71 %
-  (Details in
+- Wie gut ein lokales Modell der Tool-Schleife folgt, hängt vom Modell ab.
+  Gemessen mit `granite4.1:8b` auf einer Grafikkarte mit 8 GB, mit dem
+  Eval-Satz aus zehn kurzen fiktiven Dokumenten: 15 von 16 Fällen bestanden in
+  allen drei Läufen, mittlere Quote 96 %; der eine schwankende Fall ist eine
+  unbeantwortbare Frage, deren richtige „nicht gefunden“-Antworten manchmal
+  anders formuliert waren, als die Prüfung es akzeptiert. Große Dokumente und
+  lange Kontexte deckt diese Messung nicht ab (Details in
   [`backend/evals`](backend/evals/README.md#latest-live-run-with-a-local-model-ollama)).
   Miss dein Modell mit `scripts/run_evals.py --mode live --provider
   ollama --model <name>` (siehe [`backend/evals`](backend/evals/README.md)).

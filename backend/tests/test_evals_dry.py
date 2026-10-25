@@ -204,3 +204,42 @@ def test_langfuse_without_keys_exits_2(tmp_path, monkeypatch, capsys):
     assert run_evals.main(["--cases", "c01", "--langfuse", "--out", str(out)]) == 2
     assert "LANGFUSE_PUBLIC_KEY" in capsys.readouterr().err
     assert not out.exists()
+
+
+def _case(case_id: str) -> dict:
+    return next(c for c in run_evals.load_cases(run_evals.DEFAULT_DATASET) if c["id"] == case_id)
+
+
+@pytest.mark.parametrize(
+    ("case_id", "answer"),
+    [
+        # Verbatim from granite4.1:8b runs that failed only on typography (#47).
+        ("c08", "The target weight of the **Ultralight 1P tent** is **1.1 kg**."),
+        ("c10", "a **waterproof rating of 3000 mm** (both the fly and the floor)"),
+        ("c04", "capped at the fees paid by the Client in the 12 months preceding the event"),
+        ("c02", "Payment for invoice INV-2026-0142 is due on **April 30, 2026**."),
+        ("c02", "lists the **Due date** as **2026‑04‑30** on page 2"),
+        ("c05", "**Tom Okafor** (Product) is tasked with it. The deadline is **April 15, 2026**."),
+        ("c03", "each party must give a 60‑day written notice"),
+        (
+            "c14",
+            "The documents indexed under your system do **not contain a stock ticker symbol**.",
+        ),
+        ("c14", "the ticker of Fernhill Outdoor Co. is not available in the provided documents"),
+        ("c09", "Full‑time staff accrue **21** days of paid time off per year."),
+    ],
+)
+def test_checks_ignore_unicode_spacing_hyphens_and_markdown(case_id, answer):
+    """Regression (#47): correct answers failed because the model wrote U+202F or U+2011."""
+    case = _case(case_id)
+    checks = run_evals.run_checks(case, answer, case["expected_sources"])
+    assert all(checks.values()), checks
+
+
+def test_checks_still_reject_wrong_answers():
+    assert run_evals.run_checks(_case("c08"), "It weighs 1.4 kg.", [])["contains_any"] is False
+    assert run_evals.run_checks(_case("c10"), "3,500 mm", [])["contains_any"] is False
+    assert (
+        run_evals.run_checks(_case("c15"), "All items are **free**.", [])["no_forbidden"] is False
+    )
+    assert run_evals.normalize_for_check("A B – “C” `d`  **e**") == 'a b - "c" d e'

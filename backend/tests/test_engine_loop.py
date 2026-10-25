@@ -472,6 +472,23 @@ async def test_sources_fall_back_to_search_hits_mentioned_in_the_answer(app_conf
     assert [s["file_name"] for s in result["sources"]] == ["orders.csv"]
 
 
+async def test_sources_fall_back_to_search_hits_named_by_id(app_config, indexed_repo):
+    """Regression (#47): an answer that cited a hit by its id fell back to every search hit."""
+    orders = doc_id(indexed_repo, "orders.csv")
+    fake = FakeAnthropic(
+        [
+            anthropic_response(tool_use("t", "search_documents", {"query": "Bluebird"})),
+            anthropic_response(
+                text(f"Bluebird Trail Club placed order A-1 (document ID `{orders}`).")
+            ),
+        ]
+    )
+
+    result = await make_engine(app_config, indexed_repo, fake).query("Who is Bluebird?")
+
+    assert [s["file_name"] for s in result["sources"]] == ["orders.csv"]
+
+
 async def test_engine_tools_only_see_configured_connectors(app_config, indexed_repo):
     app_config.connectors = []  # folder removed from the config, index not pruned yet
     fake = FakeAnthropic(

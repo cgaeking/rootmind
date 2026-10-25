@@ -8,6 +8,11 @@ All notable changes to RootMind are documented in this file. The format is based
 
 - Optional tracing of the question loop ([#48](https://github.com/cgaeking/rootmind/issues/48), part 1), off by default. One span per model call (purpose, tokens, stop reason, tool requests, duration) and per tool call (arguments, result size, the documents a search returned, the window a read returned). `scripts/run_evals.py --trace <folder>` writes a JSONL file and a readable Markdown summary per eval run, and each run in the results carries its `trace_id`. `tracing.local: true` in `config.yaml` writes the same files under `logs/traces/` in the data folder. `tracing.langfuse: true` (or `run_evals.py --langfuse`) exports to Langfuse with the new optional extra `rootmind-backend[tracing]` and the `LANGFUSE_*` environment variables. With tracing off, the loop makes no tracing calls and loads no tracing code. Traces contain questions and document text but never API keys; SECURITY.md lists what they hold and where they go.
 
+### Fixed
+
+- Sources of an answer that names a search hit by its document id instead of its file name: the answer now cites that document, not every document the search returned ([#47](https://github.com/cgaeking/rootmind/issues/47)).
+- Evals: the live checks failed correct answers that used typographic characters, which `granite4.1:8b` does in most answers (a narrow no-break space in "1.1 kg", non-breaking hyphens in "2026-04-30"). Unicode spaces, hyphens, dashes, curly quotes and Markdown emphasis now count as their plain forms, and c14 accepts "not contain", "not available" and "cannot be determined" as "not found" ([#47](https://github.com/cgaeking/rootmind/issues/47)). Measured results for the local model in `backend/evals/README.md` and the README changed accordingly.
+
 ## [2.4.0] - 2026-10-22
 
 ### Added
