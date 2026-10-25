@@ -1375,6 +1375,17 @@ retrieval step is visible. The cost is more LLM round trips per question and
 no synonym matching; the README has the trade-off table. The repository class
 is the seam for a different retrieval backend.
 
+**A hand-written loop instead of an agent framework.** The loop in
+`rlm_engine/engine.py` calls the provider SDKs directly, with the
+guardrails this product needs (forced first search, the Ollama search nudge,
+per-turn and per-question tool budgets, an answer from what was found at the
+iteration limit) and no framework dependency in the packaged backend. A
+LangGraph baseline with the same tools and prompt (`backend/evals/baselines/langgraph`)
+measured the same pass rate, tool calls, tokens and latency with a local model;
+the guardrails did not trigger in those runs, so the measurement shows that a
+framework would gain nothing here, not that the guardrails matter. See
+[backend/evals/README.md](backend/evals/README.md#rootminds-loop-against-a-langgraph-agent).
+
 **Always a Windows service.** Since 2.0 the backend always runs as the
 Windows service that the installer sets up; the app has no backend of its
 own. Indexing continues while the app is closed, the app and MCP clients

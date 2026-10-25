@@ -969,6 +969,11 @@ Hintergrund-Indexer. Nutze das nur, wenn keine REST-API dieselbe Datenbank
 indiziert: Jeder indizierende Prozess entfernt die Dokumente von Ordnern, die
 in seiner eigenen Kopie der Konfiguration fehlen.
 
+In einem LangChain- oder LangGraph-Agenten lassen sich dieselben Tools über
+`langchain-mcp-adapters` laden: [examples/langchain_mcp](examples/langchain_mcp/README.md)
+startet `rootmind-mcp` über stdio und lässt den Standard-Agenten von LangChain
+mit einem lokalen Ollama-Modell laufen (englisch).
+
 ### 4. Die Desktop-App starten (Entwicklung)
 
 ```bash
@@ -1042,6 +1047,7 @@ desktop/
   scripts/                 Smoke-Test des Installers
 packaging/winget/          Vorlagen für winget-Manifeste
 packaging/mcpb/            Bundle für Claude Desktop (rootmind.mcpb): Brücke von stdio zu HTTP, Manifest, Tests, Vorlage für die MCP Registry
+examples/langchain_mcp/    RootMinds MCP-Server als Tools in einem LangChain-Agenten (eigene Umgebung)
 scripts/                   Versionsprüfung, Release Notes, Backend-Vorbereitung, winget-Rendering,
                            Aktualisierung der NSIS-Vorlage
 .github/workflows/         CI und Release
@@ -1094,6 +1100,14 @@ echten Indexer und schickt 16 Fragen durch die echte Engine.
   ist 1.0 auf den 15 bewerteten Fällen das erwartete Ergebnis; c09, die
   Synonym-Falle, ist der bekannte Fehlgriff. Die CI schlägt fehl, wenn hit@5
   unter 1.0 fällt. Über die Antwortqualität sagt er nichts.
+- *`--agent langgraph`* lässt dieselben Fälle mit denselben Tools, demselben
+  System-Prompt und derselben Bewertung im Standard-Agenten von LangChain
+  (LangGraph) laufen, in einer eigenen Umgebung (das Backend hängt nicht von
+  LangChain ab). Mit `granite4.1:8b` über Ollama, 3 Läufe pro Fall, kamen
+  beide Agenten auf 98 % (15 von 16 Fällen in jedem Lauf) bei etwa gleichen
+  Tool-Aufrufen, Tokens und Latenzen; die Stellen, an denen sich die
+  Schleifen unterscheiden (Iterationsgrenze, Such-Nachfrage), kamen in diesen
+  Läufen nicht vor. Gehostete Modelle wurden nicht verglichen.
 
 Details: [backend/evals/README.md](backend/evals/README.md) (englisch).
 
