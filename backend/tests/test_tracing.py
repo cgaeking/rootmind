@@ -190,6 +190,20 @@ async def test_result_text_is_capped(app_config, indexed_repo, tmp_path):
     assert search["result_chars"] > 50  # the size is the real one
 
 
+async def test_empty_answer_retry_and_fallback_are_recorded(app_config, indexed_repo, tmp_path):
+    app_config.llm.provider = "openai"
+    fake = FakeOpenAI([openai_response(content=""), openai_response(content="  ")])
+    tracer = _local_tracer(tmp_path)
+
+    result = await KnowledgeBaseEngine(indexed_repo, app_config, client=fake, tracer=tracer).query(
+        "q"
+    )
+
+    assert result["answer"] == engine_module.EMPTY_ANSWER_FALLBACK
+    events = [r["event"] for r in _records(tracer.jsonl_path) if r["type"] == "event"]
+    assert events == ["empty_answer_retry", "empty_answer_fallback"]
+
+
 async def test_openai_loop_records_nudge_limits_and_fallback(app_config, indexed_repo, tmp_path):
     app_config.llm.provider = "ollama"
     app_config.llm.model = "granite-test"
