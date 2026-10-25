@@ -54,6 +54,9 @@ class FakeState:
     )
     requests: list[Recorded] = field(default_factory=list)
     redirect_paths: set[str] = field(default_factory=set)
+    mcp_tokens: list[dict[str, Any]] = field(default_factory=list)
+    mcp_tokens_route: bool = True  # False: a service older than named tokens (404)
+    created_token: str = "fake-created-mcp-token-0001"  # pragma: allowlist secret
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -87,6 +90,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(307, None, {"Location": "http://127.0.0.1:9/elsewhere"})
         if parts.path not in ("/", "/health") and not authorized:
             return self._send(401, {"detail": "Invalid token"})
+        if method == "DELETE" and parts.path.startswith("/mcp/tokens/"):
+            status, payload = self._delete_mcp_token(state, parts.path.rsplit("/", 1)[1])
+            return self._send(status, payload)
         route = getattr(
             self,
             f"_{method.lower()}_{parts.path.strip('/').replace('/', '_').replace('-', '_') or 'root'}",
@@ -195,6 +201,7 @@ class _Handler(BaseHTTPRequestHandler):
         if body.get("connectors") is not None:
             state.connectors = [
                 {"name": c["name"], "type": c.get("type", "local"), "path": c.get("path")}
+                | ({"rescan_minutes": c["rescan_minutes"]} if c.get("rescan_minutes") else {})
                 for c in body["connectors"]
             ]
         return 200, {"ok": True, "reloaded": True, "restart_required": False}
@@ -226,6 +233,47 @@ class _Handler(BaseHTTPRequestHandler):
             "tool_calls": [],
             "stop_reasons": ["end_turn"],
         }
+
+    def _get_mcp_tokens(self, state, body, query):
+        if not state.mcp_tokens_route:
+            return 404, {"detail": "Not Found"}
+        tokens = [
+            {"name": "default", "kind": "file", "folders": None, "fingerprint": "abcd1234"}
+        ] + [
+            {"name": t["name"], "kind": "named", "folders": t.get("folders"), "fingerprint": "f00d"}
+            for t in state.mcp_tokens
+        ]
+        return 200, {
+            "tokens": tokens,
+            "network": {
+                "enabled": True,
+                "bind": "0.0.0.0",  # noqa: S104 (a fake answer)
+                "port": 3443,
+                "tls": True,
+                "problems": [],
+            },
+        }
+
+    def _post_mcp_tokens(self, state, body, query):
+        if any(t["name"] == body["name"] for t in state.mcp_tokens):
+            return 409, {"detail": f"A token named {body['name']} exists"}
+        state.mcp_tokens.append({"name": body["name"], "folders": body.get("folders")})
+        return 200, {
+            "name": body["name"],
+            "token": state.created_token,
+            "folders": body.get("folders"),
+            "fingerprint": "f00d",
+            "created": "2026-10-25T00:00:00Z",
+        }
+
+    def _delete_mcp_token(self, state, name):
+        if name == "default":
+            return 400, {"detail": "The default token cannot be revoked here"}
+        kept = [t for t in state.mcp_tokens if t["name"] != name]
+        if len(kept) == len(state.mcp_tokens):
+            return 404, {"detail": f"No token named {name}"}
+        state.mcp_tokens = kept
+        return 200, {"revoked": name}
 
     def _remote_state(self, state) -> dict[str, Any]:
         remote = state.remote

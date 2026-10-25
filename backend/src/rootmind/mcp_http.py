@@ -30,22 +30,36 @@ restart.
 Security model:
 
 - Every MCP endpoint requires ``Authorization: Bearer <token>``. The token
-  comes from ``MCP_API_TOKEN`` or ``<RLM_HOME>/data/api_token.txt`` (generated
-  on first start, owner-only permissions where the OS supports them). An empty
+  named ``default`` comes from ``MCP_API_TOKEN`` or
+  ``<RLM_HOME>/data/api_token.txt`` (generated on first start, owner-only
+  permissions where the OS supports them) and sees every folder. An empty
   token refuses to start (fail closed). Tokens are compared in constant time
   and never logged or printed; logs show only a short SHA-256 fingerprint.
+- Named tokens (``mcp_http.tokens`` in ``config.yaml``, managed through the
+  REST API and ``rootmind mcp tokens``) are stored as SHA-256 hashes only,
+  each with an optional folder scope that narrows
+  :attr:`rootmind.tools.ToolContext.allowed_connectors` for its requests. The
+  list is re-read when ``config.yaml`` changes (checked on every request), so
+  a revoked token is refused with its next request.
 - Requests with an ``Origin`` header from a non-loopback origin are rejected
-  (DNS rebinding protection), unless listed in ``MCP_ALLOWED_ORIGINS``.
-- Binds to 127.0.0.1 by default. To reach it from elsewhere, put it behind a
-  TLS-terminating proxy or tunnel; never expose plain HTTP.
+  (DNS rebinding protection), unless listed in ``MCP_ALLOWED_ORIGINS`` or
+  ``mcp_http.allowed_origins``.
+- Binds to 127.0.0.1 by default. Another address needs TLS (``--tls-cert``
+  and ``--tls-key``) or an explicit ``--insecure-http``. The RootMind service
+  can add a second listener for other machines (``mcp_http.network``, see
+  :class:`NetworkListener`): it checks the ``Host`` header against
+  ``mcp_http.allowed_hosts`` and accepts only named tokens unless
+  ``allow_default_token`` is set.
 
 Usage::
 
     rootmind-mcp-http [--host 127.0.0.1] [--port 3000] [--config config.yaml] [--index]
+                      [--tls-cert FILE --tls-key FILE | --insecure-http]
 """
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -53,8 +67,9 @@ import secrets
 import sys
 import threading
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated, Any
@@ -66,7 +81,17 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from . import __version__, auth, tools
 from .auth import TokenError, token_fingerprint
-from .config import AppConfig, app_home, config_file_path, get_config, init_config, load_config
+from .config import (
+    DEFAULT_MCP_TOKEN_NAME,
+    LOOPBACK_ADDRESSES,
+    AppConfig,
+    McpHttpConfig,
+    app_home,
+    config_file_path,
+    get_config,
+    init_config,
+    load_config,
+)
 from .database.repository import DocumentRepository
 
 logger = logging.getLogger("rootmind.mcp_http")
@@ -93,6 +118,74 @@ class JsonRpcError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+@dataclass(frozen=True)
+class TokenIdentity:
+    """Who a request's token belongs to, and which folders it may see (None: all)."""
+
+    name: str
+    folders: frozenset[str] | None = None
+
+
+DEFAULT_IDENTITY = TokenIdentity(DEFAULT_MCP_TOKEN_NAME)
+# Set in the ASGI scope by NetworkListener for requests from the network listener.
+NETWORK_SCOPE_KEY = "rootmind.network"
+
+
+def token_sha256(token: str) -> str:
+    """The hex SHA-256 under which a named token is stored."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _named_tokens(mcp: McpHttpConfig) -> list[tuple[bytes, TokenIdentity]]:
+    return [
+        (
+            t.sha256.encode("ascii"),
+            TokenIdentity(t.name, frozenset(t.folders) if t.folders is not None else None),
+        )
+        for t in mcp.tokens
+    ]
+
+
+def host_without_port(value: str | None) -> str | None:
+    """The host part of a ``Host`` header, lowercased (``[::1]:3443`` -> ``::1``)."""
+    if not value:
+        return None
+    value = value.strip().lower()
+    if value.startswith("["):
+        end = value.find("]")
+        return value[1:end] if end > 0 else None
+    if value.count(":") == 1:
+        value = value.split(":", 1)[0]
+    return value or None
+
+
+class NetworkListener:
+    """ASGI wrapper for the listener that other machines reach.
+
+    Refuses a ``Host`` that is not in ``allowed_hosts()`` (400) and marks the
+    request as coming from the network (:data:`NETWORK_SCOPE_KEY`), where the
+    default token is refused unless ``allow_default_token`` is set.
+    """
+
+    def __init__(self, app: Any, allowed_hosts: Callable[[], Iterable[str]]) -> None:
+        self.app = app
+        self._allowed_hosts = allowed_hosts
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] in ("http", "websocket"):
+            headers = dict(scope.get("headers") or [])
+            host = host_without_port(headers.get(b"host", b"").decode("latin-1"))
+            # Entries are names or addresses; a port given with one is ignored.
+            allowed = {host_without_port(h) for h in self._allowed_hosts()} - {None}
+            if host is None or host not in allowed:
+                logger.warning("Network listener: refused a request for host %r", host)
+                response = JSONResponse({"detail": "Host not allowed"}, status_code=400)
+                await response(scope, receive, send)
+                return
+            scope = {**scope, NETWORK_SCOPE_KEY: True}
+        await self.app(scope, receive, send)
 
 
 # --- token handling --------------------------------------------------------------
@@ -181,8 +274,10 @@ def create_app(
     """Create the MCP HTTP app.
 
     Args:
-        token: Bearer token every MCP request must present. Empty is refused.
-        config: Configuration; defaults to the global config at startup.
+        token: The default bearer token (every folder). Empty is refused.
+        config: Configuration; defaults to the global config at startup. Its
+            ``mcp_http`` section adds named tokens and allowlists; the file's
+            current version wins once the server runs.
         allowed_origins: Extra browser origins to accept besides loopback.
         enable_scheduler: Also run background indexing in this process
             (``--index``). Off by default: serve only.
@@ -194,6 +289,7 @@ def create_app(
         raise TokenError("An MCP API token is required; refusing to start without authentication")
     expected = token.encode("utf-8")
     extra_origins = frozenset(allowed_origins)
+    initial = config.mcp_http if config is not None else McpHttpConfig()
 
     state = SimpleNamespace(
         repo=None,
@@ -203,14 +299,24 @@ def create_app(
         config_path=None,
         config_signature=None,
         folders=[],
+        connectors=[],
+        named=_named_tokens(initial),
+        mcp=initial,
     )
     allowed_lock = threading.Lock()
 
-    def current_allowed() -> frozenset[str] | None:
-        """The configured folder names, re-read when ``config.yaml`` changed.
+    def apply(cfg: AppConfig) -> None:
+        state.allowed = frozenset(c.name for c in cfg.connectors)
+        state.connectors = list(cfg.connectors)
+        state.folders = tools.folder_labels(cfg.connectors)
+        state.mcp = cfg.mcp_http
+        state.named = _named_tokens(cfg.mcp_http)
 
-        Called from worker threads. If the file cannot be read, the previous
-        list stays in place.
+    def current_allowed() -> frozenset[str] | None:
+        """The configured folder names; folders and tokens are re-read when ``config.yaml`` changed.
+
+        Called on every request (from worker threads). If the file cannot be
+        read, the previous folders and tokens stay in place.
         """
         path = state.config_path
         if path is None:
@@ -230,13 +336,55 @@ def create_app(
             except Exception as e:
                 logger.warning("Cannot re-read %s; keeping the folder list: %s", path, e)
                 return state.allowed
-            allowed = frozenset(c.name for c in cfg.connectors)
-            if allowed != state.allowed:
-                logger.info("Folder list re-read from %s: %d folder(s)", path, len(allowed))
-            state.allowed = allowed
-            state.folders = tools.folder_labels(cfg.connectors)
+            before_folders, before_tokens = state.allowed, {i.name for _h, i in state.named}
+            apply(cfg)
+            if state.allowed != before_folders:
+                logger.info("Folder list re-read from %s: %d folder(s)", path, len(state.allowed))
+            tokens = {i.name for _h, i in state.named}
+            if tokens != before_tokens:
+                logger.info(
+                    "MCP tokens re-read from %s: %d named token(s)%s",
+                    path,
+                    len(tokens),
+                    f"; revoked: {', '.join(sorted(before_tokens - tokens))}"
+                    if before_tokens - tokens
+                    else "",
+                )
             state.config_signature = signature
+            return state.allowed
+
+    def scope_for(identity: TokenIdentity) -> frozenset[str] | None:
+        """The folders a request with ``identity`` may see."""
+        allowed = current_allowed()
+        if identity.folders is None:
             return allowed
+        if allowed is None:
+            return identity.folders
+        return allowed & identity.folders
+
+    def labels_for(allowed: frozenset[str] | None) -> list[str]:
+        if allowed is None or not state.connectors:
+            return state.folders
+        return tools.folder_labels([c for c in state.connectors if c.name in allowed])
+
+    def authenticate(presented: str, network: bool) -> TokenIdentity | None:
+        """The identity of a presented token, or None. Every check runs in constant time."""
+        raw = presented.encode("utf-8")
+        match: TokenIdentity | None = None
+        if secrets.compare_digest(raw, expected):
+            if network and not state.mcp.network.allow_default_token:
+                logger.warning(
+                    "Network listener: refused the default token (only named tokens; see "
+                    "mcp_http.network.allow_default_token)"
+                )
+            else:
+                match = DEFAULT_IDENTITY
+        if state.named:
+            digest = token_sha256(presented).encode("ascii")
+            for stored, identity in state.named:
+                if secrets.compare_digest(digest, stored) and match is None:
+                    match = identity
+        return match
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -251,16 +399,17 @@ def create_app(
             state.config_signature = None
         cfg = config or get_config()
         state.repo = DocumentRepository(cfg.database.path)
-        connectors = cfg.connectors
+        current = cfg
         if state.config_signature is not None:
             try:
-                connectors = load_config(state.config_path).connectors
+                current = load_config(state.config_path)
             except Exception as e:
                 logger.warning(
                     "Cannot re-read %s; using the folder list given: %s", state.config_path, e
                 )
-        state.allowed = frozenset(c.name for c in connectors)
-        state.folders = tools.folder_labels(connectors)
+        apply(current)
+        if state.named:
+            logger.info("Named MCP tokens: %s", ", ".join(i.name for _h, i in state.named))
         stats = state.repo.get_statistics()
         logger.info(
             "Database ready: %d documents, %s characters",
@@ -304,8 +453,11 @@ def create_app(
     async def authorize(
         request: Request,
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
-    ) -> None:
-        if not origin_allowed(request.headers.get("origin"), extra_origins):
+    ) -> TokenIdentity:
+        # Re-read config.yaml if it changed: a revoked token is refused at once.
+        await asyncio.to_thread(current_allowed)
+        origins = extra_origins | frozenset(state.mcp.allowed_origins)
+        if not origin_allowed(request.headers.get("origin"), origins):
             raise HTTPException(status_code=403, detail="Origin not allowed")
         if credentials is None:
             raise HTTPException(
@@ -313,23 +465,28 @@ def create_app(
                 detail="Missing bearer token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        if not secrets.compare_digest(credentials.credentials.encode("utf-8"), expected):
+        identity = authenticate(credentials.credentials, bool(request.scope.get(NETWORK_SCOPE_KEY)))
+        if identity is None:
             raise HTTPException(
                 status_code=401,
                 detail="Invalid token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        return identity
 
-    async def dispatch(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch(
+        method: str, params: dict[str, Any], identity: TokenIdentity
+    ) -> dict[str, Any]:
         if method == "initialize":
             # Re-read the folder list if config.yaml changed, so the
-            # instructions name the folders as they are now.
-            await asyncio.to_thread(current_allowed)
+            # instructions name the folders as they are now (and only those
+            # this token may see).
+            allowed = await asyncio.to_thread(scope_for, identity)
             return {
                 "protocolVersion": _negotiate_version(params),
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": __version__},
-                "instructions": tools.server_instructions(state.folders),
+                "instructions": tools.server_instructions(labels_for(allowed)),
             }
         if method in ("ping", "initialized", "notifications/initialized"):
             return {}
@@ -339,10 +496,13 @@ def create_app(
             name = params.get("name")
             if not isinstance(name, str) or not name:
                 raise JsonRpcError(-32602, "Missing tool name")
-            logger.info("Tool call: %s", name)
+            if identity is DEFAULT_IDENTITY:
+                logger.info("Tool call: %s", name)
+            else:
+                logger.info("Tool call: %s (token %s)", name, identity.name)
 
             def run_tool(arguments: dict[str, Any] | str | None) -> tools.ToolResult:
-                ctx = tools.ToolContext(allowed_connectors=current_allowed())
+                ctx = tools.ToolContext(allowed_connectors=scope_for(identity))
                 return tools.execute(name, arguments, state.repo, ctx)
 
             # Tool execution (and the config check) is blocking I/O; keep it
@@ -354,7 +514,7 @@ def create_app(
             }
         raise JsonRpcError(-32601, f"Method not found: {method}")
 
-    async def handle_message(body: Any) -> dict[str, Any] | None:
+    async def handle_message(body: Any, identity: TokenIdentity) -> dict[str, Any] | None:
         """Handle one JSON-RPC message. Returns None when no response is due."""
         if not isinstance(body, dict):
             return _error(None, -32600, "Invalid request")
@@ -374,7 +534,7 @@ def create_app(
         if not isinstance(params, dict):
             return _error(request_id, -32602, "params must be an object")
         try:
-            result = await dispatch(method, params)
+            result = await dispatch(method, params, identity)
         except JsonRpcError as e:
             return _error(request_id, e.code, e.message)
         except Exception as e:
@@ -393,8 +553,8 @@ def create_app(
         """Liveness check (no auth)."""
         return {"status": "ok", "server": {"name": SERVER_NAME, "version": __version__}}
 
-    @app.post("/mcp", dependencies=[Depends(authorize)])
-    async def mcp_post(request: Request):
+    @app.post("/mcp")
+    async def mcp_post(request: Request, identity: Annotated[TokenIdentity, Depends(authorize)]):
         """JSON-RPC endpoint. Notifications get 202 with an empty body."""
         try:
             body = await read_json(request)
@@ -404,17 +564,21 @@ def create_app(
             return JSONResponse(
                 _error(None, -32600, "Batch requests are not supported"), status_code=400
             )
-        response = await handle_message(body)
+        response = await handle_message(body, identity)
         if response is None:
             return Response(status_code=202)
         return JSONResponse(response)
 
-    @app.get("/mcp/sse", dependencies=[Depends(authorize)])
-    async def mcp_sse(request: Request):
-        """Legacy SSE transport: announce the message endpoint, then stream responses."""
+    @app.get("/mcp/sse")
+    async def mcp_sse(request: Request, identity: Annotated[TokenIdentity, Depends(authorize)]):
+        """Legacy SSE transport: announce the message endpoint, then stream responses.
+
+        The session belongs to the token that opened it: messages for it must
+        carry the same token.
+        """
         session_id = str(uuid.uuid4())
         queue: asyncio.Queue = asyncio.Queue()
-        state.sse_sessions[session_id] = queue
+        state.sse_sessions[session_id] = (queue, identity)
         logger.info("SSE session opened: %s", session_id)
 
         async def event_stream():
@@ -443,17 +607,22 @@ def create_app(
             },
         )
 
-    @app.post("/mcp/message", dependencies=[Depends(authorize)])
-    async def mcp_sse_message(request: Request, sessionId: str):  # noqa: N803 (wire name)
+    @app.post("/mcp/message")
+    async def mcp_sse_message(
+        request: Request,
+        sessionId: str,  # noqa: N803 (wire name)
+        identity: Annotated[TokenIdentity, Depends(authorize)],
+    ):
         """Legacy SSE transport: accept a message; the response goes out on the stream."""
-        queue = state.sse_sessions.get(sessionId)
-        if queue is None:
+        session = state.sse_sessions.get(sessionId)
+        if session is None or session[1] != identity:
             raise HTTPException(status_code=404, detail="Session not found")
+        queue = session[0]
         try:
             body = await read_json(request)
         except JsonRpcError as e:
             raise HTTPException(status_code=400, detail=e.message) from e
-        response = await handle_message(body)
+        response = await handle_message(body, identity)
         if response is not None:
             await queue.put(response)
         return Response(status_code=202)
@@ -487,7 +656,22 @@ def main(argv: list[str] | None = None) -> None:
             "keeps the folders it started with; restart after changing them."
         ),
     )
+    parser.add_argument("--tls-cert", metavar="FILE", help="Serve HTTPS with this certificate")
+    parser.add_argument("--tls-key", metavar="FILE", help="The private key of --tls-cert")
+    parser.add_argument(
+        "--insecure-http",
+        action="store_true",
+        help=(
+            "Allow plain HTTP on an address other than loopback (the token crosses the "
+            "network unencrypted; only for a trusted network or a TLS proxy elsewhere)"
+        ),
+    )
     args = parser.parse_args(argv)
+    problems = listen_problems(args.host, args.tls_cert, args.tls_key, args.insecure_http)
+    if problems:
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
+        sys.exit(2)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -509,21 +693,49 @@ def main(argv: list[str] | None = None) -> None:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)
 
+    scheme = "https" if args.tls_cert else "http"
     if args.host not in _LOOPBACK_HOSTS:
         logger.warning(
-            "Binding MCP HTTP to %s. Expose it only behind TLS (reverse proxy or tunnel).",
+            "MCP over HTTP listens on %s:%d, reachable from other machines (%s).",
             args.host,
+            args.port,
+            "TLS" if args.tls_cert else "plain HTTP: tokens cross the network unencrypted",
         )
 
     print("RootMind MCP HTTP server")
-    print(f"  Endpoint: http://{args.host}:{args.port}/mcp")
-    print(f"  Health:   http://{args.host}:{args.port}/health")
+    print(f"  Endpoint: {scheme}://{args.host}:{args.port}/mcp")
+    print(f"  Health:   {scheme}://{args.host}:{args.port}/health")
     print(f"  Auth:     bearer token from {source}")
     print(f"            fingerprint sha256:{token_fingerprint(token)}")
+    if config.mcp_http.tokens:
+        print(f"            and {len(config.mcp_http.tokens)} named token(s) from config.yaml")
 
     import uvicorn
 
-    uvicorn.run(app, host=args.host, port=args.port)
+    tls = {}
+    if args.tls_cert:
+        tls = {"ssl_certfile": args.tls_cert, "ssl_keyfile": args.tls_key}
+    uvicorn.run(app, host=args.host, port=args.port, **tls)
+
+
+def listen_problems(
+    host: str, tls_cert: str | None, tls_key: str | None, insecure_http: bool
+) -> list[str]:
+    """Why ``mcp-http`` must not listen on ``host`` with these TLS options; empty when it may."""
+    problems = []
+    if bool(tls_cert) != bool(tls_key):
+        problems.append("--tls-cert and --tls-key go together")
+    for option, path in (("--tls-cert", tls_cert), ("--tls-key", tls_key)):
+        if path and not os.path.isfile(path):
+            problems.append(f"{option} {path}: no such file")
+    loopback = host.strip("[]").lower() in LOOPBACK_ADDRESSES
+    if not loopback and not tls_cert and not insecure_http:
+        problems.append(
+            f"--host {host} is reachable from other machines: give --tls-cert and --tls-key, "
+            "or --insecure-http for plain HTTP (only on a trusted network or behind a TLS proxy "
+            "on another machine)"
+        )
+    return problems
 
 
 if __name__ == "__main__":

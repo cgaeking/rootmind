@@ -21,6 +21,11 @@ failure. Python standard library only (any Python 3.10+)::
 3. Tokens: 401/200 on both services; MCP lists the five tools.
 4. Remote access: the authtoken file is 0600 and in no log (never turned on).
 5. Indexing a folder through the REST API; MCP finds it without a restart.
+5b. The command line (status, folders, index --wait, search, mcp tokens):
+   a named token scoped to another folder does not see the first one, a
+   revoked token is refused at once; the network listener (plain HTTP on
+   127.0.0.2 with insecure_http) takes the named token, refuses the default
+   token and a foreign Host.
 6. status --json; systemd restarts a killed service; a restart keeps it.
 7. An update from another copy (ports and tokens kept, the old copy gone),
    MCP over HTTP off and on again (as the app switches it).
@@ -339,6 +344,91 @@ def test(exe_dir: Path, api: int, mcp_port: int, work: Path) -> None:
     )
     check(
         code == 200 and "quartzlanternalpha" in json.dumps(result), "MCP finds it without a restart"
+    )
+
+    # --- 5b. the command line, named tokens, the network listener --------------------------
+    cli = [str(exe_a)]
+    output = expect_exit([*cli, "status", "--json"], 0, "rootmind status --json")
+    info = json.loads(output[output.index("{") :])
+    check(
+        info["service"]["state"] == "running" and info["folders"][0]["name"] == "e2e",
+        "status names the service and the folder",
+    )
+    check(rest_token not in output and mcp_token not in output, "status prints no token")
+    other = work / "other"
+    other.mkdir()
+    (other / "b.md").write_text("# B\n\nThe word nebulaharborbeta is only here.\n")
+    expect_exit([*cli, "folders", "add", str(other), "--name", "other"], 0, "folders add")
+    expect_exit([*cli, "index", "--wait"], 0, "index --wait")
+    output = expect_exit([*cli, "search", "nebulaharborbeta", "--json"], 0, "search")
+    check(json.loads(output[output.index("{") :])["count"] >= 1, "search finds the new folder")
+
+    # The network listener: plain HTTP on 127.0.0.2 (no certificate in CI). The
+    # config has no mcp_http section yet, so it is appended as text (this script
+    # uses the standard library only) and the file restored afterwards.
+    config_file = DATA / "config.yaml"
+    saved_config = config_file.read_text()
+    check("mcp_http" not in saved_config, "no mcp_http section before the test")
+    net_port = mcp_port + 2
+    config_file.write_text(
+        saved_config.rstrip("\n")
+        + "\nmcp_http:\n  allowed_hosts: ['127.0.0.2']\n  network:\n"
+        + f"    bind: 127.0.0.2\n    port: {net_port}\n    insecure_http: true\n"
+    )
+    code, _ = systemctl("restart", UNITS[1])
+    check(code == 0, "restart MCP over HTTP with the network listener")
+    wait_healthy(mcp_port)
+    deadline = time.monotonic() + 30
+    while http("GET", f"http://127.0.0.2:{net_port}/health")[0] == 0:
+        if time.monotonic() > deadline:
+            fail("the network listener did not answer")
+        time.sleep(0.5)
+    ok("the network listener answers on 127.0.0.2")
+
+    token_file = work / "scoped.token"
+    expect_exit(
+        [*cli, "mcp", "tokens", "create", "scoped", "--folders", "other", "--out", str(token_file)],
+        0,
+        "mcp tokens create",
+    )
+    check(mode(token_file) == 0o600, "the new token's file is 0600")
+    scoped = token_file.read_text().strip()
+
+    def search(token: str, word: str, port: int = mcp_port) -> tuple[int, str]:
+        address = "127.0.0.2" if port == net_port else "127.0.0.1"
+        body = {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {"name": "search_documents", "arguments": {"query": word}},
+        }
+        code, result = http("POST", f"http://{address}:{port}/mcp", token, body)
+        return code, json.dumps(result)
+
+    code, found = search(scoped, "nebulaharborbeta")
+    check(code == 200 and "b.md" in found, "the scoped token sees its folder")
+    code, found = search(scoped, "quartzlanternalpha")
+    check(code == 200 and "a.md" not in found, "the scoped token does not see the other folder")
+    no_secret_in([DATA], [scoped], "the new token is stored nowhere in the data folder")
+    code, found = search(scoped, "nebulaharborbeta", net_port)
+    check(
+        code == 200 and "b.md" in found,
+        f"the network listener takes the named token ({code}: {found[:300]})",
+    )
+    code, found = search(mcp_token, "nebulaharborbeta", net_port)
+    check(code == 401, f"but not the default token ({code})")
+    check(search(mcp_token, "quartzlanternalpha")[0] == 200, "loopback still takes it")
+
+    expect_exit([*cli, "mcp", "tokens", "revoke", "scoped"], 0, "mcp tokens revoke")
+    check(search(scoped, "nebulaharborbeta")[0] == 401, "a revoked token is refused at once")
+    check(search(mcp_token, "nebulaharborbeta")[0] == 200, "the other tokens keep working")
+
+    config_file.write_text(saved_config)
+    systemctl("restart", UNITS[1])
+    wait_healthy(mcp_port)
+    check(
+        http("GET", f"http://127.0.0.2:{net_port}/health")[0] == 0,
+        "without the setting there is no network listener",
     )
 
     # --- 6. status, restarts ------------------------------------------------------------------
