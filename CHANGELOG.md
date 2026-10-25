@@ -4,6 +4,9 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Added
+
+- Each release now updates RootMind's entry in the official MCP Registry (`io.github.cgaeking/rootmind`, the `rootmind.mcpb` bundle) automatically ([#49](https://github.com/cgaeking/rootmind/issues/49)). A new job at the end of `release.yml` renders `server.json` from the template `packaging/mcpb/server.json` with the version, the release's download URL and the SHA-256 of the published `rootmind.mcpb` (`scripts/registry_server_json.py`, checked against `SHA256SUMS.txt`), validates it against the vendored schema and with `mcp-publisher validate`, and publishes it with a pinned, checksum-verified `mcp-publisher` through GitHub OIDC (no stored secret). Prereleases are not published; dry runs render and validate only. A registry failure leaves the GitHub release as it is and can be re-run. `scripts/check_versions.py` also checks the template's name, schema and placeholders.
 ### Fixed
 
 - When the model ended a turn with an empty reply (no text, no tool call), typically right after a successful search, that empty turn became the answer ("The model stopped without producing an answer"). Seen with granite4.1:8b through Ollama in the eval runs for [#47](https://github.com/cgaeking/rootmind/issues/47). The agent now asks once more for the final answer from the results so far, for every provider; the retry counts against the iteration limit, and in the last iteration the existing final call takes its place. If the second reply is empty too, the answer says so clearly. Empty replies with a refusal or content-filter stop reason are reported as before.
