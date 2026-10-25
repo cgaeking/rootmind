@@ -7,6 +7,10 @@ All notable changes to RootMind are documented in this file. The format is based
 ### Added
 
 - Each release now updates RootMind's entry in the official MCP Registry (`io.github.cgaeking/rootmind`, the `rootmind.mcpb` bundle) automatically ([#49](https://github.com/cgaeking/rootmind/issues/49)). A new job at the end of `release.yml` renders `server.json` from the template `packaging/mcpb/server.json` with the version, the release's download URL and the SHA-256 of the published `rootmind.mcpb` (`scripts/registry_server_json.py`, checked against `SHA256SUMS.txt`), validates it against the vendored schema and with `mcp-publisher validate`, and publishes it with a pinned, checksum-verified `mcp-publisher` through GitHub OIDC (no stored secret). Prereleases are not published; dry runs render and validate only. A registry failure leaves the GitHub release as it is and can be re-run. `scripts/check_versions.py` also checks the template's name, schema and placeholders.
+### Fixed
+
+- Search hits got a page, slide or sheet (and a suggested read window) only when the whole query occurred word for word in the document ([#55](https://github.com/cgaeking/rootmind/issues/55)). Models search with several words ("Ultralight 1P tent target weight"), so most hits had no location, and answers cited none or a wrong one (in the [#47](https://github.com/cgaeking/rootmind/issues/47) eval traces "Page 1" for a fact on page 2). The position now comes from the full-text match itself: the place in the shown snippet where the most query terms occur together on one page, slide or sheet.
+- A `read_document` call for a window that earlier reads of the same question already returned now carries a note that the text is already in the conversation, with a wider window to read instead. In the #47 traces a local model re-read 30–150-character windows of one invoice eight times until the iteration limit (48k tokens instead of about 5k). The text is still returned.
 
 ## [2.4.0] - 2026-10-22
 
