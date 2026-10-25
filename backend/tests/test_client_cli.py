@@ -390,6 +390,31 @@ def test_folders_add_keeps_the_stored_key(capsys, fake, token_file, tmp_path):
     no_secret_in(out, STORED_KEY)
 
 
+def test_folders_add_with_rescan_minutes(capsys, fake, token_file, tmp_path):
+    code, out, _err = cli(
+        capsys,
+        "folders",
+        "add",
+        str(tmp_path),
+        "--name",
+        "share",
+        "--rescan-minutes",
+        "5",
+        *remote(fake, token_file),
+    )
+    assert code == 0
+    assert "re-scanned every 5 minutes" in out
+    assert fake.state.connectors[-1]["rescan_minutes"] == 5
+    code, out, _err = cli(capsys, "folders", "list", *remote(fake, token_file))
+    assert "share: " in out and "re-scan every 5 min" in out
+
+
+def test_folders_add_rescan_minutes_are_checked(capsys):
+    code, _out, err = cli(capsys, "folders", "add", ".", "--rescan-minutes", "0")
+    assert code == 2
+    assert "minutes from 1" in err
+
+
 def test_folders_add_resolves_a_relative_path(capsys, fake, token_file, tmp_path, monkeypatch):
     (tmp_path / "rel").mkdir()
     monkeypatch.chdir(tmp_path)
@@ -728,31 +753,213 @@ def test_remote_access_off_and_status(capsys, fake, token_file):
 # --- mcp tokens --------------------------------------------------------------------
 
 
-def test_mcp_tokens_list_shows_a_fingerprint_only(capsys, tmp_path, use_probe):
+def test_mcp_tokens_list_from_an_older_service(capsys, fake, token_file, tmp_path, use_probe):
+    """A service without /mcp/tokens: the default token from the service status."""
     from rootmind.auth import token_fingerprint
 
+    fake.state.mcp_tokens_route = False
     mcp_file = tmp_path / "api_token.txt"
     mcp_file.write_text(MCP_TOKEN, encoding="utf-8")
-    use_probe(FakeProbe(18999, tmp_path / "rest", mcp_token_file=mcp_file))
+    use_probe(FakeProbe(fake.port, token_file, mcp_token_file=mcp_file))
     code, out, _err = cli(capsys, "mcp", "tokens", "list", "--json")
     assert code == 0
     data = json.loads(out)
     assert data["tokens"] == [
         {
             "name": "default",
+            "kind": "file",
             "file": str(mcp_file),
-            "readable": True,
-            "fingerprint": f"sha256:{token_fingerprint(MCP_TOKEN)}",
+            "folders": None,
+            "fingerprint": token_fingerprint(MCP_TOKEN),
         }
     ]
     assert MCP_TOKEN not in out
 
 
-def test_mcp_tokens_list_without_mcp_over_http(capsys, tmp_path, use_probe):
-    use_probe(FakeProbe(18999, tmp_path / "rest"))
-    code, out, _err = cli(capsys, "mcp", "tokens", "list")
+def test_mcp_tokens_list(capsys, fake, token_file):
+    fake.state.mcp_tokens.append({"name": "alice", "folders": ["projects"]})
+    code, out, _err = cli(capsys, "mcp", "tokens", "list", *remote(fake, token_file))
     assert code == 0
-    assert "MCP over HTTP is off" in out
+    assert "default          sha256:abcd1234" in out
+    assert "alice            sha256:f00d" in out
+    assert "projects" in out
+    assert "Network:      https://0.0.0.0:3443/mcp" in out
+
+
+def test_mcp_tokens_list_tells_no_folder_from_every_folder(capsys, fake, token_file):
+    # folders: [] (its folders were removed) sees nothing; it must not read as "every folder".
+    fake.state.mcp_tokens.append({"name": "alice", "folders": []})
+    code, out, _err = cli(capsys, "mcp", "tokens", "list", *remote(fake, token_file))
+    assert code == 0
+    alice = next(line for line in out.splitlines() if "alice" in line)
+    assert "no folder" in alice
+    assert "every folder" not in alice
+
+
+def test_mcp_tokens_create_writes_a_private_file(capsys, fake, token_file, tmp_path):
+    out_file = tmp_path / "alice.token"
+    code, out, err = cli(
+        capsys,
+        "mcp",
+        "tokens",
+        "create",
+        "alice",
+        "--folders",
+        "projects,marketing",
+        "--out",
+        str(out_file),
+        *remote(fake, token_file),
+    )
+    assert code == 0, err
+    assert out_file.read_text(encoding="utf-8").strip() == fake.state.created_token
+    if os.name == "posix":
+        assert out_file.stat().st_mode & 0o777 == 0o600
+    else:
+        # The mode bits mean nothing on Windows: the file gets a protected
+        # access list with this account alone, whatever its folder passes on.
+        from rootmind.service.layout import read_security
+        from rootmind.winaccess import current_user_sid
+
+        security = read_security(out_file)
+        assert security.protected
+        assert [(ace[0], ace[3]) for ace in security.aces] == [(0, current_user_sid())]
+    assert fake.state.created_token not in out + err
+    post = [r for r in fake.requests if r.path == "/mcp/tokens" and r.method == "POST"][0]
+    assert post.body == {"name": "alice", "folders": ["projects", "marketing"]}
+    assert "projects, marketing" in out
+
+
+def test_mcp_tokens_create_for_every_folder_warns(capsys, fake, token_file, tmp_path):
+    code, out, _err = cli(
+        capsys,
+        "mcp",
+        "tokens",
+        "create",
+        "n8n",
+        "--out",
+        str(tmp_path / "n8n.token"),
+        *remote(fake, token_file),
+    )
+    assert code == 0
+    assert "sees every folder" in out
+    post = [r for r in fake.requests if r.method == "POST"][0]
+    assert post.body == {"name": "n8n"}
+
+
+def test_mcp_tokens_create_to_stdout_only_when_asked(capsys, fake, token_file):
+    code, out, err = cli(
+        capsys, "mcp", "tokens", "create", "bob", "--out", "-", *remote(fake, token_file)
+    )
+    assert code == 0
+    assert out.strip() == fake.state.created_token
+    assert "shown only this once" in err
+
+
+def test_mcp_tokens_create_needs_out(capsys, fake, token_file):
+    code, _out, err = cli(capsys, "mcp", "tokens", "create", "bob", *remote(fake, token_file))
+    assert code == 2
+    assert "--out" in err
+    assert fake.requests == []
+
+
+def test_mcp_tokens_create_refuses_an_existing_file(capsys, fake, token_file, tmp_path):
+    existing = tmp_path / "exists.token"
+    existing.write_text("keep me", encoding="utf-8")
+    code, _out, err = cli(
+        capsys,
+        "mcp",
+        "tokens",
+        "create",
+        "bob",
+        "--out",
+        str(existing),
+        *remote(fake, token_file),
+    )
+    assert code == ClientExit.USAGE
+    assert "exists" in err
+    assert existing.read_text(encoding="utf-8") == "keep me"
+    assert fake.state.mcp_tokens == []
+
+
+def test_mcp_tokens_create_revokes_when_the_file_cannot_be_written(
+    capsys, fake, token_file, tmp_path, monkeypatch
+):
+    out_file = tmp_path / "carol.token"
+    if sys.platform == "win32":
+        import pywintypes
+        import win32file
+
+        def write_file(handle, data):
+            raise pywintypes.error(112, "WriteFile", "There is not enough space on the disk.")
+
+        monkeypatch.setattr(win32file, "WriteFile", write_file)
+    else:
+
+        class FullDisk:
+            def __init__(self, fd):
+                self.fd = fd
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                os.close(self.fd)
+
+            def write(self, data):
+                raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(os, "fdopen", lambda fd, *args, **kwargs: FullDisk(fd))
+    code, out, err = cli(
+        capsys,
+        "mcp",
+        "tokens",
+        "create",
+        "carol",
+        "--out",
+        str(out_file),
+        *remote(fake, token_file),
+    )
+    assert code == ClientExit.USAGE
+    assert "the token was revoked again" in err
+    assert not out_file.exists()  # no half-written file is left
+    assert fake.state.mcp_tokens == []
+    assert fake.state.created_token not in out + err
+
+
+def test_mcp_tokens_create_revokes_after_any_error_while_saving(
+    capsys, fake, token_file, tmp_path, monkeypatch
+):
+    def broken(path, token):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(commands, "_write_new_token", broken)
+    code, _out, err = cli(
+        capsys,
+        "mcp",
+        "tokens",
+        "create",
+        "dave",
+        "--out",
+        str(tmp_path / "dave.token"),
+        *remote(fake, token_file),
+    )
+    assert code == ClientExit.FAILED
+    assert "the token was revoked again" in err
+    assert fake.state.mcp_tokens == []
+
+
+def test_mcp_tokens_revoke(capsys, fake, token_file):
+    fake.state.mcp_tokens.append({"name": "alice", "folders": None})
+    code, out, _err = cli(capsys, "mcp", "tokens", "revoke", "alice", *remote(fake, token_file))
+    assert code == 0
+    assert "Revoked alice" in out
+    assert fake.state.mcp_tokens == []
+    code, _out, err = cli(capsys, "mcp", "tokens", "revoke", "alice", *remote(fake, token_file))
+    assert code == ClientExit.USAGE
+    assert "no token named 'alice'" in err
+    code, _out, err = cli(capsys, "mcp", "tokens", "revoke", "default", *remote(fake, token_file))
+    assert code == ClientExit.FAILED
+    assert "cannot be revoked" in err
 
 
 def test_mcp_without_tokens_still_runs_the_stdio_server(monkeypatch):

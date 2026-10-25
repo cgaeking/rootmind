@@ -175,7 +175,8 @@ to run. For the rest, use a virtual machine or Windows Sandbox.
 On Linux, `backend/tests/e2e/service_e2e_linux.py` installs, checks, updates
 and removes the systemd user units of the account that runs it with a Linux
 backend build (refusals, file modes, tokens, indexing, restarts, MCP over
-HTTP off and on, uninstall). It needs a running user manager for the account
+HTTP off and on, the command line, named MCP tokens and the network
+listener, uninstall). It needs a running user manager for the account
 (CI: `sudo loginctl enable-linger "$USER"` and `XDG_RUNTIME_DIR`), refuses to
 run as root, unless `CI=true` (or `--force`), and when
 `~/.local/share/rootmind` or a `rootmind-*` unit exists. A container with

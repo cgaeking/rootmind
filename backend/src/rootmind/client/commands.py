@@ -9,7 +9,7 @@
     rootmind search QUERY [--limit N] [--type T] [--snippets]
     rootmind ask QUESTION
     rootmind config llm [--provider P] [--model M] [--base-url U] [--key-file FILE|-] [--remove-key]
-    rootmind mcp tokens list
+    rootmind mcp tokens list | create NAME [--folders A,B] --out FILE | revoke NAME
     rootmind remote-access on|off|status [--authtoken-file FILE|-] [--domain D]
 
 Every command takes ``--json`` (machine-readable output on stdout), ``--url``
@@ -26,6 +26,7 @@ when this account has no RootMind service (see :func:`index_runs_locally`).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import json
 import ntpath
@@ -35,6 +36,7 @@ import re
 import stat
 import sys
 import time
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -114,6 +116,14 @@ def add_parsers(subparsers: Any) -> None:
     )
     add.add_argument("path", help="The folder (a relative path resolves against this folder)")
     add.add_argument("--name", help="Its name in RootMind (default: the folder's name)")
+    add.add_argument(
+        "--rescan-minutes",
+        type=_minutes,
+        default=None,
+        metavar="N",
+        help="Re-scan it every N minutes (for network shares, where changes made on other "
+        "machines raise no event)",
+    )
     remove = folder_commands.add_parser(
         "remove",
         parents=[common],
@@ -198,6 +208,16 @@ def add_index_parser(subparsers: Any) -> None:
         action="store_true",
         help="Index config.yaml's folders in this process (RLM_HOME or the working folder)",
     )
+
+
+def _minutes(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        number = 0
+    if not 1 <= number <= 7 * 24 * 60:
+        raise argparse.ArgumentTypeError(f"expected minutes from 1 to 10080, not {value!r}")
+    return number
 
 
 def _limit(value: str) -> int:
@@ -350,6 +370,10 @@ def cmd_status(ctx: Context) -> int:
         remote = client.get("/remote-access")
     except ClientError:
         remote = None
+    try:
+        mcp_tokens = client.get("/mcp/tokens")
+    except ClientError:
+        mcp_tokens = None  # a service without named tokens
     folders = _folder_rows(connectors, index)
     result.update(
         service=_service_summary(info),
@@ -363,6 +387,11 @@ def cmd_status(ctx: Context) -> int:
         },
         folders=folders,
         mcp_http=_mcp_endpoint(info),
+        mcp_network=(mcp_tokens or {}).get("network"),
+        mcp_tokens=[
+            {"name": t.get("name"), "folders": t.get("folders")}
+            for t in (mcp_tokens or {}).get("tokens") or []
+        ],
         remote_access=_remote_summary(remote),
     )
     lines = []
@@ -388,6 +417,12 @@ def cmd_status(ctx: Context) -> int:
         lines.append(f"  MCP:       {mcp['url']} ({mcp['state']})")
     elif info is not None:
         lines.append("  MCP:       off")
+    network = result["mcp_network"] or {}
+    if network.get("enabled"):
+        lines.append(f"  Network:   {_network_line(network)}")
+        lines.append("warning: MCP over HTTP is reachable from other machines")
+    if len(result["mcp_tokens"]) > 1:
+        lines.append(f"  Tokens:    {', '.join(t['name'] for t in result['mcp_tokens'])}")
     remote_summary = result["remote_access"]
     if remote_summary:
         lines.append(f"  Remote:    {_remote_line(remote_summary)}")
@@ -400,8 +435,15 @@ def cmd_status(ctx: Context) -> int:
 # --- folders -----------------------------------------------------------------------
 
 
-def _folder_rows(connectors: list[dict[str, Any]], index: dict[str, Any] | None) -> list[dict]:
+def _folder_rows(
+    connectors: list[dict[str, Any]],
+    index: dict[str, Any] | None,
+    config: dict[str, Any] | None = None,
+) -> list[dict]:
     statuses = (index or {}).get("connectors") or {}
+    rescan = {
+        c.get("name"): c.get("rescan_minutes") for c in (config or {}).get("connectors") or []
+    }
     rows = []
     for c in connectors:
         name = c.get("name")
@@ -415,6 +457,7 @@ def _folder_rows(connectors: list[dict[str, Any]], index: dict[str, Any] | None)
                 "documents": status.get("documents_indexed"),
                 "errors": status.get("documents_error"),
                 "last_sync_at": status.get("last_sync_at"),
+                "rescan_minutes": rescan.get(name),
             }
         )
     return rows
@@ -427,6 +470,8 @@ def _folder_line(row: dict[str, Any]) -> str:
     elif row.get("documents") is not None:
         line += f"  ({row['documents']} documents"
         line += f", {row['errors']} errors)" if row.get("errors") else ")"
+    if row.get("rescan_minutes"):
+        line += f"  re-scan every {row['rescan_minutes']} min"
     return line
 
 
@@ -470,7 +515,7 @@ def cmd_folders(ctx: Context) -> int:
     command = ctx.args.folders_command
     if command == "list":
         connectors = client.get("/connectors").get("connectors", [])
-        rows = _folder_rows(connectors, client.get("/index/status"))
+        rows = _folder_rows(connectors, client.get("/index/status"), _get_config(client))
         lines = [_folder_line(r) for r in rows] or [
             "No folders. Add one with: rootmind folders add PATH"
         ]
@@ -500,9 +545,14 @@ def cmd_folders(ctx: Context) -> int:
                 raise ClientError(
                     f"{path} is indexed already as {c.get('name')!r}", ClientExit.USAGE
                 )
-        connectors.append({"name": name, "type": "local", "path": path})
+        entry: dict[str, Any] = {"name": name, "type": "local", "path": path}
+        if ctx.args.rescan_minutes:
+            entry["rescan_minutes"] = ctx.args.rescan_minutes
+        connectors.append(entry)
         result = _save_config(client, config, connectors=connectors)
         lines = [f"Added {name}: {path}"]
+        if ctx.args.rescan_minutes:
+            lines.append(f"It is re-scanned every {ctx.args.rescan_minutes} minutes.")
         if result.get("restart_required"):
             lines.append("warning: saved, but the service must be restarted to use it")
         lines.append(f"Index it now with: rootmind index --folder {name}")
@@ -831,44 +881,221 @@ def cmd_remote_access(ctx: Context) -> int:
 
 
 def cmd_mcp_tokens(ctx: Context) -> int:
-    """``mcp tokens list``: the MCP over HTTP token of the service (one today).
+    """``mcp tokens list | create | revoke``: the MCP over HTTP tokens.
 
-    Reads the service status only; the token itself is never printed, only
-    its fingerprint, which the MCP service also logs.
+    Tokens are never printed: ``list`` shows names, folders and fingerprints
+    (what the MCP service logs); ``create`` writes the new token to the file
+    given with ``--out`` (owner-only), or to stdout only with ``--out -``.
     """
+    command = getattr(ctx.args, "tokens_command", "list")
+    if command == "create":
+        return _mcp_token_create(ctx)
+    if command == "revoke":
+        return _mcp_token_revoke(ctx)
+    client = ctx.connect()
+    try:
+        data = client.get("/mcp/tokens")
+    except ClientError as e:
+        if e.status != 404 or ctx.target is None or not ctx.target.discovered:
+            raise
+        return _mcp_tokens_from_status(ctx)  # a service older than named tokens
+    endpoint = _mcp_endpoint(ctx.target.service if ctx.target else None)
+    network = data.get("network") or {}
+    lines = []
+    if endpoint:
+        lines.append(f"MCP endpoint: {endpoint['url']} ({endpoint['state']})")
+    if network.get("enabled"):
+        lines.append(f"Network:      {_network_line(network)}")
+    for t in data.get("tokens") or []:
+        folders = _scope_text(t.get("folders"))
+        fingerprint = f"sha256:{t['fingerprint']}" if t.get("fingerprint") else "(not readable)"
+        lines.append(f"  {t['name']:<16} {fingerprint:<16} {folders}")
+    ctx.emit({**data, "mcp_http": endpoint}, lines)
+    return ClientExit.OK
+
+
+def _scope_text(folders: list[str] | None) -> str:
+    """A token's folders as text: None is every folder, an empty list none at all."""
+    if folders is None:
+        return "every folder"
+    return ", ".join(folders) if folders else "no folder (its folders were removed)"
+
+
+def _network_line(network: dict[str, Any]) -> str:
+    bind = network.get("bind") or ""
+    shown = f"[{bind}]" if ":" in bind else bind
+    line = f"{'https' if network.get('tls') else 'http'}://{shown}:{network.get('port')}/mcp"
+    if not network.get("tls"):
+        loopback = bind.strip("[]").lower() in ("127.0.0.1", "localhost", "::1")
+        line += " (for a reverse proxy on this machine)" if loopback else " (PLAIN HTTP)"
+    if network.get("problems"):
+        line += " - not started: " + "; ".join(network["problems"])
+    return line
+
+
+def _write_new_token(path: Path, token: str) -> None:
+    """Create ``path`` (it must not exist) with the token, readable by this account only.
+
+    POSIX: mode 0600, no link followed. Windows: a protected access list with
+    this account alone (the mode bits mean nothing there, and the entries the
+    folder passes on could let other accounts read the file). A file that was
+    created but could not be written is removed again.
+
+    Raises:
+        ClientError: the file exists or cannot be created or written.
+    """
+    data = (token + "\n").encode("utf-8")
+    if sys.platform == "win32":
+        _write_new_windows_file(path, data)
+        return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError:
+        raise ClientError(f"{path} exists; choose a new file", ClientExit.USAGE) from None
+    except OSError as e:
+        raise ClientError(f"cannot create {path}: {e.strerror or e}", ClientExit.USAGE) from None
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except OSError as e:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        raise ClientError(f"cannot write {path}: {e.strerror or e}", ClientExit.USAGE) from None
+
+
+def _write_new_windows_file(path: Path, data: bytes) -> None:
+    """Create a new file whose access list names only this account, and write ``data``."""
+    import pywintypes
+    import win32con
+    import win32file
+    import win32security
+
+    from ..winaccess import current_user_sid
+
+    try:
+        sddl = f"D:P(A;;FA;;;{current_user_sid()})"
+        attributes = win32security.SECURITY_ATTRIBUTES()
+        attributes.SECURITY_DESCRIPTOR = (
+            win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
+                sddl, win32security.SDDL_REVISION_1
+            )
+        )
+        handle = win32file.CreateFile(
+            str(path),
+            win32con.GENERIC_WRITE,
+            0,
+            attributes,
+            win32con.CREATE_NEW,  # never an existing file or link
+            win32con.FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    except (pywintypes.error, OSError) as e:
+        if getattr(e, "winerror", None) in (80, 183):  # ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS
+            raise ClientError(f"{path} exists; choose a new file", ClientExit.USAGE) from None
+        reason = getattr(e, "strerror", None) or e
+        raise ClientError(f"cannot create {path}: {reason}", ClientExit.USAGE) from None
+    try:
+        try:
+            win32file.WriteFile(handle, data)
+        finally:
+            handle.Close()
+    except pywintypes.error as e:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        raise ClientError(f"cannot write {path}: {e.strerror}", ClientExit.USAGE) from None
+
+
+def _mcp_token_create(ctx: Context) -> int:
+    args = ctx.args
+    out = args.out
+    path = None if out == "-" else Path(out).expanduser()
+    if path is not None and (path.exists() or path.is_symlink()):
+        raise ClientError(f"{path} exists; choose a new file", ClientExit.USAGE)
+    folders = None
+    if args.folders is not None:
+        folders = [f.strip() for part in args.folders for f in part.split(",") if f.strip()]
+    client = ctx.connect()
+    body: dict[str, Any] = {"name": args.name}
+    if folders is not None:
+        body["folders"] = folders
+    created = client.post("/mcp/tokens", body)
+    token = created.pop("token", None)
+    if not isinstance(token, str) or not token:
+        raise ClientError("the service sent no token")
+    scope = ", ".join(created.get("folders") or []) or "every folder"
+    if path is None:
+        if ctx.json:
+            ctx.out(json.dumps({**created, "token": token}, indent=2))
+        else:
+            ctx.out(token)
+            ctx.err(
+                f"Created MCP token {created['name']} (sha256:{created.get('fingerprint')}, "
+                f"{scope}). It is shown only this once."
+            )
+        return ClientExit.OK
+    try:
+        _write_new_token(path, token)
+    except Exception as e:
+        # The token exists in the service but could not be saved: revoke it again.
+        with contextlib.suppress(ClientError):
+            client.delete(f"/mcp/tokens/{urllib.parse.quote(created['name'], safe='')}")
+        message = e.message if isinstance(e, ClientError) else f"cannot write {path}: {e}"
+        code = e.code if isinstance(e, ClientError) else ClientExit.FAILED
+        raise ClientError(f"{message}; the token was revoked again", code) from None
+    lines = [
+        f"Created MCP token {created['name']} (sha256:{created.get('fingerprint')}), {scope}.",
+        f"The token is in {path}"
+        + (" (mode 0600)" if os.name == "posix" else " (readable by this account only)")
+        + "; it is stored nowhere else. Hand it over privately, then delete the file. "
+        "Clients send it as: Authorization: Bearer <token>",
+    ]
+    if folders is None:
+        lines.append(
+            "warning: this token sees every folder; limit it with --folders when it is for "
+            "one person or one client"
+        )
+    ctx.emit({**created, "file": str(path)}, lines)
+    return ClientExit.OK
+
+
+def _mcp_token_revoke(ctx: Context) -> int:
+    client = ctx.connect()
+    name = ctx.args.name
+    try:
+        client.delete(f"/mcp/tokens/{urllib.parse.quote(name, safe='')}")
+    except ClientError as e:
+        if e.status == 404:
+            raise ClientError(
+                f"no token named {name!r} (see: rootmind mcp tokens list)", ClientExit.USAGE
+            ) from None
+        raise
+    ctx.emit({"revoked": name}, f"Revoked {name}; the MCP server refuses it from now on.")
+    return ClientExit.OK
+
+
+def _mcp_tokens_from_status(ctx: Context) -> int:
+    """``mcp tokens list`` for a service without ``/mcp/tokens``: the default token only."""
     from ..auth import token_fingerprint
 
-    if getattr(ctx.args, "url", None):
-        raise ClientError(
-            "mcp tokens list works with this account's service only", ClientExit.USAGE
-        )
-    probe = ctx.probe or default_probe()
-    if probe is None:
-        raise ClientError(
-            "the RootMind service runs on Windows and Linux only", ClientExit.NO_SERVICE
-        )
-    info = probe.status()
+    info = ctx.target.service if ctx.target else None
     endpoint = _mcp_endpoint(info)
     if endpoint is None:
-        message = (
-            "MCP over HTTP is off"
-            if info.get("installed")
-            else "the RootMind service is not set up"
-        )
-        ctx.emit({"tokens": [], "mcp_http": None}, message)
+        ctx.emit({"tokens": [], "mcp_http": None}, "MCP over HTTP is off")
         return ClientExit.OK
     path = endpoint["token_file"]
-    token = {"name": "default", "file": path, "readable": False, "fingerprint": None}
+    token = {"name": "default", "kind": "file", "file": path, "folders": None, "fingerprint": None}
     if path:
         try:
             value = read_token_file(Path(path), "MCP token file")
         except ClientError:
             pass
         else:
-            token.update(readable=True, fingerprint=f"sha256:{token_fingerprint(value)}")
+            token["fingerprint"] = token_fingerprint(value)
     lines = [
         f"MCP endpoint: {endpoint['url']} ({endpoint['state']})",
-        f"  default  {token['fingerprint'] or '(not readable for this account)'}  {path}",
+        f"  default          {('sha256:' + token['fingerprint']) if token['fingerprint'] else '(not readable)'}"
+        "  every folder",
     ]
     ctx.emit({"tokens": [token], "mcp_http": endpoint}, lines)
     return ClientExit.OK

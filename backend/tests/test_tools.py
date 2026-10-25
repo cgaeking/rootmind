@@ -382,7 +382,7 @@ def test_json_string_arguments_are_parsed(repo):
 
 
 def test_repository_failure_becomes_tool_error(repo, monkeypatch):
-    def broken():
+    def broken(**_kwargs):
         raise RuntimeError("database is locked")
 
     monkeypatch.setattr(repo, "get_statistics", broken)

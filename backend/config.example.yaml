@@ -29,6 +29,9 @@ connectors:
     type: local
     # Absolute or relative path, e.g. C:/Users/<you>/Documents or ~/Documents
     path: ./evals/corpus
+    # For a mounted network share (CIFS/NFS), whose changes made on other
+    # machines raise no event: re-scan this folder every N minutes.
+    # rescan_minutes: 10
 
 # Indexer settings
 indexer:
@@ -74,6 +77,22 @@ remote_access:
   enabled: false
   domain: null        # a reserved ngrok domain such as name.ngrok-free.app
 
+# MCP over HTTP for other machines (the RootMind service; see
+# docs/SERVER.md). Off unless network.bind is set; the loopback listener on
+# 127.0.0.1 that the app and remote access use is unchanged.
+# mcp_http:
+#   allowed_hosts: [rootmind.example.lan]   # Host names clients use (required)
+#   allowed_origins: []                       # browser origins besides loopback
+#   network:
+#     bind: 0.0.0.0          # or 127.0.0.1 behind a reverse proxy on this machine
+#     port: 3443
+#     tls_cert: /home/rootmind/tls/fullchain.pem
+#     tls_key: /home/rootmind/tls/privkey.pem
+#     insecure_http: false   # plain HTTP on a non-loopback address: tokens unencrypted
+#     allow_default_token: false   # data/api_token.txt sees every folder
+#   # Named tokens are added by `rootmind mcp tokens create`, as SHA-256 only:
+#   # tokens:
+#   #   - {name: alice, sha256: <64 hex>, folders: [projects]}
 # Tracing of the question loop, off by default. Traces contain the question,
 # the model's tool arguments and the document text it read (see SECURITY.md).
 # local: one JSONL file and a readable Markdown summary per process under
