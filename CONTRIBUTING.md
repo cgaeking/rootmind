@@ -41,7 +41,15 @@ npx --yes @anthropic-ai/mcpb@2.1.2 validate packaging/mcpb/manifest.json
 ```
 
 The backend CLI has the commands `api`, `index`, `rebuild-trigrams`, `mcp`,
-`mcp-http` and `service`; `uv run rootmind <command> --help` describes each.
+`mcp-http` and `service`, and the client commands of the running service
+(`status`, `folders`, `search`, `ask`, `config`, `mcp tokens`,
+`remote-access`); `uv run rootmind <command> --help` describes each. The client
+commands' tests (`tests/test_client_cli.py`) run against a fake REST API
+(`tests/fake_rest.py`) and a fake service probe; the `no_real_service` fixture
+makes any lookup of the machine's own service fail, so a test never reads the
+token of a RootMind service you use. Do not run `rootmind status` and the other
+client commands from a development checkout against your own service while
+debugging unless you mean to change it.
 
 Desktop:
 

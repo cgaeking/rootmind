@@ -19,6 +19,7 @@
       closed port answers "could not reach", not a missing module;
     - GET /remote-access: the ngrok SDK (a native extension) imports in the
       build, and remote access is off by default (no tunnel is opened);
+    - the client command search through that API (--url, --token-file);
     - mcp-http: 401 without and 200 with the token, the five tools;
     - mcp over stdio: initialize and tools/list, with JSON-only stdout.
 
@@ -304,6 +305,19 @@ try {
         Fail "remote access is not off by default: $($remote.Text)"
     }
     Pass "the ngrok SDK $($remote.Json.sdk.version) is bundled; remote access is off by default"
+
+    # The command-line client (rootmind-backend search) against the same API.
+    $tokenFile = Join-Path $WorkDir "rest_token.txt"
+    [IO.File]::WriteAllText($tokenFile, $token, (New-Object System.Text.UTF8Encoding $false))
+    $client = Start-Backend -Arguments @("search", "invoice", "--json", "--url", $url, "--token-file", $tokenFile) `
+        -Environment @{ RLM_HOME = $indexHome }
+    $client.Process.StandardInput.Close()
+    $clientOutput = $client.Process.StandardOutput.ReadToEnd()
+    $client.Process.WaitForExit()
+    if ($client.Process.ExitCode -ne 0) { Fail "search exited with $($client.Process.ExitCode): $($client.Stderr.Result)" }
+    $found = $clientOutput | ConvertFrom-Json
+    if ($found.count -lt 1) { Fail "search through the client found nothing: $clientOutput" }
+    Pass "client command search -> $($found.count) result(s) through the API"
     Stop-Backend $api
 
     # --- mcp-http -----------------------------------------------------------------------------

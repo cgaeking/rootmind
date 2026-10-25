@@ -4,6 +4,14 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Added
+
+- Command line for the running service ([#35](https://github.com/cgaeking/rootmind/issues/35)): `rootmind status`, `folders list|add|remove`, `index [--full] [--folder N] [--wait]`, `search`, `ask`, `config llm`, `mcp tokens list` and `remote-access on|off|status`, each with `--json`, in the `rootmind` command and in the backend executable (`rootmind-backend`). They find the service of the account like the app does (`service status`, then a check that the service's own process listens on the port), read the REST token from its protected file and say clearly when the account cannot read it. API keys and the ngrok authtoken come from a file or stdin, never from an argument, and no secret is printed, not even masked. `--url` and `--token-file` (or `RLM_URL` and `RLM_TOKEN_FILE`) point the commands at another REST API; plain `http://` only to loopback. The README has a new "Command line" section.
+
+### Changed
+
+- `rootmind index` now asks the running service to index. It still indexes in its own process with the new `--local`, with a global `--config`, when `RLM_HOME` is set, or when the account has no RootMind service; `--connector` is now also spelled `--folder`, and `--json` prints the result.
+
 ## [2.4.0] - 2026-10-22
 
 ### Added

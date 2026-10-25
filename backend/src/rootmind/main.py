@@ -4,13 +4,19 @@
 
     rootmind [--config C] [--debug] [--version]
       api [--host H] [--port P] [--require-token]
-      index [--full] [--connector N]
+      index [--full] [--folder N] [--wait] [--local]
       rebuild-trigrams
       mcp ...          MCP over stdio (rootmind.mcp_stdio)
+      mcp tokens ...   the MCP over HTTP tokens of the service (rootmind.client)
       mcp-http ...     MCP over HTTP with a bearer token (rootmind.mcp_http)
-      service ...      Windows background service (rootmind.service.cli)
+      service ...      background service (rootmind.service.cli)
+      status | folders | search | ask | config | remote-access
+                       client of the running service (rootmind.client)
 
-Without a command it runs ``api``. The packaged executable
+Without a command it runs ``api``. The client commands talk to the running
+service through its REST API (:mod:`rootmind.client`); ``index`` does so too,
+unless it runs in this process (``--local``, see
+:func:`rootmind.client.commands.index_runs_locally`). The packaged executable
 (``rootmind-backend.exe``) runs the same entry point. The desktop app does not
 start ``api``: it talks to the Windows service (``service run backend``, see
 :mod:`rootmind.service.host`). ``api`` is for development and other setups.
@@ -23,6 +29,7 @@ unchanged. A ``--config`` given before them is passed on to ``mcp`` and
 
 import argparse
 import importlib
+import json
 import logging
 import os
 import socket
@@ -48,13 +55,13 @@ class UsageError(Exception):
     """Invalid input from the command line or the environment (exit code 2)."""
 
 
-def setup_logging(debug: bool = False):
-    """Configure logging."""
+def setup_logging(debug: bool = False, stream: Any = None):
+    """Configure logging (to stdout unless ``stream`` is given)."""
     level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(
         level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
+        handlers=[logging.StreamHandler(stream or sys.stdout)],
     )
 
 
@@ -279,14 +286,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    index_parser = subparsers.add_parser("index", help="Index the configured folders")
-    index_parser.add_argument("--full", action="store_true", help="Full re-index")
-    index_parser.add_argument("--connector", help="Index a specific connector only")
+    from .client import commands as client_commands
+
+    client_commands.add_index_parser(subparsers)
 
     subparsers.add_parser("rebuild-trigrams", help="Rebuild the trigram index for fuzzy search")
+    client_commands.add_parsers(subparsers)
 
     for name, help_text in (
-        ("mcp", "MCP server over stdio (see: mcp --help)"),
+        ("mcp", "MCP server over stdio (see: mcp --help); mcp tokens list: the MCP tokens"),
         ("mcp-http", "MCP server over HTTP with a bearer token (see: mcp-http --help)"),
         (
             "service",
@@ -329,7 +337,58 @@ def _find_forwarded(argv: list[str]) -> tuple[str, list[str], str | None] | None
     return None
 
 
+def _reconfigure_output() -> None:
+    """Never fail on characters the console cannot show (Windows code pages)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
+def _client_logging(debug: bool) -> None:
+    # Client output goes to stdout (JSON with --json); log only problems, to stderr.
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.WARNING,
+        format="%(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+
+def _run_client(args: argparse.Namespace) -> None:
+    from .client import commands as client_commands
+
+    _reconfigure_output()
+    _client_logging(getattr(args, "debug", False))
+    code = client_commands.run(args)
+    if code:
+        sys.exit(code)
+
+
+def _mcp_tokens_parser() -> argparse.ArgumentParser:
+    from .client import commands as client_commands
+
+    parser = argparse.ArgumentParser(
+        prog=f"{_prog()} mcp tokens",
+        description="The bearer tokens of MCP over HTTP. Tokens are never printed.",
+    )
+    actions = parser.add_subparsers(dest="tokens_command", metavar="{list}", required=True)
+    actions.add_parser(
+        "list",
+        parents=[client_commands.client_options()],
+        help="List the tokens (name and fingerprint)",
+    )
+    return parser
+
+
 def _run_forwarded(command: str, rest: list[str], config: str | None) -> None:
+    if command == "mcp" and rest[:1] == ["tokens"]:
+        args = _mcp_tokens_parser().parse_args(rest[1:])
+        args.command = "mcp-tokens"
+        _run_client(args)
+        return
     if command == "service":
         if config is not None:
             print("error: --config does not apply to the service commands", file=sys.stderr)
@@ -373,14 +432,28 @@ def main(argv: list[str] | None = None):
         _run_forwarded(args.command, args.rest, args.config)
         return
 
-    setup_logging(args.debug)
+    from .client import commands as client_commands
+
+    if args.command in client_commands.CLIENT_COMMANDS:
+        _run_client(args)
+        return
+    if args.command == "index":
+        local, note = client_commands.index_runs_locally(args)
+        if not local:
+            _run_client(args)
+            return
+        if note:
+            print(f"note: {note}", file=sys.stderr)
+
+    # With index --json, stdout carries only the JSON result.
+    setup_logging(args.debug, sys.stderr if getattr(args, "json", False) else None)
     # --config defaults to config.yaml here (CONFIG_PATH does not apply), as before.
     init_config(args.config if args.config is not None else DEFAULT_CONFIG_FILE)
     config = get_config()
 
     try:
         if args.command == "index":
-            run_index(config, args.full, args.connector)
+            run_index(config, args.full, args.connector, as_json=args.json)
         elif args.command == "rebuild-trigrams":
             run_rebuild_trigrams(config)
         else:
@@ -415,8 +488,8 @@ def run_rebuild_trigrams(config: AppConfig):
     print(f"\n\nDone! {count} documents indexed for fuzzy search.")
 
 
-def run_index(config: AppConfig, full: bool, connector_name: str | None):
-    """Run an indexing pass."""
+def run_index(config: AppConfig, full: bool, connector_name: str | None, as_json: bool = False):
+    """Run an indexing pass in this process (``index --local``)."""
     from .api.app import create_connectors
     from .database import DocumentRepository
     from .indexer import Indexer, SyncManager
@@ -425,18 +498,25 @@ def run_index(config: AppConfig, full: bool, connector_name: str | None):
     connectors = create_connectors(config)
 
     if not connectors:
-        print("No connectors configured!")
+        if as_json:
+            print(json.dumps({"error": {"message": "no folders configured"}}))
+        else:
+            print("No connectors configured!")
         return
 
     indexer = Indexer(db, connectors, config)
     sync_manager = SyncManager(db, connectors, config, indexer)
 
-    print(f"Starting {'full' if full else 'incremental'} index...")
+    if not as_json:
+        print(f"Starting {'full' if full else 'incremental'} index...")
 
     if full:
         results = sync_manager.full_sync(connector_name)
     else:
         results = sync_manager.incremental_sync(connector_name)
+    if as_json:
+        print(json.dumps(results, indent=2, default=str))
+        return
 
     print(f"\nIndexing completed in {results['duration_seconds']:.2f}s")
     for name, counts in results["results"].items():

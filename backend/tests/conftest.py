@@ -1,5 +1,7 @@
 """Shared fixtures. Tests run fully offline: constructing a real LLM client fails.
 
+- ``no_real_service`` (autouse): the client commands never find the machine's
+  RootMind service; tests pass a fake probe or ``--url``.
 - ``offline_llm`` / ``isolated_config`` (autouse): no real SDK clients, no API
   keys or tokens, no background scheduler, a fresh ``RLM_HOME`` and working
   directory per test, so a developer's own ``.env`` or ``config.yaml`` is never
@@ -56,6 +58,28 @@ def offline_llm(monkeypatch):
         "MCP_API_TOKEN",
         "RLM_API_TOKEN",
     ):
+        monkeypatch.delenv(var, raising=False)
+    yield
+
+
+class RealServiceProbeError(RuntimeError):
+    pass
+
+
+@pytest.fixture(autouse=True)
+def no_real_service(monkeypatch):
+    """The client commands never look up (or read the token of) the real RootMind service.
+
+    Tests pass a fake probe or ``--url``; finding the machine's service fails loudly.
+    """
+    from rootmind.client import commands, discovery
+
+    def refuse():
+        raise RealServiceProbeError("the real RootMind service was looked up in a test")
+
+    monkeypatch.setattr(discovery, "default_probe", refuse)
+    monkeypatch.setattr(commands, "default_probe", refuse)
+    for var in ("RLM_URL", "RLM_TOKEN_FILE"):
         monkeypatch.delenv(var, raising=False)
     yield
 
