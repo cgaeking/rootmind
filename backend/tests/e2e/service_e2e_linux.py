@@ -410,8 +410,12 @@ def test(exe_dir: Path, api: int, mcp_port: int, work: Path) -> None:
     check(code == 200 and "a.md" not in found, "the scoped token does not see the other folder")
     no_secret_in([DATA], [scoped], "the new token is stored nowhere in the data folder")
     code, found = search(scoped, "nebulaharborbeta", net_port)
-    check(code == 200 and "b.md" in found, "the network listener takes the named token")
-    check(search(mcp_token, "nebulaharborbeta", net_port)[0] == 401, "but not the default token")
+    check(
+        code == 200 and "b.md" in found,
+        f"the network listener takes the named token ({code}: {found[:300]})",
+    )
+    code, found = search(mcp_token, "nebulaharborbeta", net_port)
+    check(code == 401, f"but not the default token ({code})")
     check(search(mcp_token, "quartzlanternalpha")[0] == 200, "loopback still takes it")
 
     expect_exit([*cli, "mcp", "tokens", "revoke", "scoped"], 0, "mcp tokens revoke")
