@@ -57,7 +57,10 @@ scripted stand-in for the model searches with the query written by hand for each
 So it measures the index and the tool layer, not the model's search strategy: hit@1 (the
 document read is an expected source), hit@5 (an expected source is among the first five
 hits) and location (the cited page, slide or sheet). With hand-picked queries, 1.0 is the
-expected result; a drop means a regression in parsing, ranking or location lookup. It exits
+expected result; a drop means a regression in parsing, ranking or location lookup. The
+`dry_search` queries are phrases that occur literally in the documents;
+`tests/test_evals_dry.py` also checks the location for multi-word queries as models write
+them ("Ultralight 1P tent target weight", [#55](https://github.com/cgaeking/rootmind/issues/55)). It exits
 1 when hit@5 over the gated cases drops below `--min-hit` (default 1.0); c09 is reported but
 not gated.
 

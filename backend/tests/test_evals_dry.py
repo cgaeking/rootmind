@@ -323,3 +323,28 @@ def test_summary_counts_runs_at_the_step_limit():
     summary = run_evals.summarize_live(payload["cases"])
     assert summary["runs_at_step_limit"] == 1
     assert summary["tool_calls_total"] == 2 and summary["tokens_total"] == 200
+
+
+# Queries as models write them (c08's is granite4.1:8b's query from the #47
+# traces). None of them occurs literally in its document.
+MODEL_STYLE_QUERIES = [
+    ("c01", "total amount due INV-2026-0142"),
+    ("c02", "INV-2026-0142 payment due date"),
+    ("c06", "Trailhead 2P tent wholesale price"),
+    ("c07", "Ridge headlamp retail price"),
+    ("c08", "Ultralight 1P tent target weight"),
+]
+
+
+def test_model_style_queries_find_the_expected_location(tmp_path):
+    """Regression (#55): multi-word queries got no page/slide/sheet on the eval corpus."""
+    cases = {c["id"]: c for c in run_evals.load_cases(run_evals.DEFAULT_DATASET)}
+    _, repo = run_evals.build_index(run_evals.DEFAULT_CORPUS, tmp_path)
+    try:
+        for case_id, query in MODEL_STYLE_QUERIES:
+            case = cases[case_id]
+            hit = repo.search_fulltext(query, limit=5)[0]
+            assert hit["file_name"] in case["expected_sources"], (case_id, query)
+            assert hit["page"] == case["expected_location"], (case_id, query, hit["page"])
+    finally:
+        repo.engine.dispose()
