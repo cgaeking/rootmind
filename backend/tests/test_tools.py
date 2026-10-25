@@ -210,6 +210,65 @@ def test_search_formats_hits_with_snippet_and_read_hint(indexed_repo):
     assert ctx.tool_calls == [{"tool": "search_documents", "input": {"query": "Total due"}}]
 
 
+def test_multi_word_search_locates_the_hit_and_suggests_a_window_around_it(indexed_repo):
+    """Regression (#55): a query that is not a literal phrase got no Location and no Position."""
+    ctx = _ctx()
+    result = tools.execute("search_documents", {"query": "INV-7 total due"}, indexed_repo, ctx)
+
+    invoice = doc_id(indexed_repo, "invoice.pdf")
+    content = indexed_repo.get_document_content(invoice)["content"]
+    ref = ctx.referenced[0]
+    assert ref["doc_id"] == invoice
+    assert ref["page"] == "Page 2"
+    assert ref["page"] == indexed_repo.resolve_page(invoice, ref["position"])
+    assert "Location: Page 2" in result.text
+    assert f"Position: ~char {ref['position']:,}." in result.text
+    start, end = (int(x) for x in re.findall(r"start_char=(\d+), end_char=(\d+)", result.text)[0])
+    assert start <= ref["position"] < end
+    # The position is one of the highlighted matches in the snippet shown.
+    snippet = re.search(r"<snippet>(.*?)</snippet>", result.text, re.DOTALL).group(1)
+    assert content[ref["position"] : ref["position"] + 5] in snippet.replace("**", "")
+
+
+def test_re_reading_a_window_already_read_adds_a_note(repo):
+    """#47: re-reading small windows of one document ran into the iteration limit."""
+    content = "".join(f"line {n:04d}\n" for n in range(500))  # 5,000 chars
+    doc = repo.upsert_document("docs", "log.txt", "log.txt", "txt", content_text=content).id
+    ctx = _ctx()
+
+    def read(**window):
+        return tools.execute("read_document", {"doc_id": doc, **window}, repo, ctx)
+
+    assert not read(start_char=4000, end_char=4100).text.startswith("Note:")
+
+    inside = read(start_char=4030, end_char=4060)
+    assert inside.text.startswith("Note: chars 4,030-4,060 of this document were already returned")
+    # The suggested wider window reaches 3,000 chars back and 1,000 ahead (capped at the end).
+    assert f'read_document(doc_id="{doc}", start_char=1030, end_char=5000)' in inside.text
+    assert _body(inside) == content[4030:4060]  # the text is still returned
+
+    # Overlapping, but reaching past what was read: new text, no note.
+    assert not read(start_char=4050, end_char=4200).text.startswith("Note:")
+    # Covered by the two earlier windows together.
+    assert read(start_char=4010, end_char=4190).text.startswith("Note: chars ")
+    # Elsewhere in the document: no note.
+    assert not read(start_char=0, end_char=100).text.startswith("Note:")
+
+    assert not read().text.startswith("Note:")  # the whole document, for the first time
+    again = read(start_char=10, end_char=50)
+    assert again.text.startswith("Note: you already read this whole document")
+    assert not again.is_error
+    assert _body(again) == content[10:50]
+
+
+def test_reads_in_separate_contexts_get_no_note(indexed_repo):
+    """MCP clients use one context per call; they never see the note."""
+    invoice = doc_id(indexed_repo, "invoice.pdf")
+    for _ in range(2):
+        result = tools.execute("read_document", {"doc_id": invoice}, indexed_repo, _ctx())
+        assert not result.text.startswith("Note:")
+
+
 def test_search_without_hits(indexed_repo):
     result = tools.execute("search_documents", {"query": "zeppelin"}, indexed_repo, _ctx())
     assert not result.is_error

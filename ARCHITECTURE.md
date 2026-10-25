@@ -921,7 +921,7 @@ executor.
 | `search_documents` | FTS5 search. Returns file name, id, type, size, location, a snippet, and for each hit a suggested `read_document` window (3,000 characters before, 1,000 after) |
 | `search_fuzzy` | Trigram search for misspelled terms |
 | `list_documents` | Metadata only, optionally filtered by file type or a file-name substring |
-| `read_document` | The text of a document or a character window of it, with a hint where to continue |
+| `read_document` | The text of a document or a character window of it, with a hint where to continue. A window that earlier reads of the same question already returned in full comes back with a note that the text is already in the conversation and a wider window to read instead |
 | `get_statistics` | Counts, file types, total size |
 
 All tools are read-only. None of them writes, deletes, runs commands or makes
@@ -950,11 +950,20 @@ The desktop's "load more" depends on that. Snippets are computed afterwards
 for the returned results only, each from the most precise strategy that found
 the document.
 
-**Positions and locations.** For each hit, the repository looks up the
-character position of the search phrase in the stored text, exact first and
-then case-insensitive. The position feeds the suggested read window. The
-location label is the last page, slide or sheet marker before that position.
-Plain text, Markdown and DOCX have no markers and get no location.
+**Positions and locations.** A hit's position comes from its FTS5 snippet.
+The snippet, without its highlight markers, is a verbatim slice of the stored
+text, so `instr()` finds where it starts, and the highlights give the offsets
+of the matched terms. Of those, the position is the start of the place where
+the most distinct query terms occur within 500 characters of each other on
+the same page, slide or sheet (the earliest on a tie). A two-page invoice
+searched for "INV-2026-0142 total due" thus points at page 2, not at the
+invoice number at the top of page 1, and the position always lies inside the
+snippet shown with the hit. When the snippet has no highlight (a match in the
+file name only) or cannot be found again, the literal search phrase is looked
+up instead, exact first and then case-insensitive. The position feeds the
+suggested read window. The location label is the last page, slide or sheet
+marker before that position. Plain text, Markdown and DOCX have no markers
+and get no location.
 
 **Fuzzy search.** `document_trigrams` stores trigrams of each file name and of
 the first 1,000 distinct words (in document order) from the first 50,000

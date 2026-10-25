@@ -8,6 +8,11 @@ All notable changes to RootMind are documented in this file. The format is based
 
 - Optional tracing of the question loop ([#48](https://github.com/cgaeking/rootmind/issues/48), part 1), off by default. One span per model call (purpose, tokens, stop reason, tool requests, duration) and per tool call (arguments, result size, the documents a search returned, the window a read returned). `scripts/run_evals.py --trace <folder>` writes a JSONL file and a readable Markdown summary per eval run, and each run in the results carries its `trace_id`. `tracing.local: true` in `config.yaml` writes the same files under `logs/traces/` in the data folder. `tracing.langfuse: true` (or `run_evals.py --langfuse`) exports to Langfuse with the new optional extra `rootmind-backend[tracing]` and the `LANGFUSE_*` environment variables. With tracing off, the loop makes no tracing calls and loads no tracing code. Traces contain questions and document text but never API keys; SECURITY.md lists what they hold and where they go.
 
+### Fixed
+
+- Search hits got a page, slide or sheet (and a suggested read window) only when the whole query occurred word for word in the document ([#55](https://github.com/cgaeking/rootmind/issues/55)). Models search with several words ("Ultralight 1P tent target weight"), so most hits had no location, and answers cited none or a wrong one (in the [#47](https://github.com/cgaeking/rootmind/issues/47) eval traces "Page 1" for a fact on page 2). The position now comes from the full-text match itself: the place in the shown snippet where the most query terms occur together on one page, slide or sheet.
+- A `read_document` call for a window that earlier reads of the same question already returned now carries a note that the text is already in the conversation, with a wider window to read instead. In the #47 traces a local model re-read 30–150-character windows of one invoice eight times until the iteration limit (48k tokens instead of about 5k). The text is still returned.
+
 ## [2.4.0] - 2026-10-22
 
 ### Added
