@@ -686,9 +686,12 @@ llm:
 - **Search first:** Ollama models are not forced to call a tool on the first
   turn, since not every model supports that. If the first answer never looked at
   the documents, RootMind asks once more with an explicit instruction.
-- Small local models follow the tool loop less reliably than the hosted ones.
-  Measured with `granite4.1:8b` on an 8 GB graphics card: 10 of 16 eval cases
-  passed in all three runs, mean pass rate 71% (details in
+- How well a local model follows the tool loop depends on the model. Measured
+  with `granite4.1:8b` on an 8 GB graphics card, on the eval set of ten short
+  fictional documents: 15 of 16 cases passed in all three runs, mean pass rate
+  96%; the one flaky case is an unanswerable question whose correct "not found"
+  answers were sometimes worded in a way the check does not accept. Large
+  documents and long contexts are not covered by that measurement (details in
   [`backend/evals`](backend/evals/README.md#latest-live-run-with-a-local-model-ollama)).
   Measure the one you use with `scripts/run_evals.py --mode live --provider
   ollama --model <name>` (see [`backend/evals`](backend/evals/README.md)).

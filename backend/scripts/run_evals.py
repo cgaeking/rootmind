@@ -286,18 +286,48 @@ def tool_path(calls: list[dict[str, Any]]) -> str:
     return " -> ".join(parts) or "(no tools)"
 
 
+# Typography that models put into otherwise correct answers (granite4.1 writes
+# "1.1 kg" and "2026‑04‑30"), mapped to what the checks spell.
+_CHECK_CHARS = str.maketrans(
+    {
+        **dict.fromkeys("        ", " "),
+        **dict.fromkeys("‐‑‒–−", "-"),
+        **dict.fromkeys("‘’‛′", "'"),
+        **dict.fromkeys("“”‟″", '"'),
+        **dict.fromkeys("*`", None),  # Markdown emphasis and code spans
+    }
+)
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalize_for_check(text: str) -> str:
+    """Lower case, with Unicode spaces, hyphens and quotes as ASCII and Markdown marks removed.
+
+    The checks compare strings; an answer that says "1.1 kg" with a narrow
+    no-break space, or bolds part of a date, is still the expected answer.
+    """
+    return _WHITESPACE_RE.sub(" ", (text or "").translate(_CHECK_CHARS)).lower()
+
+
 def run_checks(case: dict[str, Any], answer: str, source_names: list[str]) -> dict[str, bool]:
-    """Answer checks; checks that do not apply to a case are left out."""
-    text = (answer or "").lower()
+    """Answer checks; checks that do not apply to a case are left out.
+
+    Answer and expected strings are compared after :func:`normalize_for_check`.
+    """
+    text = normalize_for_check(answer)
+
+    def found(expected: str) -> bool:
+        return normalize_for_check(expected) in text
+
     checks: dict[str, bool] = {}
     if case["expected_sources"]:
         checks["source_hit"] = any(e in source_names for e in case["expected_sources"])
     if case["must_contain"]:
-        checks["contains_all"] = all(m.lower() in text for m in case["must_contain"])
+        checks["contains_all"] = all(found(m) for m in case["must_contain"])
     if case["must_contain_any"]:
-        checks["contains_any"] = any(m.lower() in text for m in case["must_contain_any"])
+        checks["contains_any"] = any(found(m) for m in case["must_contain_any"])
     if case["must_not_contain"]:
-        checks["no_forbidden"] = not any(m.lower() in text for m in case["must_not_contain"])
+        checks["no_forbidden"] = not any(found(m) for m in case["must_not_contain"])
     return checks
 
 

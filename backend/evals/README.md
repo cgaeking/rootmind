@@ -34,7 +34,9 @@ uv run python scripts/make_demo_corpus.py               # regenerate corpus/ aft
 `--provider ollama` needs no key (set `OLLAMA_BASE_URL` for a server other than
 localhost). Each
 case runs `--runs` times; a run passes when an expected source is cited and the string
-checks hold. The report shows the pass rate per case, how many distinct tool paths and
+checks hold. The string checks are case-insensitive and ignore typography: Unicode spaces
+(such as U+202F, a narrow no-break space, between "1.1" and "kg"), Unicode hyphens and dashes, curly quotes
+and Markdown `*` and backticks count as their plain forms (see #47). The report shows the pass rate per case, how many distinct tool paths and
 source sets the runs produced (agent consistency), the median number of tool calls, tokens
 and p50 latency; the JSON results also keep each run's `stop_reasons`, which show answers
 cut off by the output token limit. It costs tokens and never runs in CI.
@@ -145,35 +147,59 @@ sets" count distinct values across runs, so with a single run they are always 1;
 
 ## Latest live run with a local model (Ollama)
 
-`granite4.1:8b` (5.3 GB download) through Ollama 0.40.8 on Windows, context length 8192,
-`--runs 3`, 2026-10-22. Hardware: NVIDIA GeForce RTX 2070 with 8 GB; `ollama ps` showed
-91% GPU / 9% CPU. One model on one machine, so this says what a small local model can
-do, not how local models compare.
+`granite4.1:8b` through Ollama 0.40.11 on Windows 11, `OLLAMA_CONTEXT_LENGTH=8192` (0.40.11
+would pick 4096 on this card), `--runs 3`, 2026-10-25. Hardware: NVIDIA GeForce RTX 2070 with
+8 GB, 32 GB RAM. One model on one machine, so this says what a small local model can do, not how
+local models compare. The largest prompt of any run was about 5,600 tokens, so the context
+length does not cut anything off on this corpus.
 
-| case | pass | tool paths | source sets | median tool calls | mean tokens | p50 latency (s) |
-|---|---|---|---|---|---|---|
-| c01 | 100% | 2 | 1 | 2 | 4,879 | 7.0 |
-| c02 | 0% | 2 | 1 | 1 | 3,846 | 8.92 |
-| c03 | 100% | 2 | 1 | 1 | 3,566 | 4.74 |
-| c04 | 67% | 2 | 1 | 2 | 5,205 | 11.0 |
-| c05 | 33% | 1 | 1 | 1 | 3,289 | 5.23 |
-| c06 | 100% | 1 | 1 | 1 | 4,929 | 9.67 |
-| c07 | 100% | 2 | 3 | 1 | 5,908 | 12.86 |
-| c08 | 0% | 1 | 1 | 1 | 4,954 | 11.15 |
-| c09 | 100% | 1 | 1 | 1 | 3,649 | 6.25 |
-| c10 | 0% | 1 | 1 | 1 | 4,575 | 7.62 |
-| c11 | 100% | 2 | 3 | 1 | 5,313 | 19.53 |
-| c12 | 100% | 3 | 1 | 1 | 4,010 | 7.62 |
-| c13 | 100% | 2 | 2 | 1 | 12,291 | 27.24 |
-| c14 | 33% | 2 | 1 | 2 | 11,216 | 18.73 |
-| c15 | 100% | 3 | 1 | 1 | 6,371 | 6.88 |
-| c16 | 100% | 2 | 1 | 1 | 4,930 | 9.95 |
+These runs belong to the analysis in [#47](https://github.com/cgaeking/rootmind/issues/47): the
+traces (`--trace`) showed that every failing run of the "before" run had a correct answer that the
+string checks rejected, mostly because the model writes a narrow no-break space (U+202F) in
+"1.1 kg" or "3000 mm" and non-breaking hyphens (U+2011) in dates, and because c14's list of
+"not found" phrases was too narrow. The checks now normalize such characters (see Run above),
+and c14 accepts three more phrasings. An answer that names a search hit only by its document id
+now cites that document (it cited every hit before; seen once, in c16).
 
-Mean pass rate 71%; 10 of 16 cases passed every run; 3 cases (c07, c11, c13) cited
-different sources between runs.
+| case | before | before, re-scored | after | after: source sets |
+|---|---|---|---|---|
+| c01 | 100% | 100% | 100% | 1 |
+| c02 | 33% | 100% | 100% | 1 |
+| c03 | 67% | 100% | 100% | 1 |
+| c04 | 67% | 100% | 100% | 1 |
+| c05 | 0% | 100% | 100% | 1 |
+| c06 | 100% | 100% | 100% | 1 |
+| c07 | 100% | 100% | 100% | 1 |
+| c08 | 33% | 100% | 100% | 1 |
+| c09 | 100% | 100% | 100% | 1 |
+| c10 | 33% | 100% | 100% | 1 |
+| c11 | 100% | 100% | 100% | 1 |
+| c12 | 100% | 100% | 100% | 1 |
+| c13 | 100% | 100% | 100% | 1 |
+| c14 | 0% | 100% | 33% | 2 |
+| c15 | 100% | 100% | 100% | 1 |
+| c16 | 100% | 100% | 100% | 1 |
+| **mean pass rate** | **71%** | **100%** | **96%** | |
+| **cases passing every run** | **9 of 16** | **16 of 16** | **15 of 16** | |
 
-- c02, c08 and c10 failed in all three runs, c04, c05 and c14 in some. The failure causes
-  were not analysed.
-- The hosted run above is not directly comparable: it used one run per case and a
-  different model. In it, `claude-sonnet-5-5` passed 15 of 16 cases.
-- The median answer took 4.7 s (c03) to 27 s (c13).
+- *before*: the old checks, as measured. *before, re-scored*: the same 48 answers scored with
+  the new checks, so the difference is the scoring alone. *after*: a new `--runs 3` with the new
+  checks and the source fix. A run with the new checks but without the source fix gave 98% and
+  15 of 16 (c14 2 of 3).
+- c14 (unanswerable) is the remaining flaky case: all three answers that failed in the "after"
+  runs correctly say that the documents have no ticker, in words the check does not list ("none
+  of them provide a stock ticker", "do **not** list a stock ticker"). Phrase lists stay brittle
+  for "not found" answers; the check was not widened further to fit one run.
+- One run per measurement hit the 10-iteration limit (c11 before, c04 after): the model re-read
+  small windows of the same document again and again, then answered correctly in the final
+  call. Such runs cost 30k-48k tokens instead of about 5k.
+- Cited locations: every run of c01, c02 (a fact on page 2 cited as "Page 1") and c06, c07, c08
+  (no sheet or slide) misses `expected_location`. A search hit gets a location only when the
+  whole query occurs in the document, which the model's multi-word queries rarely do. Not part
+  of the pass check.
+- About 290k (before) and 350k (after) tokens for 48 runs; median 9.4 s per answer.
+- The earlier run of 2026-10-22 (Ollama 0.40.8, old checks: 71%, 10 of 16; c02, c08 and c10
+  failed every run) was not re-scored, since its answers are not kept in the repository; its
+  failures look like the same artefact.
+- No hosted model was re-measured for #47; the hosted results above are from 2026-10-11 with the
+  old checks.
