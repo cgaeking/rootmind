@@ -247,7 +247,10 @@ class SyncManager:
 
         Prefers a fixed interval (config.indexer.sync_interval_hours); falls back
         to the cron schedule (config.indexer.sync_schedule) if no interval is set.
-        Runs an initial sync shortly after startup.
+        Runs an initial sync shortly after startup. A folder with
+        ``rescan_minutes`` also gets its own job that syncs only that folder
+        every so many minutes (network shares, where no change event arrives
+        for edits made on other machines).
 
         Args:
             loop: The event loop the scheduler runs on. Pass the server's main
@@ -260,12 +263,13 @@ class SyncManager:
 
         try:
             from apscheduler.schedulers.asyncio import AsyncIOScheduler
+            from apscheduler.triggers.interval import IntervalTrigger
 
             scheduler = AsyncIOScheduler(event_loop=loop) if loop else AsyncIOScheduler()
 
+            trigger: Any = None
+            desc = "no regular sync"
             if interval_hours and interval_hours > 0:
-                from apscheduler.triggers.interval import IntervalTrigger
-
                 trigger = IntervalTrigger(hours=interval_hours)
                 desc = f"every {interval_hours}h"
             elif schedule and len(schedule.split()) == 5:
@@ -280,27 +284,61 @@ class SyncManager:
                     day_of_week=parts[4],
                 )
                 desc = f"cron {schedule}"
-            else:
+
+            rescans = self.rescan_intervals()
+            if trigger is None and not rescans:
                 logger.info("No sync interval/schedule configured, skipping scheduler setup")
                 return
 
-            scheduler.add_job(
-                self._scheduled_sync,
-                trigger,
-                id="scheduled_sync",
-                name="Scheduled Index Sync",
-                # Run a first sync ~30s after start so new folders get indexed soon.
-                next_run_time=datetime.now() + timedelta(seconds=30),
-                replace_existing=True,
-            )
+            if trigger is not None:
+                scheduler.add_job(
+                    self._scheduled_sync,
+                    trigger,
+                    id="scheduled_sync",
+                    name="Scheduled Index Sync",
+                    # Run a first sync ~30s after start so new folders get indexed soon.
+                    next_run_time=datetime.now() + timedelta(seconds=30),
+                    replace_existing=True,
+                )
+            for name, minutes in rescans.items():
+                scheduler.add_job(
+                    self._rescan,
+                    IntervalTrigger(minutes=minutes),
+                    args=[name],
+                    id=f"rescan:{name}",
+                    name=f"Re-scan {name}",
+                    replace_existing=True,
+                )
             scheduler.start()
             self._scheduler = scheduler
-            logger.info(f"Scheduler started: {desc} (initial sync in ~30s)")
+            if rescans:
+                desc += "; re-scan " + ", ".join(f"{n} every {m} min" for n, m in rescans.items())
+            logger.info(
+                "Scheduler started: %s%s",
+                desc,
+                " (initial sync in ~30s)" if trigger is not None else "",
+            )
 
         except ImportError:
             logger.warning("APScheduler not installed, scheduled sync disabled")
         except Exception as e:
             logger.error(f"Error setting up scheduler: {e}")
+
+    def rescan_intervals(self) -> dict[str, int]:
+        """``{folder: minutes}`` of the configured folders that set ``rescan_minutes``."""
+        intervals = {}
+        for connector in self.config.connectors:
+            minutes = getattr(connector, "rescan_minutes", None)
+            if minutes and connector.name in self.connectors:
+                intervals[connector.name] = int(minutes)
+        return intervals
+
+    async def _rescan(self, connector_name: str) -> None:
+        """Start an incremental sync of one folder, unless a sync is running."""
+        if self.start_background(connector_name=connector_name):
+            logger.info("Re-scan of %s started", connector_name)
+        else:
+            logger.info("Re-scan of %s skipped: another sync is still running", connector_name)
 
     async def _scheduled_sync(self) -> None:
         """Start an incremental sync in a worker thread, unless one is running."""

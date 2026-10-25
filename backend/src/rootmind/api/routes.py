@@ -5,12 +5,15 @@ import os
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StringConstraints
 
 from .. import __version__
 from ..access import UNRESTRICTED, FolderAccess, FolderNotAllowed
 from ..config import (
+    DEFAULT_MCP_TOKEN_NAME,
     DEFAULT_MODEL,
+    MCP_TOKEN_NAME,
     OLLAMA_DEFAULT_BASE_URL,
     LlmProvider,
     active_config_path,
@@ -21,7 +24,9 @@ from ..config import (
     is_masked,
     load_config,
     mask_secret,
+    mcp_network_problems,
     save_config,
+    save_mcp_tokens,
 )
 from ..remote_access import (
     RemoteAccessFiles,
@@ -173,6 +178,9 @@ class ConnectorBody(BaseModel):
     path: str | None = None
     include: list[str] | None = None
     exclude: list[str] | None = None
+    # Minutes between re-scans of this folder (network shares); 0 removes the
+    # setting, a missing value keeps the stored one.
+    rescan_minutes: int | None = Field(None, ge=0, le=7 * 24 * 60)
 
 
 class IndexerBody(BaseModel):
@@ -204,6 +212,15 @@ class RemoteAccessUpdate(BaseModel):
     enabled: bool | None = None
     domain: str | None = None
     authtoken: str | None = None
+
+
+class McpTokenCreate(BaseModel):
+    """A new named MCP token (``POST /mcp/tokens``)."""
+
+    name: str = Field(..., description="1-64 letters, digits, '.', '_' or '-'; not 'default'")
+    folders: list[str] | None = Field(
+        None, description="Folder names the token may see; omitted or null: every folder"
+    )
 
 
 class LlmModelsRequest(BaseModel):
@@ -592,6 +609,7 @@ def create_router(app_state: Any) -> APIRouter:
                     path=c.path,
                     include=c.include,
                     exclude=c.exclude,
+                    rescan_minutes=c.rescan_minutes,
                 )
                 for c in cfg.connectors
             ],
@@ -673,6 +691,161 @@ def create_router(app_state: Any) -> APIRouter:
         except Exception as e:
             raise _llm_http_error(provider_error(e, provider), "Listing models") from e
         return {"provider": provider, "models": models}
+
+    # Named MCP over HTTP tokens (stored as SHA-256 in config.yaml, section mcp_http)
+
+    def mcp_token_list(cfg: Any) -> list[dict[str, Any]]:
+        from ..auth import token_fingerprint
+        from ..mcp_http import TOKEN_FILE_NAME
+
+        path = app_home() / "data" / TOKEN_FILE_NAME
+        fingerprint = None
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            value = ""
+        if value:
+            fingerprint = token_fingerprint(value)
+        tokens: list[dict[str, Any]] = [
+            {
+                "name": DEFAULT_MCP_TOKEN_NAME,
+                "kind": "file",
+                "file": str(path),
+                "folders": None,
+                "fingerprint": fingerprint,
+                "created": None,
+            }
+        ]
+        for t in cfg.mcp_http.tokens:
+            tokens.append(
+                {
+                    "name": t.name,
+                    "kind": "named",
+                    "file": None,
+                    "folders": t.folders,
+                    # The same fingerprint the MCP server logs: sha256(token)[:8].
+                    "fingerprint": t.sha256[:8],
+                    "created": t.created,
+                }
+            )
+        return tokens
+
+    def mcp_network_state(cfg: Any) -> dict[str, Any]:
+        network = cfg.mcp_http.network
+        return {
+            "enabled": bool(network.bind),
+            "bind": network.bind,
+            "port": network.port,
+            "tls": bool(network.tls_cert and network.tls_key),
+            "insecure_http": network.insecure_http,
+            "allow_default_token": network.allow_default_token,
+            "allowed_hosts": list(cfg.mcp_http.allowed_hosts),
+            "problems": mcp_network_problems(cfg.mcp_http),
+        }
+
+    @router.get("/mcp/tokens", tags=["MCP"])
+    def list_mcp_tokens():
+        """The MCP over HTTP tokens (never the tokens themselves) and the network listener.
+
+        ``default`` is the token in ``data/api_token.txt`` (every folder; the
+        app and the Claude Desktop bundle use it). Named tokens are stored as
+        SHA-256 only; ``fingerprint`` is the first 8 hex characters, as the MCP
+        server logs it.
+        """
+        cfg = load_config(active_config_path())
+        return {"tokens": mcp_token_list(cfg), "network": mcp_network_state(cfg)}
+
+    @router.post("/mcp/tokens", tags=["MCP"])
+    def create_mcp_token(body: McpTokenCreate):
+        """Create a named MCP token; the answer holds the token, which is not stored anywhere.
+
+        Only its SHA-256 goes to ``config.yaml``. The MCP server accepts it with
+        the next request. ``folders`` limits what the token sees; it must name
+        configured folders.
+        """
+        import secrets
+        from datetime import UTC, datetime
+
+        from ..mcp_http import token_sha256
+        from .app import config_update_lock
+
+        name = body.name.strip()
+        if not MCP_TOKEN_NAME.match(name) or name.lower() == DEFAULT_MCP_TOKEN_NAME:
+            raise HTTPException(
+                status_code=400,
+                detail="A token name has 1-64 letters, digits, '.', '_' or '-' and is not "
+                "'default'",
+            )
+        with config_update_lock:
+            cfg = load_config(active_config_path())
+            if any(t.name.lower() == name.lower() for t in cfg.mcp_http.tokens):
+                raise HTTPException(status_code=409, detail=f"A token named {name} exists")
+            folders = None
+            if body.folders is not None:
+                configured = {c.name for c in cfg.connectors}
+                folders = list(dict.fromkeys(f.strip() for f in body.folders if f.strip()))
+                if not folders:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Name at least one folder, or leave folders out for every folder",
+                    )
+                unknown = [f for f in folders if f not in configured]
+                if unknown:
+                    raise HTTPException(
+                        status_code=400, detail=f"No folder named {', '.join(unknown)}"
+                    )
+            token = secrets.token_urlsafe(32)
+            entry: dict[str, Any] = {"name": name, "sha256": token_sha256(token)}
+            if folders is not None:
+                entry["folders"] = folders
+            entry["created"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            existing = [t.model_dump(mode="json", exclude_none=True) for t in cfg.mcp_http.tokens]
+            try:
+                saved = save_mcp_tokens([*existing, entry], active_config_path())
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid config: {e}") from None
+            get_config().mcp_http = saved.mcp_http
+        logger.info(
+            "MCP token %s created (fingerprint sha256:%s, %s)",
+            name,
+            entry["sha256"][:8],
+            f"folders {', '.join(folders)}" if folders else "every folder",
+        )
+        return JSONResponse(
+            {
+                "name": name,
+                "token": token,
+                "folders": folders,
+                "fingerprint": entry["sha256"][:8],
+                "created": entry["created"],
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @router.delete("/mcp/tokens/{name}", tags=["MCP"])
+    def revoke_mcp_token(name: str):
+        """Revoke a named MCP token; the MCP server refuses it from its next request on."""
+        from .app import config_update_lock
+
+        if name.lower() == DEFAULT_MCP_TOKEN_NAME:
+            raise HTTPException(
+                status_code=400,
+                detail="The default token (data/api_token.txt) cannot be revoked here: the app "
+                "and the Claude Desktop bundle use it. To replace it, delete the file and run "
+                "service install again.",
+            )
+        with config_update_lock:
+            cfg = load_config(active_config_path())
+            kept = [t for t in cfg.mcp_http.tokens if t.name != name]
+            if len(kept) == len(cfg.mcp_http.tokens):
+                raise HTTPException(status_code=404, detail=f"No token named {name}")
+            saved = save_mcp_tokens(
+                [t.model_dump(mode="json", exclude_none=True) for t in kept],
+                active_config_path(),
+            )
+            get_config().mcp_http = saved.mcp_http
+        logger.info("MCP token %s revoked", name)
+        return {"revoked": name}
 
     # Remote access (an ngrok tunnel run by the MCP over HTTP service)
 

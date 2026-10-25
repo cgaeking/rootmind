@@ -565,7 +565,8 @@ def _read_document(repo: DocumentRepository, args: dict, ctx: ToolContext) -> To
 
 
 def _get_statistics(repo: DocumentRepository, args: dict, ctx: ToolContext) -> ToolResult:
-    stats = repo.get_statistics()
+    # Only the folders this request may see (a scoped MCP token sees no other counts).
+    stats = repo.get_statistics(connector_names=ctx.allowed_connectors)
     lines = [
         "Document collection statistics:",
         "",

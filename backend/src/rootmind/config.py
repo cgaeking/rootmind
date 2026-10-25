@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LlmProvider = Literal["anthropic", "openai", "xai", "ollama"]
@@ -129,6 +129,10 @@ class ConnectorConfig(BaseModel):
     # None -> inherit the global indexer.include / indexer.exclude patterns.
     include: list[str] | None = None
     exclude: list[str] | None = None
+    # Re-scan this folder every N minutes (incremental sync of this folder only),
+    # for network shares, where changes made on other machines raise no event.
+    # None: only the regular schedule (indexer.sync_interval_hours).
+    rescan_minutes: int | None = Field(default=None, ge=1, le=7 * 24 * 60)
 
 
 class IndexerConfig(BaseModel):
@@ -172,6 +176,107 @@ class RemoteAccessConfig(BaseModel):
     domain: str | None = None
 
 
+# MCP token names: what `rootmind mcp tokens create <name>` accepts.
+MCP_TOKEN_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# The token in data/api_token.txt (or MCP_API_TOKEN) is listed under this name.
+DEFAULT_MCP_TOKEN_NAME = "default"  # noqa: S105 (a name, not a secret)
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+LOOPBACK_ADDRESSES = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+class McpTokenConfig(BaseModel):
+    """A named MCP over HTTP token. Only its SHA-256 is stored, never the token."""
+
+    name: str
+    sha256: str
+    # Folder (connector) names this token may see; None: every folder.
+    folders: list[str] | None = None
+    created: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        if not MCP_TOKEN_NAME.match(value) or value.lower() == DEFAULT_MCP_TOKEN_NAME:
+            raise ValueError(
+                "a token name has 1-64 letters, digits, '.', '_' or '-' and is not 'default'"
+            )
+        return value
+
+    @field_validator("sha256")
+    @classmethod
+    def _check_hash(cls, value: str) -> str:
+        if not _SHA256_HEX.match(value):
+            raise ValueError("sha256 must be 64 lowercase hex characters")
+        return value
+
+
+class McpNetworkConfig(BaseModel):
+    """A second MCP over HTTP listener for other machines (run by the RootMind service).
+
+    Off unless ``bind`` is set. The loopback listener that the app, the Claude
+    Desktop bundle and remote access use stays as it is. It always needs
+    ``mcp_http.allowed_hosts``. A non-loopback ``bind`` needs ``tls_cert`` and
+    ``tls_key``, or ``insecure_http: true`` (plain HTTP, for a trusted network
+    or a TLS proxy on another machine). A loopback ``bind`` (another port) is
+    for a reverse proxy on the same machine: plain HTTP, and the proxy's
+    ``X-Forwarded-*`` headers are trusted. See :func:`mcp_network_problems`.
+    """
+
+    bind: str | None = None
+    port: int = Field(default=3443, ge=1, le=65535)
+    tls_cert: str | None = None
+    tls_key: str | None = None
+    insecure_http: bool = False
+    # The token in data/api_token.txt sees every folder; on the network
+    # listener only named tokens are accepted unless this is true.
+    allow_default_token: bool = False
+
+
+class McpHttpConfig(BaseModel):
+    """MCP over HTTP: named tokens, the network listener, and Host/Origin allowlists."""
+
+    tokens: list[McpTokenConfig] = Field(default_factory=list)
+    # Host header values the network listener accepts (the server's names and
+    # addresses, without a port). Required when the network listener is on.
+    allowed_hosts: list[str] = Field(default_factory=list)
+    # Browser origins accepted besides loopback (added to MCP_ALLOWED_ORIGINS).
+    allowed_origins: list[str] = Field(default_factory=list)
+    network: McpNetworkConfig = Field(default_factory=McpNetworkConfig)
+
+    @field_validator("tokens")
+    @classmethod
+    def _unique_tokens(cls, tokens: list[McpTokenConfig]) -> list[McpTokenConfig]:
+        names = [t.name.lower() for t in tokens]
+        if len(names) != len(set(names)):
+            raise ValueError("token names must be unique")
+        hashes = [t.sha256 for t in tokens]
+        if len(hashes) != len(set(hashes)):
+            raise ValueError("two tokens have the same hash")
+        return tokens
+
+
+def mcp_network_problems(mcp: McpHttpConfig) -> list[str]:
+    """Why the network listener must not start; empty when it may, or when it is off."""
+    network = mcp.network
+    if not network.bind:
+        return []
+    problems = []
+    loopback = network.bind.strip().strip("[]").lower() in LOOPBACK_ADDRESSES
+    if bool(network.tls_cert) != bool(network.tls_key):
+        problems.append("mcp_http.network needs both tls_cert and tls_key")
+    elif not network.tls_cert and not network.insecure_http and not loopback:
+        problems.append(
+            "mcp_http.network needs tls_cert and tls_key, or insecure_http: true for plain "
+            "HTTP (the bearer tokens would cross the network unencrypted)"
+        )
+    if not mcp.allowed_hosts:
+        problems.append(
+            "mcp_http.allowed_hosts must list the host names or addresses clients use to "
+            "reach this server"
+        )
+    return problems
+
+
 class AppConfig(BaseModel):
     """Main application configuration."""
 
@@ -181,6 +286,7 @@ class AppConfig(BaseModel):
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
     api: APIConfig = Field(default_factory=APIConfig)
     remote_access: RemoteAccessConfig = Field(default_factory=RemoteAccessConfig)
+    mcp_http: McpHttpConfig = Field(default_factory=McpHttpConfig)
 
 
 class Settings(BaseSettings):
@@ -333,6 +439,13 @@ def save_config(data: dict, config_path: str | Path | None = None) -> AppConfig:
         raw_llm["api_key"] = (raw_llm.get("api_keys") or {}).get(prov)
 
     if "connectors" in data and data["connectors"] is not None:
+        # rescan_minutes: a number sets it, 0 removes it, a missing value keeps the
+        # stored one (a client that does not know the field must not drop it).
+        stored_rescan = {
+            c.get("name"): c.get("rescan_minutes")
+            for c in raw.get("connectors") or []
+            if isinstance(c, dict)
+        }
         new_conns = []
         for c in data["connectors"]:
             entry = {"name": c["name"], "type": c.get("type", "local"), "path": c.get("path")}
@@ -340,6 +453,11 @@ def save_config(data: dict, config_path: str | Path | None = None) -> AppConfig:
                 entry["include"] = c["include"]
             if c.get("exclude") is not None:
                 entry["exclude"] = c["exclude"]
+            rescan = c.get("rescan_minutes")
+            if rescan is None:
+                rescan = stored_rescan.get(c["name"])
+            if rescan:
+                entry["rescan_minutes"] = rescan
             new_conns.append(entry)
         raw["connectors"] = new_conns
 
@@ -370,6 +488,33 @@ def save_config(data: dict, config_path: str | Path | None = None) -> AppConfig:
         _write_private_atomic(backup, path.read_text(encoding="utf-8"))
     _write_private_atomic(path, text)
 
+    return config
+
+
+def save_mcp_tokens(tokens: list[dict], config_path: str | Path | None = None) -> AppConfig:
+    """Replace ``mcp_http.tokens`` in the config file; everything else is kept.
+
+    The MCP server re-reads the file when it changes, so a new or revoked
+    token takes effect with the next request. Validated before writing, with a
+    ``.bak`` backup, like :func:`save_config`.
+    """
+    settings = Settings()
+    path = _resolve_config_path(config_path, settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    else:
+        raw = AppConfig().model_dump(mode="json")
+    section = raw.get("mcp_http")
+    raw["mcp_http"] = section = dict(section) if isinstance(section, dict) else {}
+    section["tokens"] = tokens
+    config = AppConfig.model_validate(raw)
+    text = yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False)
+    if path.exists():
+        backup = path.with_suffix(path.suffix + ".bak")
+        _write_private_atomic(backup, path.read_text(encoding="utf-8"))
+    _write_private_atomic(path, text)
     return config
 
 

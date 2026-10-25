@@ -179,11 +179,12 @@ the CI scripts.
 | In the installer | `$INSTDIR\backend\rootmind-backend.exe`, always `%ProgramFiles%\RootMind\backend\` (resource map from `desktop/src-tauri/binaries/rootmind-backend/`); in the Linux packages `/usr/lib/RootMind/backend/rootmind-backend` (in the AppImage below its mount) |
 | Release assets | `RootMind-Setup-x64.exe`; `RootMind-amd64.deb`, `RootMind-x86_64.rpm`, `RootMind-x86_64.AppImage`; `rootmind-backend-windows-x64.zip` and `rootmind-backend-linux-x64.tar.gz` with the folder `rootmind-backend/`; `rootmind.mcpb`; `SHA256SUMS.txt` |
 | `--version` | `rootmind-backend <version>` (`rootmind <version>` from a Python install); the last word is the version in PEP 440 normal form |
-| Commands | `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service install\|uninstall\|status`, and `service run backend\|mcp-http` (started by the Service Control Manager, not listed in the help); the client commands `status`, `folders list\|add\|remove`, `search`, `ask`, `config llm`, `mcp tokens list`, `remote-access on\|off\|status` |
+| Commands | `api`, `index`, `rebuild-trigrams`, `mcp`, `mcp-http`, `service install\|uninstall\|status`, and `service run backend\|mcp-http` (started by the Service Control Manager, not listed in the help); the client commands `status`, `folders list\|add\|remove`, `search`, `ask`, `config llm`, `mcp tokens list\|create\|revoke`, `remote-access on\|off\|status` |
 | `api` options | `--host`, `--port` (0 = a free port, which the log names), `--require-token`. The options of the removed built-in backend, `--exit-with-parent` and `--import-config`, are refused (exit 2) |
 | `service install` options | `--port N\|auto`, `--mcp-http` / `--no-mcp-http`, `--mcp-port N\|auto`, `--mcp-token-from FILE`, `--user-sid SID` (Windows only), `--no-start` |
 | Installer | Installs with `service install --port auto --mcp-port auto --user-sid <signed-in account>` (as SYSTEM, only to update an existing service: without `--user-sid`; skipped otherwise); uninstalls with `service uninstall`, `--purge` when the app data is to be deleted |
-| Token files | `<RLM_HOME>/data/rest_token.txt` (REST), `<RLM_HOME>/data/api_token.txt` (MCP) |
+| Token files | `<RLM_HOME>/data/rest_token.txt` (REST), `<RLM_HOME>/data/api_token.txt` (MCP, the token named `default`); named MCP tokens as SHA-256 in `config.yaml`, `mcp_http.tokens` |
+| MCP token routes (REST) | `GET /mcp/tokens` (names, folders, fingerprints, network listener), `POST /mcp/tokens` (`{name, folders}` → the token, once), `DELETE /mcp/tokens/{name}` |
 | Remote access files | `<RLM_HOME>/data/ngrok_authtoken.txt` (the ngrok authtoken, written by the backend), `<RLM_HOME>/data/remote_access.json` (the tunnel's status, written by the MCP service); settings in `config.yaml`, section `remote_access` |
 | Open routes with a token | `GET`/`HEAD` on `/` (with `"auth": "bearer"` or `"none"`) and `/health`; everything else 401 |
 | Service names | `RootMind-Backend`, `RootMind-MCP-HTTP`; on Linux the user units `rootmind-backend.service`, `rootmind-mcp-http.service` |
@@ -233,6 +234,43 @@ when `RLM_HOME` is set, or when the account has no service.
 | 2 | Wrong usage |
 | 3 | No service, stopped, not answering, or another program on its port |
 | 4 | The token cannot be read, or the service refused it |
+
+**MCP over HTTP: named tokens, folder scope and the network listener**
+
+- `mcp_http.tokens` in `config.yaml` lists named tokens as `{name, sha256,
+  folders, created}`. The backend writes it (`POST`/`DELETE /mcp/tokens`,
+  `config.save_mcp_tokens`, under the config lock, with a `.bak`); `POST
+  /config` keeps the section. The MCP server re-reads `config.yaml` when its
+  size or mtime changes, now on every request (it did on every tool call), so
+  folders and tokens follow the file without a restart. Storing the hashes in
+  `config.yaml` instead of a file of their own means the Windows MCP service
+  account can already read them (the data folder's layout and ACLs are
+  unchanged), and the file's existing atomic write applies.
+- Authentication yields a `TokenIdentity(name, folders)`: the default token
+  (`api_token.txt`, compared as before) or a named token (SHA-256 of the
+  presented token compared with every stored hash, all in constant time).
+  The identity's folders intersect the configured folder names and become
+  `ToolContext.allowed_connectors`; the `initialize` instructions and
+  `get_statistics` (now `repository.get_statistics(connector_names)`) follow
+  the same scope. A legacy SSE session stores the identity that opened it.
+- `mcp_http.network` (off by default) makes `service run mcp-http` start a
+  second uvicorn server on the same app: `bind:port`, TLS from `tls_cert` and
+  `tls_key` (loaded at start, so a bad file stops the service with exit 2),
+  plain HTTP only with `insecure_http` or on a loopback address (for a
+  reverse proxy on the same machine, whose `X-Forwarded-*` headers are then
+  trusted from 127.0.0.1). It wraps the app in `NetworkListener`, which
+  refuses a `Host` outside `mcp_http.allowed_hosts` and marks the request, so
+  the default token is refused there unless `allow_default_token`. The two
+  servers run in one event loop; the second leaves signal handling to the
+  first, and when either ends both end. The loopback listener, remote access,
+  `service install` and the health checks are unchanged.
+  `config.mcp_network_problems` holds the start conditions.
+- The standalone `rootmind mcp-http --host` refuses a non-loopback address
+  without `--tls-cert`/`--tls-key` or `--insecure-http`.
+- `connectors[].rescan_minutes` gives a folder its own APScheduler interval
+  job (`rescan:<name>`), an incremental sync of that folder only, skipped while
+  another sync runs. `POST /config` keeps a stored value when the client sends
+  none (0 removes it).
 
 **Desktop commands** (Rust, `desktop/src-tauri/src/`; camelCase over IPC):
 
@@ -1431,8 +1469,10 @@ rules or message formats beyond small label functions.
 RootMind is a single-user desktop tool. Running the same design as a shared
 service would need:
 
-- **Per-user identity** and authorization on folders and documents. Today one
-  token grants everything, and the folder scope is "everything in the config".
+- **Per-user identity** and authorization on documents. Today named MCP
+  tokens carry a folder scope ([server use](docs/SERVER.md)), but identity
+  stops there: no users, no per-document permissions, no check of the
+  share's ACLs, and the REST API (`ask` included) has one administrator token.
 - **A server database.** The repository is the seam: PostgreSQL full-text
   search (`tsvector`, `ts_rank`) can replace FTS5, `pg_trgm` can replace the
   trigram table, and `pgvector` could add hybrid retrieval next to it. The
@@ -1459,9 +1499,15 @@ service would need:
   service then refuses to start.
 - The upgrade from 1.x does not carry over the folders, settings, API keys
   or index of the 1.x built-in backend.
-- No token rotation command; delete the token file and run `service install`
-  again. This matters more with remote access on, where the MCP token guards
-  a public address.
+- No rotation command for the default MCP token; delete the token file and run
+  `service install` again. This matters more with remote access on, where the
+  MCP token guards a public address. Named tokens are rotated by creating a new
+  one and revoking the old; they do not expire.
+- Server use: one index for all tokens, so a token's folder scope is the only
+  access control (share permissions are not checked per user); no system
+  service (`service install --system`), the recommended setup is a dedicated
+  account with lingering (docs/SERVER.md); no rate limiting; the app does not
+  show or manage named tokens or the network listener yet.
 - Remote access has no rate limiting or request log of its own on the public
   path, and supports only ngrok; clients that can only sign in with OAuth
   cannot connect. A real tunnel is not tested in CI (no ngrok account there).

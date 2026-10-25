@@ -666,14 +666,16 @@ Linux alike, and never need root or an administrator prompt:
 ```sh
 rootmind status                                  # service, index, folders, MCP endpoint, remote access
 rootmind folders list
-rootmind folders add /srv/shares/projects --name projects
+rootmind folders add /srv/shares/projects --name projects [--rescan-minutes 10]
 rootmind folders remove projects
 rootmind index [--full] [--folder projects] [--wait]
 rootmind search "invoice telekom" [--limit 10] [--snippets]
 rootmind ask "What does the contract with Fjordhaus say about notice periods?"
 rootmind config llm                              # provider, model, which keys are saved
 rootmind config llm --provider anthropic --model claude-sonnet-5-5 --key-file ~/anthropic.key
-rootmind mcp tokens list                         # the MCP token's file and fingerprint
+rootmind mcp tokens list                         # names, folders, fingerprints
+rootmind mcp tokens create alice --folders projects --out alice.token
+rootmind mcp tokens revoke alice
 rootmind remote-access on|off|status             # the ngrok tunnel
 ```
 
@@ -696,7 +698,9 @@ Every command takes `--json` for scripts and `--help`.
   without echo in a terminal), never from an argument, and never prints a key,
   not even masked; `--remove-key` removes it. `remote-access on
   --authtoken-file FILE` saves the ngrok authtoken the same way. Tokens are
-  never printed; `mcp tokens list` shows the fingerprint the MCP service logs.
+  never printed; `mcp tokens list` shows the fingerprint the MCP service logs,
+  and `mcp tokens create` writes a new token to a new file (mode 0600
+  on Linux; `--out FILE`, or `--out -` to print it instead).
 - **Another backend.** `--url http://127.0.0.1:18000 --token-file FILE` (or
   `RLM_URL` and `RLM_TOKEN_FILE`) uses that REST API instead, for example a
   development backend (`rootmind api`). Plain `http://` is accepted only for
@@ -710,6 +714,15 @@ Every command takes `--json` for scripts and `--help`.
 - **Exit codes:** 0 done, 1 the service refused or failed the request,
   2 wrong usage, 3 no service found, stopped or not answering (or another
   program on its port), 4 the token cannot be read or was refused.
+
+**Run RootMind on a server.** A Linux server can index shared folders
+(`--rescan-minutes` re-scans mounted network shares) and serve MCP to other
+machines over TLS or behind a reverse proxy, with one named token per person
+or client, each limited to some folders (`mcp tokens create --folders`). The
+guide is [docs/SERVER.md](docs/SERVER.md); read the
+[threat model for server use](SECURITY.md#server-use) first: the folder scope
+of a token is the only access control, share permissions are not checked per
+user.
 
 ## Local models with Ollama
 

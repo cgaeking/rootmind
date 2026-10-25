@@ -722,14 +722,16 @@ Administrator-Eingabeaufforderung:
 ```sh
 rootmind status                                  # Dienst, Index, Ordner, MCP-Endpunkt, Fernzugriff
 rootmind folders list
-rootmind folders add /srv/shares/projekte --name projekte
+rootmind folders add /srv/shares/projekte --name projekte [--rescan-minutes 10]
 rootmind folders remove projekte
 rootmind index [--full] [--folder projekte] [--wait]
 rootmind search "rechnung telekom" [--limit 10] [--snippets]
 rootmind ask "Was sagt der Vertrag mit Fjordhaus zu Kündigungsfristen?"
 rootmind config llm                              # Anbieter, Modell, welche Keys gespeichert sind
 rootmind config llm --provider anthropic --model claude-sonnet-5-5 --key-file ~/anthropic.key
-rootmind mcp tokens list                         # Datei und Fingerabdruck des MCP-Tokens
+rootmind mcp tokens list                         # Namen, Ordner, Fingerabdrücke
+rootmind mcp tokens create alice --folders projekte --out alice.token
+rootmind mcp tokens revoke alice
 rootmind remote-access on|off|status             # der ngrok-Tunnel
 ```
 
@@ -753,7 +755,9 @@ kennt `--json` für Skripte und `--help`.
   nie einen Key aus, auch nicht maskiert; `--remove-key` entfernt ihn.
   `remote-access on --authtoken-file DATEI` speichert das ngrok-Authtoken
   ebenso. Tokens werden nie ausgegeben; `mcp tokens list` zeigt den
-  Fingerabdruck, den auch der MCP-Dienst protokolliert.
+  Fingerabdruck, den auch der MCP-Dienst protokolliert, und
+  `mcp tokens create` schreibt ein neues Token in eine neue Datei (unter
+  Linux mit Modus 0600; `--out DATEI`, oder `--out -` gibt es stattdessen aus).
 - **Ein anderes Backend.** `--url http://127.0.0.1:18000 --token-file DATEI`
   (oder `RLM_URL` und `RLM_TOKEN_FILE`) nimmt stattdessen diese REST-API,
   etwa ein Entwicklungs-Backend (`rootmind api`). Unverschlüsseltes `http://`
@@ -768,6 +772,16 @@ kennt `--json` für Skripte und `--help`.
   sie ist fehlgeschlagen, 2 falscher Aufruf, 3 kein Dienst gefunden, gestoppt
   oder keine Antwort (oder ein anderes Programm auf seinem Port), 4 das Token
   ist nicht lesbar oder wurde abgelehnt.
+
+**RootMind auf einem Server.** Ein Linux-Server kann freigegebene Ordner
+indizieren (`--rescan-minutes` durchsucht eingehängte Netzwerkfreigaben
+regelmäßig neu) und MCP über TLS oder hinter einem Reverse Proxy an andere
+Rechner ausliefern, mit einem benannten Token pro Person oder Client, jedes
+auf bestimmte Ordner beschränkt (`mcp tokens create --folders`). Die
+Anleitung (englisch) ist [docs/SERVER.md](docs/SERVER.md); lies vorher das
+[Bedrohungsmodell für den Serverbetrieb](SECURITY.md#server-use): Die
+Ordner-Beschränkung eines Tokens ist die einzige Zugriffskontrolle,
+Freigabe-Rechte werden nicht pro Benutzer geprüft.
 
 ## Lokale Modelle mit Ollama
 

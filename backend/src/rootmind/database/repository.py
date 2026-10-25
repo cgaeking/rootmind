@@ -1041,38 +1041,56 @@ class DocumentRepository:
 
             return session.scalar(query) or 0
 
-    def get_statistics(self) -> dict[str, Any]:
-        """Get database statistics."""
+    def get_statistics(self, connector_names: Collection[str] | None = None) -> dict[str, Any]:
+        """Get database statistics, optionally only of the documents of ``connector_names``."""
+
+        def scoped(query):
+            if connector_names is None:
+                return query
+            return query.where(Document.connector_name.in_(sorted(connector_names)))
+
         with self._get_session() as session:
-            total = session.scalar(select(func.count(Document.id))) or 0
+            total = session.scalar(scoped(select(func.count(Document.id)))) or 0
             indexed = (
-                session.scalar(select(func.count(Document.id)).where(Document.status == "indexed"))
+                session.scalar(
+                    scoped(select(func.count(Document.id)).where(Document.status == "indexed"))
+                )
                 or 0
             )
             errors = (
-                session.scalar(select(func.count(Document.id)).where(Document.status == "error"))
+                session.scalar(
+                    scoped(select(func.count(Document.id)).where(Document.status == "error"))
+                )
                 or 0
             )
 
             total_size = (
                 session.scalar(
-                    select(func.sum(Document.size_bytes)).where(Document.status == "indexed")
+                    scoped(
+                        select(func.sum(Document.size_bytes)).where(Document.status == "indexed")
+                    )
                 )
                 or 0
             )
 
             total_content = (
                 session.scalar(
-                    select(func.sum(Document.content_length)).where(Document.status == "indexed")
+                    scoped(
+                        select(func.sum(Document.content_length)).where(
+                            Document.status == "indexed"
+                        )
+                    )
                 )
                 or 0
             )
 
             # File types breakdown
             file_types = session.execute(
-                select(Document.file_type, func.count(Document.id))
-                .where(Document.status == "indexed")
-                .group_by(Document.file_type)
+                scoped(
+                    select(Document.file_type, func.count(Document.id)).where(
+                        Document.status == "indexed"
+                    )
+                ).group_by(Document.file_type)
             ).all()
 
             return {

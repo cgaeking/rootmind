@@ -17,6 +17,10 @@ and then, inside the service:
    it to stop. The MCP server also runs remote access
    (:class:`rootmind.remote_access.RemoteAccessManager`), which keeps an ngrok
    tunnel to that port open while remote access is on and closes it on stop.
+   With ``mcp_http.network.bind`` in ``config.yaml`` it also listens there for
+   other machines (a second uvicorn server on the same app, TLS unless
+   ``insecure_http``, behind :class:`rootmind.mcp_http.NetworkListener`); the
+   loopback listener stays as it is.
 
 A config, token or access error stops the service cleanly with the
 service-specific exit code 2, which the failure actions do not restart. Any
@@ -36,6 +40,8 @@ does not restart (``RestartPreventExitStatus=2``).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import io
 import logging
 import logging.handlers
@@ -244,6 +250,9 @@ class ServiceRunner:
         self._lock = threading.Lock()
         self.server: Any = None
         self.sock: Any = None
+        # The MCP server's listener for other machines (mcp_http.network), or None.
+        self.network_server: Any = None
+        self.network_sock: Any = None
 
     # --- setup ---------------------------------------------------------------------
 
@@ -356,7 +365,17 @@ class ServiceRunner:
 
         from ..main import bind_socket
 
+        network_config = None
+        if self.role == ROLE_MCP:
+            network_config = self._network_config(config, app)
         self.sock = bind_socket("127.0.0.1", self.port)
+        if network_config is not None:
+            network = config.mcp_http.network
+            try:
+                self.network_sock = bind_socket(network.bind, network.port)
+            except OSError:
+                self.sock.close()
+                raise
         if self.role == ROLE_MCP:
             self.remote_access = self._remote_access_factory(self.home, self.sock.getsockname()[1])
         uvicorn_config = uvicorn.Config(
@@ -370,8 +389,83 @@ class ServiceRunner:
         )
         with self._lock:
             self.server = uvicorn.Server(uvicorn_config)
+            if network_config is not None:
+                self.network_server = _follower_server(network_config)
             if self._stop_requested:
-                self.server.should_exit = True
+                self.stop_servers()
+
+    def _network_config(self, config: Any, app: Any) -> Any:
+        """The uvicorn config of the MCP listener for other machines, or None when it is off.
+
+        Raises:
+            ServiceConfigError: the settings are incomplete (no TLS and no
+                ``insecure_http``, no ``allowed_hosts``) or the certificate or
+                key cannot be loaded.
+        """
+        import uvicorn
+
+        from ..config import LOOPBACK_ADDRESSES, mcp_network_problems
+        from ..mcp_http import NetworkListener
+
+        settings = config.mcp_http
+        network = settings.network
+        if not network.bind:
+            return None
+        problems = mcp_network_problems(settings)
+        loopback = network.bind.strip().strip("[]").lower() in LOOPBACK_ADDRESSES
+        if loopback and network.port == self.port:
+            problems.append(
+                f"mcp_http.network.port {network.port} is the loopback MCP port; choose another"
+            )
+        if problems:
+            raise ServiceConfigError("; ".join(problems))
+        tls: dict[str, Any] = {}
+        if network.tls_cert:
+            tls = {"ssl_certfile": network.tls_cert, "ssl_keyfile": network.tls_key}
+
+        def allowed_hosts() -> list[str]:
+            # The list as last read from config.yaml (re-read on change).
+            return app.state.mcp.mcp.allowed_hosts
+
+        network_config = uvicorn.Config(
+            NetworkListener(app, allowed_hosts),
+            host=network.bind,
+            port=network.port,
+            log_config=None,
+            access_log=False,
+            lifespan="off",
+            # On a loopback address a reverse proxy on this machine connects:
+            # trust its X-Forwarded-* headers (from 127.0.0.1 only). Elsewhere
+            # clients connect directly and no forwarded header is trusted.
+            proxy_headers=loopback,
+            forwarded_allow_ips="127.0.0.1,::1",
+            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
+            **tls,
+        )
+        try:
+            network_config.load()  # loads the certificate and key now, not on the first request
+        except (OSError, ValueError) as e:
+            what = f"{network.tls_cert} / {network.tls_key}" if tls else "the listener"
+            raise ServiceConfigError(
+                f"mcp_http.network: cannot load {what}: {getattr(e, 'strerror', None) or e}"
+            ) from None
+        scheme = "https" if tls else "http"
+        shown = f"[{network.bind}]" if ":" in network.bind else network.bind
+        logger.warning(
+            "MCP over HTTP also listens on %s://%s:%d for other machines (%s; %s).",
+            scheme,
+            shown,
+            network.port,
+            "TLS"
+            if tls
+            else "for a reverse proxy on this machine"
+            if loopback
+            else "PLAIN HTTP: tokens cross the network unencrypted",
+            "named tokens and the default token"
+            if network.allow_default_token
+            else "named tokens only",
+        )
+        return network_config
 
     # --- running -------------------------------------------------------------------
 
@@ -389,25 +483,63 @@ class ServiceRunner:
                 if self.remote_access is not None:
                     self.remote_access.start()
                 try:
-                    self.server.run(sockets=[self.sock])
+                    if self.network_server is None:
+                        self.server.run(sockets=[self.sock])
+                    else:
+                        asyncio.run(self._serve_both())
                 finally:
                     # The tunnel never outlives the server it forwards to.
                     if self.remote_access is not None:
                         self.remote_access.stop()
         finally:
             self.sock.close()
+            if self.network_sock is not None:
+                self.network_sock.close()
         return self._stop_requested
+
+    async def _serve_both(self) -> None:
+        """Run the loopback and the network listener; when one ends, both end."""
+        tasks = {
+            asyncio.create_task(self.server.serve(sockets=[self.sock])),
+            asyncio.create_task(self.network_server.serve(sockets=[self.network_sock])),
+        }
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        self.stop_servers()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            task.result()
+
+    def stop_servers(self) -> None:
+        for server in (self.server, self.network_server):
+            if server is not None:
+                server.should_exit = True
 
     def stop(self) -> None:
         """Ask the server to shut down (from the SCM's control thread)."""
         with self._lock:
             self._stop_requested = True
-            if self.server is not None:
-                self.server.should_exit = True
+            self.stop_servers()
 
     @property
     def port_in_use(self) -> int | None:
         return self.sock.getsockname()[1] if self.sock is not None else None
+
+
+def _follower_server_class():
+    import uvicorn
+
+    class FollowerServer(uvicorn.Server):
+        """A second uvicorn server that leaves signals to the first one."""
+
+        def capture_signals(self):  # type: ignore[override]
+            return contextlib.nullcontext()
+
+    return FollowerServer
+
+
+def _follower_server(config: Any) -> Any:
+    return _follower_server_class()(config)
 
 
 # --- SCM glue --------------------------------------------------------------------------

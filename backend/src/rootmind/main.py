@@ -374,12 +374,38 @@ def _mcp_tokens_parser() -> argparse.ArgumentParser:
         prog=f"{_prog()} mcp tokens",
         description="The bearer tokens of MCP over HTTP. Tokens are never printed.",
     )
-    actions = parser.add_subparsers(dest="tokens_command", metavar="{list}", required=True)
-    actions.add_parser(
-        "list",
-        parents=[client_commands.client_options()],
-        help="List the tokens (name and fingerprint)",
+    common = client_commands.client_options()
+    actions = parser.add_subparsers(
+        dest="tokens_command", metavar="{list,create,revoke}", required=True
     )
+    actions.add_parser(
+        "list", parents=[common], help="List the tokens (name, folders and fingerprint)"
+    )
+    create = actions.add_parser(
+        "create",
+        parents=[common],
+        help="Create a named token, optionally limited to some folders",
+        description="Create a named MCP token. The token is written to the --out file "
+        "(created owner-only; it must not exist) and stored nowhere else; only its SHA-256 "
+        "goes to config.yaml.",
+    )
+    create.add_argument("name", help="1-64 letters, digits, '.', '_' or '-'")
+    create.add_argument(
+        "--folders",
+        action="append",
+        metavar="NAMES",
+        help="Folder names the token may see, comma-separated (default: every folder)",
+    )
+    create.add_argument(
+        "--out",
+        required=True,
+        metavar="FILE",
+        help="Write the token to this new file; - prints it to stdout instead",
+    )
+    revoke = actions.add_parser(
+        "revoke", parents=[common], help="Revoke a named token (refused from its next request)"
+    )
+    revoke.add_argument("name")
     return parser
 
 
