@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Added
+
+- Optional tracing of the question loop ([#48](https://github.com/cgaeking/rootmind/issues/48), part 1), off by default. One span per model call (purpose, tokens, stop reason, tool requests, duration) and per tool call (arguments, result size, the documents a search returned, the window a read returned). `scripts/run_evals.py --trace <folder>` writes a JSONL file and a readable Markdown summary per eval run, and each run in the results carries its `trace_id`. `tracing.local: true` in `config.yaml` writes the same files under `logs/traces/` in the data folder. `tracing.langfuse: true` (or `run_evals.py --langfuse`) exports to Langfuse with the new optional extra `rootmind-backend[tracing]` and the `LANGFUSE_*` environment variables. With tracing off, the loop makes no tracing calls and loads no tracing code. Traces contain questions and document text but never API keys; SECURITY.md lists what they hold and where they go.
+
 ## [2.4.0] - 2026-10-22
 
 ### Added

@@ -745,6 +745,30 @@ llm:
   Miss dein Modell mit `scripts/run_evals.py --mode live --provider
   ollama --model <name>` (siehe [`backend/evals`](backend/evals/README.md)).
 
+## Die Agenten-Schleife nachverfolgen (Tracing)
+
+Tracing ist standardmäßig aus. Eingeschaltet zeichnet es jeden Schritt einer
+Frage auf: jeden Modellaufruf (Zweck, Tokens, Stop-Grund, die angeforderten
+Tools, Dauer), jeden Tool-Aufruf (Argumente, Ergebnisgröße, die Treffer einer
+Suche, die gelesenen Fenster) und die Antwort.
+
+- **Evals:** `scripts/run_evals.py --trace <Ordner>` schreibt pro Eval-Lauf
+  eine JSONL-Datei und eine lesbare Markdown-Zusammenfassung (siehe
+  [`backend/evals`](backend/evals/README.md#tracing-a-run)).
+- **Backend:** `tracing: {local: true}` in der `config.yaml` schreibt dieselben
+  Dateien nach `logs/traces/` im Datenordner von RootMind. Nichts verlässt den
+  Rechner.
+- **Langfuse (optional):** `tracing: {langfuse: true}` oder `--langfuse` beim
+  Eval-Runner exportiert Traces an einen Langfuse-Server. Das braucht das Extra
+  `tracing` (`uv sync --extra tracing`; nicht im paketierten Backend) und
+  `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` und `LANGFUSE_BASE_URL` in der
+  Umgebung. Ein selbst betriebenes Langfuse behält die Traces in deinem Netz;
+  Langfuse Cloud ist ein Drittanbieter.
+
+Traces enthalten deine Fragen, die Tool-Argumente des Modells und den
+Dokumenttext, den es gelesen hat. API-Keys enthalten sie nie. Siehe
+[SECURITY.md](SECURITY.md#what-leaves-the-machine).
+
 ## Aus dem Quellcode starten
 
 Du brauchst [uv](https://docs.astral.sh/uv/); es installiert bei Bedarf
@@ -910,6 +934,7 @@ backend/
   src/rootmind/
     rlm_engine/engine.py   Agenten-Schleife
     tools.py               Tool-Registry, Argumentprüfung, Ergebnisformatierung
+    tracing/               optionales Tracing der Agenten-Schleife: lokales JSONL, Langfuse-Export
     mcp_stdio.py           MCP-Server über stdio
     mcp_http.py            MCP-Server über HTTP mit Bearer-Token
     api/                   REST-API (FastAPI)

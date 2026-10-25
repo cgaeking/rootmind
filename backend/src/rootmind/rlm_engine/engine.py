@@ -22,6 +22,10 @@ Guardrails:
 - a fresh :class:`~rootmind.tools.ToolContext` per question, so concurrent
   requests never share sources or state
 - the system prompt marks document content as data, not instructions
+
+Tracing: an optional tracer (see :mod:`rootmind.tracing`) gets one span per
+LLM call and per tool call. Without one (the default) the engine makes no
+tracing calls at all and imports nothing for it.
 """
 
 import asyncio
@@ -30,12 +34,15 @@ import logging
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .. import tools
 from ..config import OLLAMA_DEFAULT_BASE_URL, AppConfig
 from ..database.repository import DocumentRepository
 from ..tools import ToolContext
+
+if TYPE_CHECKING:  # never imported at runtime: tracing stays optional
+    from ..tracing.base import QuestionTrace, Tracer
 
 logger = logging.getLogger(__name__)
 
@@ -277,11 +284,15 @@ def _final_text(text: str, stop_reason: str | None, truncated: bool) -> str:
 
 @dataclass
 class _Usage:
-    """Per-question accounting: tokens, why each call stopped, tool result budget."""
+    """Per-question accounting: tokens, why each call stopped, tool result budget.
+
+    ``trace`` is the question's trace when a tracer is configured, else None.
+    """
 
     tokens: int = 0
     stop_reasons: list[str] = field(default_factory=list)
     tool_chars: int = 0
+    trace: "QuestionTrace | None" = None
 
     def record(self, tokens: int, stop_reason: str | None) -> None:
         self.tokens += tokens
@@ -297,6 +308,88 @@ def _append_user_text(messages: list[dict[str, Any]], text: str) -> None:
         messages.append({"role": "user", "content": text})
 
 
+# --- what a trace records (only called when tracing is on) ---------------------------------
+
+# "Document: <name>\nID: <id>" in search results, "- <name> (...) [ID: <id>]" in lists.
+_HIT_NAME_RE = re.compile(r"^Document: (.*)\nID: ([0-9a-f]+)$", re.MULTILINE)
+_LIST_NAME_RE = re.compile(r"^- (.*) \([^()]*\) \[ID: ([0-9a-f]+)\]$", re.MULTILINE)
+_READ_NAME_RE = re.compile(r"\A\s*Document: (.*)$", re.MULTILINE)
+_READ_LOCATION_RE = re.compile(r'<document [^>]*location="([^"]*)"')
+
+
+def _describe_anthropic(response) -> dict[str, Any]:
+    usage = getattr(response, "usage", None)
+    return {
+        "stop_reason": getattr(response, "stop_reason", None),
+        "input_tokens": getattr(usage, "input_tokens", None),
+        "output_tokens": getattr(usage, "output_tokens", None),
+        "text": _anthropic_text(response),
+        "tool_requests": [
+            {"name": b.name, "arguments": b.input}
+            for b in getattr(response, "content", [])
+            if getattr(b, "type", None) == "tool_use"
+        ],
+    }
+
+
+def _describe_openai(response) -> dict[str, Any]:
+    usage = getattr(response, "usage", None)
+    choice = response.choices[0]
+    message = choice.message
+    return {
+        "stop_reason": getattr(choice, "finish_reason", None),
+        "input_tokens": getattr(usage, "prompt_tokens", None),
+        "output_tokens": getattr(usage, "completion_tokens", None),
+        "total_tokens": getattr(usage, "total_tokens", None),
+        "text": message.content or "",
+        "tool_requests": [
+            {"name": tc.function.name, "arguments": tc.function.arguments}
+            for tc in (message.tool_calls or [])
+        ],
+    }
+
+
+def _trace_error(exc: BaseException) -> str:
+    """An error for a trace: RootMind's own message, or only the type.
+
+    Raw provider errors are left out because they can echo part of an API key.
+    """
+    if isinstance(exc, LLMTimeoutError | LLMProviderError | LLMConfigError):
+        return f"{type(exc).__name__}: {exc}"
+    return type(exc).__name__
+
+
+def _describe_tool(
+    result: tools.ToolResult, ctx: ToolContext, refs_before: int, reads_before: int
+) -> dict[str, Any]:
+    """Result size, the documents a search or list returned and the windows a read returned."""
+    names = {i: n for n, i in _HIT_NAME_RE.findall(result.text)}
+    names.update({i: n for n, i in _LIST_NAME_RE.findall(result.text)})
+    hits = [
+        {"doc_id": r["doc_id"], "file_name": names.get(r["doc_id"]), "page": r.get("page")}
+        for r in ctx.referenced[refs_before:]
+    ]
+    read_name = _READ_NAME_RE.search(result.text)
+    location = _READ_LOCATION_RE.search(result.text)
+    reads = [
+        {
+            "doc_id": doc_id,
+            "file_name": read_name.group(1) if read_name else None,
+            "start": start or 0,
+            "end": end,
+            "location": location.group(1) if location else None,
+        }
+        for doc_id, start, end in ctx.read_windows[reads_before:]
+    ]
+    return {
+        "result": result.text,
+        "result_chars": len(result.text),
+        "is_error": result.is_error,
+        "hits": hits,
+        "reads": reads,
+    }
+
+
 class KnowledgeBaseEngine:
     """Answers questions about the indexed documents with an LLM tool-use loop."""
 
@@ -305,6 +398,7 @@ class KnowledgeBaseEngine:
         db: DocumentRepository,
         config: AppConfig,
         client: Any | None = None,
+        tracer: "Tracer | None" = None,
     ):
         """Initialize the engine.
 
@@ -313,10 +407,13 @@ class KnowledgeBaseEngine:
             config: Application configuration.
             client: Optional pre-built LLM SDK client (or a fake in tests). When
                 omitted, a client for ``config.llm.provider`` is created lazily.
+            tracer: Optional tracer (:mod:`rootmind.tracing`); None, the
+                default, traces nothing.
         """
         self.db = db
         self.config = config
         self._client = client
+        self._tracer = tracer
 
     # --- plumbing ------------------------------------------------------------
 
@@ -389,6 +486,45 @@ class KnowledgeBaseEngine:
                 raise
             raise mapped from e
 
+    async def _call_model(
+        self,
+        usage: _Usage | None,
+        purpose: str,
+        iteration: int | None,
+        fn,
+        /,
+        *args,
+        **kwargs,
+    ):
+        """:meth:`_llm_call`, recorded as a model span when the question is traced."""
+        trace = usage.trace if usage is not None else None
+        if trace is None:
+            return await self._llm_call(fn, *args, **kwargs)
+        span = trace.model_call(
+            purpose=purpose,
+            iteration=iteration,
+            model=kwargs.get("model"),
+            tool_choice=kwargs.get("tool_choice"),
+            messages=len(kwargs.get("messages") or []),
+        )
+        try:
+            response = await self._llm_call(fn, *args, **kwargs)
+        except Exception as e:
+            if span is not None:
+                span.end(error=_trace_error(e))
+            raise
+        if span is not None:
+            describe = (
+                _describe_anthropic if self.config.llm.provider == "anthropic" else _describe_openai
+            )
+            try:
+                fields = describe(response)
+            except Exception:  # an unexpected response shape must not break the question
+                logger.debug("Could not describe the response for the trace", exc_info=True)
+                fields = {"error": "response not recorded"}
+            span.end(**fields)
+        return response
+
     def _new_context(self) -> ToolContext:
         """Tools only see documents of the connectors in the current config."""
         return ToolContext(allowed_connectors=frozenset(c.name for c in self.config.connectors))
@@ -404,7 +540,11 @@ class KnowledgeBaseEngine:
         return await asyncio.to_thread(tools.execute, name, raw_args, self.db, ctx)
 
     async def _run_turn_tools(
-        self, calls: list[tuple[str, Any]], ctx: ToolContext, usage: _Usage
+        self,
+        calls: list[tuple[str, Any]],
+        ctx: ToolContext,
+        usage: _Usage,
+        iteration: int | None = None,
     ) -> list[tools.ToolResult]:
         """Run one model turn's tool calls within the per-turn and per-question limits.
 
@@ -413,27 +553,36 @@ class KnowledgeBaseEngine:
         """
         results = []
         for index, (name, raw_args) in enumerate(calls):
+            span = (
+                usage.trace.tool_call(iteration=iteration, name=name, arguments=raw_args)
+                if usage.trace is not None
+                else None
+            )
+            skipped = None
+            refs_before, reads_before = len(ctx.referenced), len(ctx.read_windows)
             if index >= MAX_TOOL_CALLS_PER_TURN:
-                results.append(
-                    tools.ToolResult(
-                        f"Error: not run. At most {MAX_TOOL_CALLS_PER_TURN} tool calls are "
-                        "executed per turn; make fewer, more targeted calls.",
-                        is_error=True,
-                    )
+                skipped = "per-turn limit"
+                result = tools.ToolResult(
+                    f"Error: not run. At most {MAX_TOOL_CALLS_PER_TURN} tool calls are "
+                    "executed per turn; make fewer, more targeted calls.",
+                    is_error=True,
                 )
-                continue
-            if usage.tool_chars >= MAX_TOOL_RESULT_CHARS:
-                results.append(
-                    tools.ToolResult(
-                        f"Error: not run. The tool results of this question reached the limit of "
-                        f"{MAX_TOOL_RESULT_CHARS:,} characters; answer from what you have found.",
-                        is_error=True,
-                    )
+            elif usage.tool_chars >= MAX_TOOL_RESULT_CHARS:
+                skipped = "per-question result limit"
+                result = tools.ToolResult(
+                    f"Error: not run. The tool results of this question reached the limit of "
+                    f"{MAX_TOOL_RESULT_CHARS:,} characters; answer from what you have found.",
+                    is_error=True,
                 )
-                continue
-            result = await self._run_tool(name, raw_args, ctx)
-            usage.tool_chars += len(result.text)
+            else:
+                result = await self._run_tool(name, raw_args, ctx)
+                usage.tool_chars += len(result.text)
             results.append(result)
+            if span is not None:
+                if skipped:
+                    span.end(skipped=skipped, result_chars=0, is_error=True)
+                else:
+                    span.end(**_describe_tool(result, ctx, refs_before, reads_before))
         return results
 
     # --- public API ------------------------------------------------------------
@@ -454,6 +603,11 @@ class KnowledgeBaseEngine:
             question (0 tokens) if condensing fails, so a follow-up still gets
             answered (just without resolved context) rather than failing.
         """
+        return await self._condense(question, history, None)
+
+    async def _condense(
+        self, question: str, history: list[dict[str, str]], usage: _Usage | None
+    ) -> tuple[str, int]:
         if not history:
             return question, 0
 
@@ -482,7 +636,10 @@ class KnowledgeBaseEngine:
 
         try:
             if provider == "anthropic":
-                resp = await self._llm_call(
+                resp = await self._call_model(
+                    usage,
+                    "condense",
+                    None,
                     client.messages.create,
                     model=model,
                     max_tokens=CONDENSE_MAX_TOKENS,
@@ -492,7 +649,10 @@ class KnowledgeBaseEngine:
                 tokens = _anthropic_tokens(resp)
                 truncated = resp.stop_reason == "max_tokens"
             elif provider in OPENAI_COMPATIBLE:
-                resp = await self._llm_call(
+                resp = await self._call_model(
+                    usage,
+                    "condense",
+                    None,
                     _openai_chat_create,
                     client,
                     model=model,
@@ -519,6 +679,7 @@ class KnowledgeBaseEngine:
         question: str,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         history: list[dict[str, str]] | None = None,
+        trace_tags: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Answer a question with the agentic tool-use loop.
 
@@ -528,10 +689,13 @@ class KnowledgeBaseEngine:
             history: Optional recent conversation turns (``{"role", "text"}``),
                 used only to condense ``question`` into a standalone question
                 before the loop runs (see :meth:`condense_question`).
+            trace_tags: Labels for the trace (for example the eval case and
+                run); ignored without a tracer.
 
         Returns:
             ``{"answer", "sources", "tokens_used", "tool_calls", "stop_reasons"}``;
-            ``stop_reasons`` lists why each LLM call of the loop stopped.
+            ``stop_reasons`` lists why each LLM call of the loop stopped. With a
+            tracer, also ``trace_id``.
 
         Raises:
             LLMConfigError: no API key is configured.
@@ -542,34 +706,68 @@ class KnowledgeBaseEngine:
         provider = self.config.llm.provider
 
         usage = _Usage()
-        standalone_question = question
-        if history:
-            standalone_question, condense_tokens = await self.condense_question(question, history)
-            usage.tokens += condense_tokens
-            if standalone_question != question:
-                logger.info(f"Condensed follow-up: {question!r} -> {standalone_question!r}")
-
+        if self._tracer is not None:
+            usage.trace = self._tracer.question(
+                question=question,
+                provider=provider,
+                model=self.config.llm.model,
+                history_turns=len(history or []),
+                tags=dict(trace_tags or {}),
+            )
         ctx = self._new_context()
-        if provider == "anthropic":
-            answer = await self._loop_anthropic(
-                client, standalone_question, ctx, max_iterations, usage
-            )
-        elif provider in OPENAI_COMPATIBLE:
-            answer = await self._loop_openai(
-                client, standalone_question, ctx, max_iterations, usage
-            )
-        else:
-            raise ValueError(f"Unsupported LLM provider: {provider}")
+        standalone_question = question
+        try:
+            if history:
+                standalone_question, condense_tokens = await self._condense(
+                    question, history, usage
+                )
+                usage.tokens += condense_tokens
+                if standalone_question != question:
+                    logger.info(f"Condensed follow-up: {question!r} -> {standalone_question!r}")
 
-        # Source lookups are SQLite queries; keep them off the event loop too.
-        sources = await asyncio.to_thread(self._extract_sources, ctx, answer)
-        return {
+            if provider == "anthropic":
+                answer = await self._loop_anthropic(
+                    client, standalone_question, ctx, max_iterations, usage
+                )
+            elif provider in OPENAI_COMPATIBLE:
+                answer = await self._loop_openai(
+                    client, standalone_question, ctx, max_iterations, usage
+                )
+            else:
+                raise ValueError(f"Unsupported LLM provider: {provider}")
+
+            # Source lookups are SQLite queries; keep them off the event loop too.
+            sources = await asyncio.to_thread(self._extract_sources, ctx, answer)
+        except Exception as e:
+            if usage.trace is not None:
+                usage.trace.end(
+                    error=_trace_error(e),
+                    tokens_used=usage.tokens,
+                    stop_reasons=usage.stop_reasons,
+                    tool_calls=len(ctx.tool_calls),
+                )
+            raise
+        result = {
             "answer": answer,
             "sources": sources,
             "tokens_used": usage.tokens,
             "tool_calls": ctx.tool_calls,
             "stop_reasons": usage.stop_reasons,
         }
+        if usage.trace is not None:
+            usage.trace.end(
+                answer=answer,
+                standalone_question=standalone_question,
+                sources=[
+                    {"file_name": s["file_name"], "page": s.get("page"), "id": s["id"]}
+                    for s in sources
+                ],
+                tokens_used=usage.tokens,
+                stop_reasons=usage.stop_reasons,
+                tool_calls=len(ctx.tool_calls),
+            )
+            result["trace_id"] = usage.trace.trace_id
+        return result
 
     # --- provider loops ---------------------------------------------------------
 
@@ -600,7 +798,9 @@ class KnowledgeBaseEngine:
                 # failure mode, for every provider, instead of depending on
                 # how tool-use-compliant a given model happens to be.
                 call_kwargs["tool_choice"] = {"type": "any"}
-            response = await self._llm_call(client.messages.create, **call_kwargs)
+            response = await self._call_model(
+                usage, "loop", iteration + 1, client.messages.create, **call_kwargs
+            )
             usage.record(_anthropic_tokens(response), response.stop_reason)
 
             tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
@@ -621,7 +821,7 @@ class KnowledgeBaseEngine:
             messages.append({"role": "assistant", "content": list(response.content)})
 
             results = await self._run_turn_tools(
-                [(block.name, block.input) for block in tool_uses], ctx, usage
+                [(block.name, block.input) for block in tool_uses], ctx, usage, iteration + 1
             )
             tool_results = []
             for block, result in zip(tool_uses, results, strict=True):
@@ -639,9 +839,14 @@ class KnowledgeBaseEngine:
         # tools still declared (the history contains tool blocks) but disabled,
         # to answer from what was already found instead of a generic failure.
         answer = GENERIC_FAILURE_ANSWER
+        if usage.trace is not None:
+            usage.trace.event("iteration_limit", iterations=max_iterations)
         try:
             _append_user_text(messages, ITERATION_LIMIT_PROMPT)
-            final = await self._llm_call(
+            final = await self._call_model(
+                usage,
+                "fallback",
+                None,
                 client.messages.create,
                 model=model,
                 max_tokens=FALLBACK_MAX_TOKENS,
@@ -691,7 +896,9 @@ class KnowledgeBaseEngine:
                 # is enforced by the retry below.
                 if provider != "ollama":
                     call_kwargs["tool_choice"] = "required"
-            response = await self._llm_call(_openai_chat_create, client, **call_kwargs)
+            response = await self._call_model(
+                usage, "loop", iteration + 1, _openai_chat_create, client, **call_kwargs
+            )
             choice = response.choices[0]
             finish_reason = getattr(choice, "finish_reason", None)
             usage.record(_openai_tokens(response), finish_reason)
@@ -705,6 +912,8 @@ class KnowledgeBaseEngine:
                     # an explicit instruction, before accepting an answer that
                     # never looked at the documents.
                     nudged = True
+                    if usage.trace is not None:
+                        usage.trace.event("search_nudge")
                     messages.append({"role": "assistant", "content": msg.content or ""})
                     messages.append({"role": "user", "content": SEARCH_FIRST_PROMPT})
                     continue
@@ -733,7 +942,10 @@ class KnowledgeBaseEngine:
             # Execute each tool call and feed the results back. Arguments arrive
             # as a JSON string; malformed JSON becomes an error result.
             results = await self._run_turn_tools(
-                [(tc.function.name, tc.function.arguments) for tc in msg.tool_calls], ctx, usage
+                [(tc.function.name, tc.function.arguments) for tc in msg.tool_calls],
+                ctx,
+                usage,
+                iteration + 1,
             )
             for tc, result in zip(msg.tool_calls, results, strict=True):
                 # Chat Completions has no error flag on tool messages; error
@@ -741,9 +953,14 @@ class KnowledgeBaseEngine:
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result.text})
 
         answer = GENERIC_FAILURE_ANSWER
+        if usage.trace is not None:
+            usage.trace.event("iteration_limit", iterations=max_iterations)
         try:
             messages.append({"role": "user", "content": ITERATION_LIMIT_PROMPT})
-            final = await self._llm_call(
+            final = await self._call_model(
+                usage,
+                "fallback",
+                None,
                 _openai_chat_create,
                 client,
                 model=model,
