@@ -570,7 +570,7 @@ trap) keeps that weakness visible.
 **With uv** (any OS with Python 3.12 or newer; uv installs it if needed):
 
 ```bash
-uv tool install "git+https://github.com/cgaeking/rootmind@v2.4.0#subdirectory=backend"
+uv tool install "git+https://github.com/cgaeking/rootmind@v2.5.0#subdirectory=backend"
 rootmind --help        # api, index, mcp, mcp-http, service, status, folders, search, ask, ...
 ```
 
