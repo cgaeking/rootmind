@@ -34,6 +34,17 @@ _LOCATION_PATTERNS = (
 # most 31 characters), so a marker starting exactly at a position is read whole.
 _MARKER_LOOKAHEAD = 64
 
+# FTS5 snippet() markers. Control characters that extracted text practically
+# never contains, so the highlights can be told apart from the text and the
+# snippet, with the markers removed, can be found again in the stored content.
+# They are replaced by "**" / "..." before a snippet is returned.
+_HIT_OPEN, _HIT_CLOSE, _SNIPPET_ELLIPSIS = "\x02", "\x03", "\x1f"
+
+# A hit's position is the start of the densest cluster of highlighted query
+# terms in its snippet: matches at most this many characters apart, with no
+# page/slide/sheet marker between them, count as one place in the document.
+_CLUSTER_CHARS = 500
+
 # Upper bound for ids per "IN (...)" statement, well below SQLite's variable limit.
 _DELETE_BATCH_SIZE = 500
 _META_BATCH_SIZE = 500
@@ -71,6 +82,80 @@ def _label_from_window(window: str, upto: int | None = None) -> str | None:
         if last is not None and (best is None or last.start() > best[0]):
             best = (last.start(), fmt(last))
     return best[1] if best else None
+
+
+def _word_key(value: str) -> str:
+    """Case-folded words of ``value`` joined by single spaces (for matching terms to highlights)."""
+    return " ".join(re.findall(r"\w+", value.casefold()))
+
+
+def _parse_snippet(raw: str) -> tuple[str, list[tuple[int, int]]]:
+    """Split an FTS5 snippet into its plain text and the highlighted spans.
+
+    The plain text is the snippet without markers and ellipses, so it is a
+    verbatim slice of the indexed content. Spans are ``(start, end)`` offsets
+    into that plain text.
+    """
+    if raw.startswith(_SNIPPET_ELLIPSIS):
+        raw = raw[len(_SNIPPET_ELLIPSIS) :]
+    if raw.endswith(_SNIPPET_ELLIPSIS):
+        raw = raw[: -len(_SNIPPET_ELLIPSIS)]
+    plain: list[str] = []
+    spans: list[tuple[int, int]] = []
+    length = 0
+    start: int | None = None
+    for char in raw:
+        if char == _HIT_OPEN:
+            start = length
+        elif char == _HIT_CLOSE:
+            if start is not None and length > start:
+                spans.append((start, length))
+            start = None
+        else:
+            plain.append(char)
+            length += 1
+    return "".join(plain), spans
+
+
+def _best_cluster(plain: str, spans: list[tuple[int, int]], search_terms: list[str]) -> int | None:
+    """Offset (into ``plain``) of the place where the most query terms meet.
+
+    Each highlighted span counts for the query terms it matches (a phrase
+    highlight such as "Ultralight 1P tent" matches three). From every span,
+    the following spans within :data:`_CLUSTER_CHARS` characters and on the
+    same page, slide or sheet are pooled; the span whose pool holds the most
+    distinct terms wins, the earliest one on a tie. A two-page invoice
+    searched for "INV-2026-0142 total due" thus points at page 2, where all
+    three terms are, not at the invoice number at the top of page 1.
+    """
+    if not spans:
+        return None
+    term_keys = [key for key in (_word_key(t) for t in search_terms) if key]
+    span_terms: list[frozenset[Any]] = []
+    for index, (start, end) in enumerate(spans):
+        words = " " + _word_key(plain[start:end])
+        matched = frozenset(i for i, key in enumerate(term_keys) if " " + key in words)
+        # A highlight no term explains (e.g. a different Unicode spelling)
+        # still counts as one matched term.
+        span_terms.append(matched or frozenset({("span", index)}))
+    markers = sorted(
+        match.start() for pattern, _ in _LOCATION_PATTERNS for match in pattern.finditer(plain)
+    )
+
+    def section(offset: int) -> int:
+        return sum(1 for marker in markers if marker <= offset)
+
+    best_offset, best_score = None, 0
+    for i, (start, _) in enumerate(spans):
+        pooled: set[Any] = set()
+        for j in range(i, len(spans)):
+            other = spans[j][0]
+            if other - start > _CLUSTER_CHARS or section(other) != section(start):
+                break
+            pooled |= span_terms[j]
+        if len(pooled) > best_score:
+            best_offset, best_score = start, len(pooled)
+    return best_offset
 
 
 def generate_trigrams(text: str) -> set[str]:
@@ -639,8 +724,8 @@ class DocumentRepository:
         ]
 
         if with_snippets and top_results:
-            self._attach_snippets(top_results, strategies, first_hit)
-            self._attach_positions(top_results, search_terms)
+            content_snippets = self._attach_snippets(top_results, strategies, first_hit)
+            self._attach_positions(top_results, search_terms, content_snippets)
 
         return top_results
 
@@ -649,13 +734,17 @@ class DocumentRepository:
         results: list[dict[str, Any]],
         strategies: list[tuple[str, str, str, float, int]],
         first_hit: dict[str, tuple[int, int]],
-    ) -> None:
+    ) -> dict[str, str]:
         """Highlight each result with the strategy that found it first.
 
         One query per strategy, in the same order as the ranking query and
         limited to the deepest rank still needed, so snippet() runs for about
         as many rows as are returned (a per-row ``rowid =`` lookup would
         re-evaluate a broad prefix MATCH once per result).
+
+        Returns the raw content snippets (with the internal markers) by doc id,
+        for :meth:`_attach_positions`. Snippets of the file name are not
+        included: they say nothing about a place in the text.
         """
         needed: dict[int, int] = {}  # strategy index -> rows to fetch
         for r in results:
@@ -663,6 +752,7 @@ class DocumentRepository:
             needed[index] = max(needed.get(index, 0), rank + 1)
 
         snippets: dict[str, str] = {}
+        content_snippets: dict[str, str] = {}
         with self.engine.connect() as conn:
             for index, depth in sorted(needed.items()):
                 _, column, match_query, _, snippet_column = strategies[index]
@@ -671,35 +761,65 @@ class DocumentRepository:
                 # above a matched data row, leaving a bare number the model
                 # can't interpret.
                 tokens = 200 if snippet_column == 2 else 64
-                # Only fixed SQL fragments are interpolated; the query is bound.
+                # Only fixed SQL fragments are interpolated; the query and the
+                # markers are bound.
                 sql = text(
-                    f"SELECT doc_id, snippet(documents_fts, {snippet_column}, '>>>', '<<<', "  # noqa: S608
-                    f"'...', {tokens}) FROM documents_fts WHERE {column} MATCH :query "
+                    f"SELECT doc_id, snippet(documents_fts, {snippet_column}, :open, :close, "  # noqa: S608
+                    f":ellipsis, {tokens}) FROM documents_fts WHERE {column} MATCH :query "
                     "ORDER BY bm25(documents_fts), rowid LIMIT :limit"
                 )
-                for doc_id, snippet in conn.execute(sql, {"query": match_query, "limit": depth}):
+                params = {
+                    "query": match_query,
+                    "limit": depth,
+                    "open": _HIT_OPEN,
+                    "close": _HIT_CLOSE,
+                    "ellipsis": _SNIPPET_ELLIPSIS,
+                }
+                for doc_id, snippet in conn.execute(sql, params):
                     if first_hit.get(doc_id, (None,))[0] == index and snippet:
+                        if doc_id not in snippets and snippet_column == 2:
+                            content_snippets[doc_id] = snippet
                         snippets.setdefault(doc_id, snippet)
 
         for r in results:
             if r["doc_id"] in snippets:
-                r["snippet"] = snippets[r["doc_id"]].replace(">>>", "**").replace("<<<", "**")
+                r["snippet"] = (
+                    snippets[r["doc_id"]]
+                    .replace(_HIT_OPEN, "**")
+                    .replace(_HIT_CLOSE, "**")
+                    .replace(_SNIPPET_ELLIPSIS, "...")
+                )
+        return content_snippets
 
-    def _attach_positions(self, results: list[dict[str, Any]], search_terms: list[str]) -> None:
-        """Best-effort: find each result's approximate char position in its document.
+    def _attach_positions(
+        self,
+        results: list[dict[str, Any]],
+        search_terms: list[str],
+        content_snippets: dict[str, str] | None = None,
+    ) -> None:
+        """Find each result's char position in its document, and its location there.
 
-        Snippets only show a short window around a match; for table-like content
-        (e.g. a column header a few lines above the matched row) that's often
-        not enough context to interpret a number. Uses SQLite's plain ``instr()``
-        on the specific matched row only (bounded to the final result set, not
-        every intermediate strategy match), so this stays cheap even on huge
-        documents. Tries the literal search phrase and a variant with '-'
-        swapped for U+2011 (non-breaking hyphen), since hyphenated names are
-        often typeset with that character in source documents while a user's
-        query types a plain ASCII hyphen. The FTS match is case-insensitive, so
-        when the exact spelling is not found, a case-insensitive lookup follows
-        (SQLite's ``lower()`` folds ASCII only and keeps character offsets).
+        The position is taken from the FTS5 match itself: the snippet (without
+        markers) is a verbatim slice of the stored text, so ``instr()`` finds
+        where it starts, and its highlights give the matched terms' offsets.
+        Of those, :func:`_best_cluster` picks the place where the most query
+        terms occur together on one page, slide or sheet. The position thus
+        always lies inside the snippet shown with the hit, and the page/slide/
+        sheet is the one the snippet's best match is on. Before, only a
+        literal occurrence of the whole query counted, which multi-word
+        queries rarely have, so most hits had no position and no location.
+
+        When the snippet has no highlight (e.g. a match in the file name only)
+        or cannot be found again, the literal search phrase is looked up as
+        before: also with '-' swapped for U+2011 (non-breaking hyphen), since
+        hyphenated names are often typeset with that character, and then
+        case-insensitively (SQLite's ``lower()`` folds ASCII only and keeps
+        character offsets).
+
+        Uses SQLite's ``instr()``/``substr()`` on the returned rows only, so
+        this stays cheap even on huge documents.
         """
+        content_snippets = content_snippets or {}
         phrase = " ".join(search_terms)
         candidates = [phrase]
         if "-" in phrase:
@@ -714,6 +834,10 @@ class DocumentRepository:
 
         with self.engine.connect() as conn:
             for r in results:
+                if r.get("position") is None and r["doc_id"] in content_snippets:
+                    r["position"] = self._snippet_position(
+                        conn, r["doc_id"], content_snippets[r["doc_id"]], search_terms
+                    )
                 if r.get("position") is None:
                     for sql, candidate in ((s, c) for s in lookups for c in candidates):
                         row = conn.execute(text(sql), {"p": candidate, "d": r["doc_id"]}).fetchone()
@@ -722,6 +846,21 @@ class DocumentRepository:
                             break
                 if r.get("position") is not None:
                     r["page"] = self._page_for_position(conn, r["doc_id"], r["position"])
+
+    @staticmethod
+    def _snippet_position(conn, doc_id: str, raw: str, search_terms: list[str]) -> int | None:
+        """Char position of the best highlighted match of snippet ``raw`` in the document."""
+        plain, spans = _parse_snippet(raw)
+        offset = _best_cluster(plain, spans, search_terms)
+        if offset is None or not plain:
+            return None
+        row = conn.execute(
+            text("SELECT instr(content_text, :p) FROM documents WHERE id = :d"),
+            {"p": plain, "d": doc_id},
+        ).fetchone()
+        if not row or not row[0]:
+            return None
+        return row[0] - 1 + offset  # instr() is 1-based
 
     def _page_for_position(
         self, conn, doc_id: str, position: int, lookback: int = 6000
