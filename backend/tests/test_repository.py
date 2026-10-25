@@ -232,6 +232,143 @@ def test_search_hits_carry_their_location(repo, located):
     assert fuzzy["page"] == "Sheet: Wholesale"
 
 
+# Small stand-ins for the eval corpus: the first match of a query term is on an
+# earlier page/slide/sheet than the place where most of the terms meet.
+_INVOICE = (
+    "[Page 1]\nINVOICE INV-7\nInvoice date: 2026-03-31\nItem | Qty | Amount\n"
+    "Trailhead 2P tent | 3 | 747.00\nContinued on page 2.\n\n"
+    "[Page 2]\nINVOICE INV-7 (page 2 of 2)\nSubtotal: 1,092.00\nTotal due: 1,179.36\n"
+    "Payment terms: Net 30\nDue date: 2026-04-30\n"
+)
+_ROADMAP = (
+    "=== Slide 1 ===\n\nTent roadmap, second half of 2026\n\n"
+    "=== Slide 2 ===\n\nUltralight 1P tent\n\nLaunch: October 2026\nTarget weight: 1.1 kg\n\n"
+    "=== Slide 3 ===\n\nSupplier lead times\n"
+)
+_PRICES = (
+    "=== Sheet: Retail ===\nSKU | Product | Retail price (USD)\n"
+    "FH-TENT-2P | Trailhead 2P tent | 249\nFH-LAMP-R | Ridge headlamp | 34.5\n"
+    "=== Sheet: Wholesale ===\nSKU | Product | Wholesale price (USD) | Minimum quantity\n"
+    "FH-TENT-2P | Trailhead 2P tent | 174.3 | 20\nFH-LAMP-R | Ridge headlamp | 24.15 | 50\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "file_type", "content", "query", "page", "at"),
+    [
+        ("invoice.pdf", "pdf", _INVOICE, "INV-7 total due", "Page 2", "INV-7 (page 2"),
+        ("invoice.pdf", "pdf", _INVOICE, "total amount due", "Page 2", "Total due"),
+        ("invoice.pdf", "pdf", _INVOICE, "INV-7 payment due date", "Page 2", "INV-7 (page 2"),
+        ("invoice.pdf", "pdf", _INVOICE, "INV-7", "Page 1", "INV-7\nInvoice date"),
+        ("roadmap.pptx", "pptx", _ROADMAP, "Ultralight 1P tent target weight", "Slide 2", "Ultra"),
+        ("roadmap.pptx", "pptx", _ROADMAP, "tent launch", "Slide 2", "tent\n\nLaunch"),
+        (
+            "prices.xlsx",
+            "xlsx",
+            _PRICES,
+            "Trailhead 2P wholesale price",
+            "Sheet: Wholesale",
+            "Whol",
+        ),
+        (
+            "prices.xlsx",
+            "xlsx",
+            _PRICES,
+            "Ridge headlamp retail price",
+            "Sheet: Retail",
+            "Retail =",
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) and len(value) < 40 else "",
+)
+def test_multi_word_queries_locate_where_the_terms_meet(
+    repo, name, file_type, content, query, page, at
+):
+    """Regression (#55): a hit only got a location when the whole query occurred literally.
+
+    Models search with several words ("Ultralight 1P tent target weight"); the
+    location now comes from the FTS5 match, on the page/slide/sheet where most
+    of the terms occur together.
+    """
+    doc = _add(repo, name, content, file_type=file_type)
+
+    hit = repo.search_fulltext(query)[0]
+
+    assert hit["doc_id"] == doc.id
+    assert hit["page"] == page
+    assert hit["position"] == content.index(at)
+    # The position is a highlighted match inside the snippet that is shown.
+    assert content[hit["position"] : hit["position"] + 5] in hit["snippet"].replace("**", "")
+
+
+def test_location_of_a_hit_deep_in_a_long_document(repo):
+    """The snippet is a window of a long text; its position maps back to the right page."""
+    pages = [f"[Page {n}]\n" + "filler words about nothing in particular. " * 60 for n in (1, 2)]
+    pages.append("[Page 3]\nThe pump pressure limit is 6 bar.\n")
+    pages.append("[Page 4]\n" + "more filler text without the terms. " * 60)
+    content = "\n".join(pages)
+    _add(repo, "manual.pdf", content, file_type="pdf")
+
+    hit = repo.search_fulltext("pump pressure limit bar")[0]
+
+    assert hit["page"] == "Page 3"
+    assert hit["position"] == content.index("pump pressure")
+    assert hit["snippet"].startswith("...")
+
+
+def test_terms_on_different_pages_do_not_pool(repo):
+    """Matches pool only within one page: two terms on page 2 beat one on page 1."""
+    content = "[Page 1]\nalpha\n[Page 2]\nbeta gamma\n"
+    _add(repo, "split.pdf", content, file_type="pdf")
+
+    hit = repo.search_fulltext("alpha beta gamma")[0]
+
+    assert hit["page"] == "Page 2"
+    assert hit["position"] == content.index("beta")
+
+
+def test_position_falls_back_to_the_phrase_when_the_snippet_is_not_found(repo):
+    """Text that contains the internal snippet markers still gets a position."""
+    content = "[Page 1]\nintro\n[Page 2]\nodd \x02 control \x03 chars, then the lantern hook"
+    _add(repo, "odd.pdf", content, file_type="pdf")
+
+    hit = repo.search_fulltext("lantern hook")[0]
+
+    assert hit["position"] == content.index("lantern hook")
+    assert hit["page"] == "Page 2"
+
+
+def test_match_in_the_file_name_only_has_no_position(filled):
+    hit = next(
+        r for r in filled.search_fulltext("manual") if r["file_name"] == "lantern_manual.txt"
+    )
+    assert hit["position"] is None
+    assert hit["page"] is None
+    assert "\x02" not in hit["snippet"] and "\x1f" not in hit["snippet"]
+
+
+def test_best_cluster_prefers_most_distinct_terms_then_the_earliest():
+    best = repository_module._best_cluster
+    far = " " * 600  # beyond the cluster reach
+    # Two places with two distinct terms each: the earlier one wins.
+    plain = "aa bb" + far + "aa cc"
+    assert best(plain, [(0, 2), (3, 5), (605, 607), (608, 610)], ["aa", "bb", "cc"]) == 0
+    # Three distinct terms beat two, even later in the text.
+    plain = "aa bb" + far + "aa bb cc"
+    spans = [(0, 2), (3, 5), (605, 607), (608, 610), (611, 613)]
+    assert best(plain, spans, ["aa", "bb", "cc"]) == 605
+    # A phrase highlight counts for every term it contains.
+    assert best("x tent 1P", [(2, 9)], ["tent", "1P"]) == 2
+    assert best("text", [], ["aa"]) is None
+
+
+def test_parse_snippet_strips_markers_and_ellipses():
+    raw = "\x1fsome \x02hit\x03 and \x02another\x03\x1f"
+    plain, spans = repository_module._parse_snippet(raw)
+    assert plain == "some hit and another"
+    assert [plain[s:e] for s, e in spans] == ["hit", "another"]
+
+
 # --- content, listing, statistics ----------------------------------------------------------
 
 
