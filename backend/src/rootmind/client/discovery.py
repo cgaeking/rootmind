@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -54,6 +55,9 @@ class Target:
     token: str | None = field(repr=False)
     discovered: bool
     service: dict[str, Any] | None = None  # the service status, when discovered
+    # For a discovered service: whether its process still owns the port. The
+    # client checks it again before every request that carries the token.
+    verify: Callable[[], bool] | None = field(default=None, repr=False, compare=False)
 
 
 class _MachineProbe:
@@ -230,6 +234,7 @@ def _target(
         )
 
     token = None
+    verify = None
     if need_token:
         if token_file:
             token = read_token_file(Path(token_file).expanduser())
@@ -257,4 +262,11 @@ def _target(
                 + _stopped_hint(probe.platform),
                 ClientExit.NO_SERVICE,
             )
-    return Target(url=service_url, token=token, discovered=True, service=info)
+
+        def still_owned(owner: int = pid) -> bool:
+            # Still that process's port (a restarted service has a new PID).
+            return probe.port_owned_by(port, owner)
+
+        verify = still_owned
+
+    return Target(url=service_url, token=token, discovered=True, service=info, verify=verify)

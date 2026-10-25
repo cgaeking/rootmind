@@ -224,7 +224,9 @@ def test_status_through_the_discovered_service(capsys, fake, token_file, tmp_pat
     assert data["folders"][0]["name"] == "docs"
     assert data["mcp_http"]["url"] == "http://127.0.0.1:18400/mcp"
     assert data["remote_access"]["enabled"] is False
-    assert probe.ownership_checks == [(fake.port, 4242)]
+    # Checked at discovery, and again before every request that carries the token.
+    assert set(probe.ownership_checks) == {(fake.port, 4242)}
+    assert len(probe.ownership_checks) == len(fake.requests) + 1
     assert all(r.authorized for r in fake.requests)
     no_secret_in(out, FAKE_REST_TOKEN, MCP_TOKEN)
 
@@ -245,6 +247,31 @@ def test_no_token_goes_to_another_program_on_the_port(capsys, fake, token_file, 
     assert code == ClientExit.NO_SERVICE
     assert "no token was sent" in err
     assert fake.requests == []
+
+
+def test_no_token_after_the_port_changed_hands_while_waiting(
+    capsys, fake, token_file, use_probe, monkeypatch
+):
+    # index --wait polls for as long as indexing runs. If the service restarts
+    # meanwhile and another program takes its port, the next poll must not
+    # carry the token there.
+    probe = use_probe(FakeProbe(fake.port, token_file))
+    fake.state.running_polls = 5
+    real_owned = probe.port_owned_by
+
+    def owned(port: int, pid: int) -> bool:
+        if len([r for r in fake.requests if r.path == "/index/status"]) >= 2:
+            probe.owner_pid = 999  # the service restarted; another process holds the port
+        return real_owned(port, pid)
+
+    probe.port_owned_by = owned
+    monkeypatch.delenv("RLM_HOME", raising=False)  # index goes to the service
+    code, _out, err = cli(capsys, "index", "--wait")
+    assert code == ClientExit.NO_SERVICE
+    assert "no token was sent" in err
+    polls = [r for r in fake.requests if r.path == "/index/status"]
+    assert len(polls) == 2  # nothing after the port changed hands
+    assert all(r.authorized for r in fake.requests)
 
 
 def test_no_token_without_a_service_pid(capsys, fake, token_file, use_probe):

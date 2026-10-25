@@ -2,6 +2,10 @@
 
 - No proxy for loopback addresses: the request must reach the local service.
 - No redirects: a redirect would carry the token to an address nobody checked.
+- With a ``verify`` callback (a discovered service), the listener is checked
+  again before every request that carries the token: a command that polls
+  for minutes (``index --wait``) must not hand the token to a program that
+  took the port while the service restarted.
 - Errors become :class:`ClientError` with the service's ``detail`` and an
   exit code; the token never appears in a message.
 """
@@ -12,6 +16,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from enum import IntEnum
 from typing import Any
 
@@ -108,10 +113,19 @@ def _detail(payload: Any) -> str | None:
 class RestClient:
     """JSON requests to one REST API base address with an optional bearer token."""
 
-    def __init__(self, url: str, token: str | None, *, timeout: float = DEFAULT_TIMEOUT_SECONDS):
+    def __init__(
+        self,
+        url: str,
+        token: str | None,
+        *,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        verify: Callable[[], bool] | None = None,
+    ):
         self.url = check_url(url)
         self._token = token
         self.timeout = timeout
+        # Called before each request with the token; False: the token is not sent.
+        self._verify = verify
         host = urllib.parse.urlsplit(self.url).hostname
         handlers: list[Any] = [_NoRedirect()]
         if host in LOOPBACK_HOSTS:
@@ -133,9 +147,17 @@ class RestClient:
         """Send one request and return the decoded JSON body (None for an empty one).
 
         Raises:
-            ClientError: no answer (exit 3), 401/403 (exit 4), any other error
-                status (exit 1, with the service's ``detail``).
+            ClientError: no answer or the listener no longer verified (exit 3),
+                401/403 (exit 4), any other error status (exit 1, with the
+                service's ``detail``).
         """
+        if self._token and self._verify is not None and not self._verified():
+            raise ClientError(
+                f"cannot confirm any more that the RootMind service itself listens on "
+                f"{self.url} (it restarted, or another program took the port); no token was "
+                "sent. Run the command again.",
+                ClientExit.NO_SERVICE,
+            )
         url = self.url + path
         if params:
             query = {k: v for k, v in params.items() if v is not None}
@@ -190,6 +212,12 @@ class RestClient:
             raise ClientError(message, ClientExit.NOT_ALLOWED, status)
         message = f"{method} {path} failed with HTTP {status}" + (f": {detail}" if detail else "")
         raise ClientError(message, ClientExit.FAILED, status)
+
+    def _verified(self) -> bool:
+        try:
+            return bool(self._verify())  # type: ignore[misc]
+        except Exception:  # the listener table or the service manager cannot be read
+            return False
 
     def get(self, path: str, **kwargs: Any) -> Any:
         return self.request("GET", path, **kwargs)

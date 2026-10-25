@@ -232,7 +232,9 @@ class Context:
         self.err = err
         self.json = bool(getattr(args, "json", False))
         self.probe = probe
-        self._client_factory = client_factory or (lambda t: RestClient(t.url, t.token))
+        self._client_factory = client_factory or (
+            lambda t: RestClient(t.url, t.token, verify=t.verify)
+        )
         self.stdin = stdin if stdin is not None else sys.stdin
         self.sleep = sleep
         self.target: Target | None = None

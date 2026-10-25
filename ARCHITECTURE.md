@@ -206,7 +206,10 @@ desktop app and the Claude Desktop bundle, and find it the same way:
 2. the service must be running, and the listener on `127.0.0.1:<port>` must
    belong to the service's PID (Service Control Manager or `systemctl --user
    show`), checked with the same listener tables as `service install`
-   (`service/listeners.py`, `service/procnet.py`); otherwise no token is sent;
+   (`service/listeners.py`, `service/procnet.py`); otherwise no token is sent.
+   The check is repeated before every request that carries the token, so a
+   command that polls (`index --wait`) stops (exit 3) when the service
+   restarts or another program takes the port meanwhile;
 3. the token is read from `data/rest_token.txt`. An account that cannot read
    it (Windows: not the installing account and not elevated; Linux: not the
    owner, or `sudo`) gets exit code 4 with that explanation.
