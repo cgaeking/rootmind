@@ -1153,9 +1153,14 @@ class KnowledgeBaseEngine:
             if meta:
                 candidates.append((meta, ref.get("page")))
 
+        # A document counts as named when the answer has its file name or its
+        # id (models sometimes cite the id from the search result instead).
         ans = (answer or "").lower()
         mentioned = [
-            c for c in candidates if c[0]["file_name"] and c[0]["file_name"].lower() in ans
+            c
+            for c in candidates
+            if (c[0]["file_name"] and c[0]["file_name"].lower() in ans)
+            or c[0]["doc_id"].lower() in ans
         ]
         chosen = mentioned if mentioned else candidates
         return [as_source(meta, page) for meta, page in chosen[:MAX_SOURCES]]

@@ -162,7 +162,10 @@
       "not in the",
       "don't have",
       "do not have",
-      "no mention"
+      "no mention",
+      "not contain",
+      "not available",
+      "cannot be determined"
     ],
     "must_not_contain": [],
     "tags": ["unanswerable"],
