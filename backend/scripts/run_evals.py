@@ -27,10 +27,19 @@ Modes:
 Results go to ``evals/results/<utc-timestamp>-<mode>-<model>.json`` (gitignored)
 and a Markdown summary table is printed.
 
+``--trace DIR`` (both modes) writes a trace of every run: ``DIR/<same name>.jsonl``
+(one record per model call, tool call and answer) and ``DIR/<same name>.md``
+(the steps of each run, readable). Each run's result row gets its ``trace_id``.
+``--langfuse`` also exports the traces to Langfuse (needs the ``tracing``
+extra and ``LANGFUSE_*`` variables). Traces contain the questions and the
+document text the model read.
+
 Usage (from backend/)::
 
     uv run python scripts/run_evals.py
     uv run python scripts/run_evals.py --cases c01,c06 --out /tmp/evals
+    uv run python scripts/run_evals.py --mode live --provider ollama --model granite4.1:8b \\
+        --runs 3 --trace evals/results/traces
     ANTHROPIC_API_KEY=... uv run python scripts/run_evals.py --mode live \\
         --provider anthropic --model <model id> --runs 3
 """
@@ -196,12 +205,14 @@ def _search_hit_names(repo, tool_result: str) -> list[str]:
     return names
 
 
-async def run_dry_case(case, config, repo) -> dict[str, Any]:
+async def run_dry_case(case, config, repo, tracer=None) -> dict[str, Any]:
     from rootmind import tools
     from rootmind.rlm_engine.engine import KnowledgeBaseEngine
 
-    engine = KnowledgeBaseEngine(repo, config, client=DryPolicyClient(case))
-    result = await engine.query(case["question"], history=case["history"] or None)
+    engine = KnowledgeBaseEngine(repo, config, client=DryPolicyClient(case), tracer=tracer)
+    result = await engine.query(
+        case["question"], history=case["history"] or None, trace_tags={"case": case["id"]}
+    )
 
     calls = result["tool_calls"]
     search_args = next((c["input"] for c in calls if c["tool"] == "search_documents"), None)
@@ -238,6 +249,7 @@ async def run_dry_case(case, config, repo) -> dict[str, Any]:
         ),
         "tool_path": tool_path(calls),
         "answer": result["answer"],
+        **({"trace_id": result["trace_id"]} if "trace_id" in result else {}),
     }
 
 
@@ -294,7 +306,11 @@ async def run_live_case(case, engine, runs: int) -> dict[str, Any]:
     for run in range(1, runs + 1):
         started = time.perf_counter()
         try:
-            result = await engine.query(case["question"], history=case["history"] or None)
+            result = await engine.query(
+                case["question"],
+                history=case["history"] or None,
+                trace_tags={"case": case["id"], "run": run},
+            )
         except Exception as e:  # keep going; a failed run counts as a fail
             rows.append({"run": run, "error": f"{type(e).__name__}: {e}", "passed": False})
             continue
@@ -317,6 +333,7 @@ async def run_live_case(case, engine, runs: int) -> dict[str, Any]:
                 "stop_reasons": result.get("stop_reasons", []),
                 "latency_s": round(latency, 2),
                 "answer": result["answer"],
+                **({"trace_id": result["trace_id"]} if "trace_id" in result else {}),
             }
         )
     ok = [r for r in rows if "error" not in r]
@@ -395,11 +412,18 @@ def markdown_live(rows: list[dict[str, Any]], summary: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def write_results(out: Path, mode: str, model: str, payload: dict[str, Any]) -> Path:
-    out.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+def result_stem(mode: str, model: str, stamp: str | None = None) -> str:
+    """``<utc-timestamp>-<mode>-<model>``, shared by the results and the trace files."""
+    stamp = stamp or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     safe_model = re.sub(r"[^A-Za-z0-9._-]+", "_", model)
-    path = out / f"{stamp}-{mode}-{safe_model}.json"
+    return f"{stamp}-{mode}-{safe_model}"
+
+
+def write_results(
+    out: Path, mode: str, model: str, payload: dict[str, Any], stem: str | None = None
+) -> Path:
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{stem or result_stem(mode, model)}.json"
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return path
 
@@ -419,6 +443,8 @@ class Args:
     dataset: Path
     min_hit: float
     verbose: bool
+    trace: Path | None = None
+    langfuse: bool = False
 
 
 def parse_args(argv: list[str] | None) -> Args:
@@ -438,6 +464,17 @@ def parse_args(argv: list[str] | None) -> Args:
         help=f"dry mode: minimum hit@5 (default {DEFAULT_MIN_HIT})",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="log indexing and tool calls")
+    parser.add_argument(
+        "--trace",
+        type=Path,
+        metavar="DIR",
+        help="write a trace of every run (JSONL and a readable .md) to DIR",
+    )
+    parser.add_argument(
+        "--langfuse",
+        action="store_true",
+        help="also export traces to Langfuse (tracing extra, LANGFUSE_* variables)",
+    )
     ns = parser.parse_args(argv)
     if ns.mode == "live" and (not ns.provider or not ns.model):
         parser.error("--mode live needs --provider and --model")
@@ -455,7 +492,30 @@ def parse_args(argv: list[str] | None) -> Args:
         ns.dataset,
         ns.min_hit,
         ns.verbose,
+        ns.trace,
+        ns.langfuse,
     )
+
+
+def make_tracer(args: Args, stem: str):
+    """The tracer for ``--trace`` / ``--langfuse``, or None (nothing is imported then)."""
+    if args.trace is None and not args.langfuse:
+        return None
+    from rootmind.tracing import MultiTracer
+
+    tracers = []
+    if args.trace is not None:
+        from rootmind.tracing.local import LocalTracer
+
+        tracers.append(LocalTracer(args.trace, name=stem))
+    if args.langfuse:
+        from rootmind.tracing.langfuse_export import LangfuseTracer, TracingConfigError
+
+        try:
+            tracers.append(LangfuseTracer())
+        except TracingConfigError as e:
+            raise RuntimeError(str(e)) from e
+    return tracers[0] if len(tracers) == 1 else MultiTracer(tracers)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -482,29 +542,37 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
+    model = "dry-policy" if args.mode == "dry" else args.model
+    stem = result_stem(args.mode, model)
+    try:
+        tracer = make_tracer(args, stem)
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
     with tempfile.TemporaryDirectory(prefix="rootmind-evals-", ignore_cleanup_errors=True) as tmp:
         config, repo = build_index(args.corpus, Path(tmp))
         try:
             if args.mode == "dry":
-                model = "dry-policy"
-                rows = [asyncio.run(run_dry_case(c, config, repo)) for c in cases]
+                rows = [asyncio.run(run_dry_case(c, config, repo, tracer)) for c in cases]
                 summary = summarize_dry(rows, args.min_hit)
                 table = markdown_dry(rows, summary)
             else:
                 from rootmind.rlm_engine.engine import KnowledgeBaseEngine
 
-                model = args.model
                 config.llm.provider = args.provider
                 config.llm.model = args.model
                 config.llm.api_key = api_key
                 if args.provider == "ollama" and os.environ.get("OLLAMA_BASE_URL"):
                     config.llm.base_url = os.environ["OLLAMA_BASE_URL"]
-                engine = KnowledgeBaseEngine(repo, config)
+                engine = KnowledgeBaseEngine(repo, config, tracer=tracer)
                 rows = [asyncio.run(run_live_case(c, engine, args.runs)) for c in cases]
                 summary = summarize_live(rows)
                 table = markdown_live(rows, summary)
         finally:
             repo.engine.dispose()
+            if tracer is not None:
+                tracer.close()
 
     payload = {
         "mode": args.mode,
@@ -516,9 +584,11 @@ def main(argv: list[str] | None = None) -> int:
         "summary": summary,
         "cases": rows,
     }
-    path = write_results(args.out, args.mode, model, payload)
+    path = write_results(args.out, args.mode, model, payload, stem)
     print(table)
     print(f"\nResults: {path}")
+    if args.trace is not None:
+        print(f"Traces: {args.trace / (stem + '.md')} (readable), {args.trace / (stem + '.jsonl')}")
     if args.mode == "dry" and not summary["passed_gate"]:
         return 1
     return 0

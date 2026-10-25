@@ -41,6 +41,12 @@ dependencies = [
     "uvicorn[standard]>=0.54.0",
 ]
 
+[project.optional-dependencies]
+# Export of agent traces to Langfuse (off unless turned on; see rootmind.tracing).
+tracing = [
+    "langfuse>=5.0.4",
+]
+
 [project.scripts]
 rootmind = "rootmind.main:main"
 rootmind-mcp = "rootmind.mcp_stdio:main"

@@ -172,6 +172,19 @@ class RemoteAccessConfig(BaseModel):
     domain: str | None = None
 
 
+class TracingConfig(BaseModel):
+    """Tracing of the question loop (both off by default; see :mod:`rootmind.tracing`).
+
+    Only ``config.yaml`` turns these on; the settings screen does not change
+    them. Traces contain questions and the document text the model read.
+    """
+
+    # JSONL and a readable summary under <home>/logs/traces/; nothing leaves the computer.
+    local: bool = False
+    # Export to Langfuse; needs the `tracing` extra and LANGFUSE_* environment variables.
+    langfuse: bool = False
+
+
 class AppConfig(BaseModel):
     """Main application configuration."""
 
@@ -181,6 +194,7 @@ class AppConfig(BaseModel):
     indexer: IndexerConfig = Field(default_factory=IndexerConfig)
     api: APIConfig = Field(default_factory=APIConfig)
     remote_access: RemoteAccessConfig = Field(default_factory=RemoteAccessConfig)
+    tracing: TracingConfig = Field(default_factory=TracingConfig)
 
 
 class Settings(BaseSettings):
