@@ -73,3 +73,15 @@ api:
 remote_access:
   enabled: false
   domain: null        # a reserved ngrok domain such as name.ngrok-free.app
+
+# Tracing of the question loop, off by default. Traces contain the question,
+# the model's tool arguments and the document text it read (see SECURITY.md).
+# local: one JSONL file and a readable Markdown summary per process under
+#   <home>/logs/traces/; nothing leaves the computer.
+# langfuse: export to a Langfuse server; needs `uv sync --extra tracing` (not in
+#   the packaged backend) and LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY and
+#   LANGFUSE_BASE_URL in the environment. A self-hosted Langfuse keeps traces
+#   on your network; Langfuse Cloud is a third party.
+tracing:
+  local: false
+  langfuse: false

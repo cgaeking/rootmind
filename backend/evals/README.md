@@ -52,6 +52,34 @@ them ("Ultralight 1P tent target weight", [#55](https://github.com/cgaeking/root
 1 when hit@5 over the gated cases drops below `--min-hit` (default 1.0); c09 is reported but
 not gated.
 
+## Tracing a run
+
+`--trace <folder>` records every step of every run, in both modes, so a failing run can be read
+instead of reconstructed:
+
+```bash
+uv run python scripts/run_evals.py --mode live --provider ollama --model granite4.1:8b \
+    --runs 3 --trace evals/results/traces
+```
+
+It writes two files next to each other, named like the results file:
+
+- `<time>-<mode>-<model>.md`, readable: per run the question, then each model call (purpose,
+  iteration, duration, tokens with the prompt size, stop reason, the tools it asked for or the
+  start of its text) and under it each tool call (arguments, the documents a search returned with
+  their page, slide or sheet, the window a read returned, result size), then the answer, the
+  sources and the stop reasons.
+- `<time>-<mode>-<model>.jsonl`, one JSON record per question, model call, tool call, loop event
+  (`search_nudge`, `iteration_limit`) and answer, all with the run's `trace_id`; tool records
+  keep the result text the model saw (up to 20,000 characters). Each run in the results JSON
+  carries the same `trace_id`.
+
+`--langfuse` also sends the traces to Langfuse (needs `uv sync --extra tracing` and
+`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`). Traces contain the questions
+and the document text read; with this fictional corpus that is harmless, with your own documents
+it is not (see [SECURITY.md](../../SECURITY.md#what-leaves-the-machine)). Keep them under
+`evals/results/` (gitignored).
+
 ## Latest dry run (retrieval regression)
 
 Output of `uv run python scripts/run_evals.py` (dry mode). "n/a" in the location column

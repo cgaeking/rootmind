@@ -96,7 +96,7 @@ async def test_live_scoring_with_a_stub_engine():
     )
 
     class StubEngine:
-        async def query(self, question, history=None):
+        async def query(self, question, history=None, trace_tags=None):
             item = next(answers)
             if isinstance(item, Exception):
                 raise item
@@ -173,6 +173,37 @@ def test_synonym_trap_and_unanswerable_case(corpus_text):
     everything = " ".join(corpus_text.values()).lower()
     assert "vacation" not in everything  # c09: only "paid time off" is in the handbook
     assert "ticker" not in everything  # c14: the answer is not in the corpus
+
+
+def test_trace_writes_a_readable_trace_per_run(tmp_path):
+    traces = tmp_path / "traces"
+    code = run_evals.main(
+        ["--cases", "c01,c16", "--out", str(tmp_path / "out"), "--trace", str(traces)]
+    )
+
+    assert code == 0
+    results = json.loads(next((tmp_path / "out").glob("*.json")).read_text(encoding="utf-8"))
+    jsonl = next(traces.glob("*.jsonl"))
+    summary = jsonl.with_suffix(".md").read_text(encoding="utf-8")
+    assert jsonl.stem == next((tmp_path / "out").glob("*.json")).stem  # same name as results
+    records = [json.loads(line) for line in jsonl.read_text(encoding="utf-8").splitlines()]
+    answers = {r["trace_id"]: r for r in records if r["type"] == "answer"}
+    for case in results["cases"]:
+        assert case["trace_id"] in answers
+    questions = [r for r in records if r["type"] == "question"]
+    assert [q["tags"] for q in questions] == [{"case": "c01"}, {"case": "c16"}]
+    assert "## case c01" in summary and "## case c16" in summary
+    assert "model condense" in summary  # c16 is a follow-up
+
+
+def test_langfuse_without_keys_exits_2(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    out = tmp_path / "results"
+
+    assert run_evals.main(["--cases", "c01", "--langfuse", "--out", str(out)]) == 2
+    assert "LANGFUSE_PUBLIC_KEY" in capsys.readouterr().err
+    assert not out.exists()
 
 
 # Queries as models write them (c08's is granite4.1:8b's query from the #47

@@ -79,6 +79,7 @@ flowchart TB
 | Repository | `database/repository.py`, `database/models.py` | SQLite schema, FTS5 search, trigram fuzzy search, windowed reads, location lookup |
 | Tool layer | `tools.py` | The five read-only tools: schemas, argument validation, execution, result formatting |
 | Agent loop | `rlm_engine/engine.py` | Provider adapters, the bounded tool loop, condensing follow-up questions, sources |
+| Tracing | `tracing/` | Optional, off by default: one span per model and tool call, written to a local JSONL file and summary or exported to Langfuse; the engine only calls a tracer it is given and never imports this package |
 | REST API | `api/app.py`, `api/routes.py`, `auth.py` | Localhost API for the desktop app with an optional bearer token; config hot reload |
 | MCP servers | `mcp_stdio.py`, `mcp_http.py` | The same tools for external MCP clients |
 | Remote access | `remote_access.py` | Optional ngrok tunnel to MCP over HTTP, run by the MCP service; its settings and status files |
