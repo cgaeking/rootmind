@@ -13,6 +13,8 @@ from helpers import SDK_TEST_KEY, doc_id, make_engine
 from rootmind import tools
 from rootmind.rlm_engine import engine as engine_module
 from rootmind.rlm_engine.engine import (
+    EMPTY_ANSWER_FALLBACK,
+    EMPTY_ANSWER_PROMPT,
     GENERIC_FAILURE_ANSWER,
     ITERATION_LIMIT_PROMPT,
     MAX_TOOL_CALLS_PER_TURN,
@@ -262,6 +264,113 @@ async def test_stop_without_text_reports_the_stop_reason(app_config, indexed_rep
     assert result["answer"] == (
         "The model stopped without producing an answer (stop reason: refusal)."
     )
+
+
+def _search():
+    return anthropic_response(tool_use("t1", "search_documents", {"query": "total due"}))
+
+
+@pytest.mark.parametrize("empty", [(), (text(""),), (text("  \n"),)])
+async def test_empty_answer_after_a_search_is_retried_once(app_config, indexed_repo, empty):
+    """Regression (#47, case c04): an empty end_turn reply was returned as the answer."""
+    fake = FakeAnthropic(
+        [_search(), anthropic_response(*empty), anthropic_response(text("1,179.36 (invoice.pdf)."))]
+    )
+
+    result = await make_engine(app_config, indexed_repo, fake).query("Total due?")
+
+    assert result["answer"] == "1,179.36 (invoice.pdf)."
+    assert len(fake.calls) == 3
+    assert result["stop_reasons"] == ["tool_use", "end_turn", "end_turn"]
+    assert result["tokens_used"] == 3 * 15
+    retry = fake.calls[2]
+    assert "tool_choice" not in retry  # an ordinary iteration: tools stay available
+    # The empty turn is not sent back; the follow-up joins the tool-result turn.
+    assert len(retry["messages"]) == len(fake.calls[1]["messages"])
+    assert retry["messages"][-1]["content"][-1] == {"type": "text", "text": EMPTY_ANSWER_PROMPT}
+    _assert_roles_alternate(retry["messages"])
+    _assert_no_empty_user_turn(fake)
+
+
+async def test_second_empty_answer_returns_the_fallback(app_config, indexed_repo):
+    fake = FakeAnthropic([_search(), anthropic_response(), anthropic_response(text(" "))])
+
+    result = await make_engine(app_config, indexed_repo, fake).query("q", max_iterations=5)
+
+    assert result["answer"] == EMPTY_ANSWER_FALLBACK
+    assert len(fake.calls) == 3
+    assert result["stop_reasons"] == ["tool_use", "end_turn", "end_turn"]
+
+
+async def test_empty_answer_is_retried_only_once_per_question(app_config, indexed_repo):
+    """The retry may search again; a later empty reply still gets the fallback."""
+    fake = FakeAnthropic(
+        [
+            _search(),
+            anthropic_response(),
+            anthropic_response(tool_use("t2", "get_statistics", {})),
+            anthropic_response(),
+        ]
+    )
+
+    result = await make_engine(app_config, indexed_repo, fake).query("q", max_iterations=5)
+
+    assert result["answer"] == EMPTY_ANSWER_FALLBACK
+    assert len(fake.calls) == 4
+    assert [c["tool"] for c in result["tool_calls"]] == ["search_documents", "get_statistics"]
+
+
+async def test_empty_answer_retry_counts_against_the_iteration_cap(app_config, indexed_repo):
+    fake = FakeAnthropic(
+        [
+            _search(),
+            anthropic_response(),
+            anthropic_response(tool_use("t2", "get_statistics", {})),  # the retry: 3rd iteration
+            anthropic_response(text("Best answer so far.")),
+        ]
+    )
+
+    result = await make_engine(app_config, indexed_repo, fake).query("q", max_iterations=3)
+
+    assert len(fake.calls) == 4
+    final = fake.calls[-1]
+    assert final["tool_choice"] == {"type": "none"}
+    assert final["messages"][-1]["content"][-1] == {"type": "text", "text": ITERATION_LIMIT_PROMPT}
+    assert result["answer"] == "Best answer so far."
+
+
+async def test_empty_answer_at_the_iteration_cap_uses_the_final_call(app_config, indexed_repo):
+    fake = FakeAnthropic([_search(), anthropic_response(), anthropic_response(text("Found it."))])
+
+    result = await make_engine(app_config, indexed_repo, fake).query("q", max_iterations=2)
+
+    assert result["answer"] == "Found it."
+    assert len(fake.calls) == 3
+    final = fake.calls[-1]
+    assert final["tool_choice"] == {"type": "none"}
+    # Only the limit prompt asks for the answer here, not both prompts.
+    assert final["messages"][-1]["content"][-1] == {"type": "text", "text": ITERATION_LIMIT_PROMPT}
+    assert EMPTY_ANSWER_PROMPT not in str(final["messages"])
+    _assert_roles_alternate(final["messages"])
+
+
+async def test_empty_answer_at_the_cap_and_after_it_returns_the_fallback(app_config, indexed_repo):
+    fake = FakeAnthropic([_search(), anthropic_response(), anthropic_response()])
+
+    result = await make_engine(app_config, indexed_repo, fake).query("q", max_iterations=2)
+
+    assert result["answer"] == EMPTY_ANSWER_FALLBACK
+    assert len(fake.calls) == 3
+
+
+async def test_non_empty_answer_is_not_retried(app_config, indexed_repo):
+    fake = FakeAnthropic([_search(), anthropic_response(text("1,179.36."))])
+
+    result = await make_engine(app_config, indexed_repo, fake).query("q", max_iterations=5)
+
+    assert result["answer"] == "1,179.36."
+    assert len(fake.calls) == 2
+    assert EMPTY_ANSWER_PROMPT not in str(fake.calls)
 
 
 async def test_timeout_raises_llm_timeout(app_config, indexed_repo):

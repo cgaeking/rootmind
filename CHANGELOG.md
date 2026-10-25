@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Fixed
+
+- When the model ended a turn with an empty reply (no text, no tool call), typically right after a successful search, that empty turn became the answer ("The model stopped without producing an answer"). Seen with granite4.1:8b through Ollama in the eval runs for [#47](https://github.com/cgaeking/rootmind/issues/47). The agent now asks once more for the final answer from the results so far, for every provider; the retry counts against the iteration limit, and in the last iteration the existing final call takes its place. If the second reply is empty too, the answer says so clearly. Empty replies with a refusal or content-filter stop reason are reported as before.
+
 ## [2.4.0] - 2026-10-22
 
 ### Added
