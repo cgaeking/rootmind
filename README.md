@@ -888,6 +888,11 @@ runs the background indexer in that process. Use it only when no REST API
 indexes the same database: every indexing process removes the documents of
 folders that are missing from its own copy of the config.
 
+In a LangChain or LangGraph agent, load the same tools through
+`langchain-mcp-adapters`: [examples/langchain_mcp](examples/langchain_mcp/README.md)
+starts `rootmind-mcp` over stdio and runs LangChain's stock agent with a local
+Ollama model.
+
 ### 4. Run the desktop app (development)
 
 ```bash
@@ -948,7 +953,8 @@ backend/
     indexer/               parsers, indexer, sync scheduler
     connectors/            local folder connector
   tests/                   offline test suite with fake LLM clients; e2e/ service test
-  evals/                   fictional corpus and eval cases
+  evals/                   fictional corpus and eval cases; baselines/langgraph: the
+                           LangGraph baseline (own environment)
   scripts/                 eval runner and corpus generator
   packaging/               PyInstaller spec, smoke test, tree hash
   deploy/windows/          run-backend.bat: the REST API from source in a console window
@@ -960,6 +966,7 @@ desktop/
   scripts/                 installer smoke test
 packaging/winget/          winget manifest templates
 packaging/mcpb/            Claude Desktop bundle (rootmind.mcpb): stdio-to-HTTP bridge, manifest, tests, MCP Registry template
+examples/langchain_mcp/    RootMind's MCP server as tools in a LangChain agent (own environment)
 scripts/                   version check, release notes, backend preparation, winget rendering,
                            NSIS template refresh
 .github/workflows/         CI and release
@@ -1010,6 +1017,13 @@ real indexer and runs 16 questions through the real engine.
   1.0 on the 15 gated cases is the expected result; c09, the synonym trap,
   is the known miss. CI fails if hit@5 drops below 1.0. It says nothing
   about answer quality.
+- *`--agent langgraph`* runs the same cases with the same tools, system
+  prompt and scoring in LangChain's stock LangGraph agent, from its own
+  environment (the backend does not depend on LangChain). With
+  `granite4.1:8b` through Ollama, 3 runs per case, both agents passed 98%
+  (15 of 16 cases every run) with about the same tool calls, tokens and
+  latency; the edges where the loops differ (iteration limit, search nudge)
+  did not occur in those runs. Hosted models were not compared.
 
 Details: [backend/evals/README.md](backend/evals/README.md).
 

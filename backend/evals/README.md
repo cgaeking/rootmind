@@ -26,6 +26,9 @@ uv run python scripts/run_evals.py                      # dry mode (retrieval re
 uv run python scripts/run_evals.py --cases c01,c06      # a subset
 ANTHROPIC_API_KEY=... uv run python scripts/run_evals.py --mode live \
     --provider anthropic --model <model id> --runs 3    # real model, costs tokens
+uv run --project evals/baselines/langgraph python scripts/run_evals.py --mode live \
+    --agent langgraph --provider ollama --model granite4.1:8b --runs 3   # LangGraph baseline
+uv run python scripts/run_evals.py --compare A.json B.json   # two live results side by side
 uv run python scripts/make_demo_corpus.py               # regenerate corpus/ after editing it
 ```
 
@@ -40,6 +43,13 @@ and Markdown `*` and backticks count as their plain forms (see #47). The report 
 source sets the runs produced (agent consistency), the median number of tool calls, tokens
 and p50 latency; the JSON results also keep each run's `stop_reasons`, which show answers
 cut off by the output token limit. It costs tokens and never runs in CI.
+
+**`--agent langgraph`** runs the same cases with the same tools, system prompt, model endpoint
+and scoring in LangChain's stock LangGraph agent instead of RootMind's loop (see
+[baselines/langgraph](baselines/langgraph/README.md) and the comparison below). It needs that
+folder's own environment, hence `uv run --project evals/baselines/langgraph`. **`--compare`**
+prints finished live results side by side: pass rate, cases passing every run, cases with more
+than one tool path or source set, runs that hit the step limit, tool calls, tokens and latency.
 
 **Dry mode** is a retrieval regression test (scripted policy), not an eval of the agent. A
 scripted stand-in for the model searches with the query written by hand for each case
@@ -203,3 +213,83 @@ now cites that document (it cited every hit before; seen once, in c16).
   failures look like the same artefact.
 - No hosted model was re-measured for #47; the hosted results above are from 2026-10-11 with the
   old checks.
+
+## RootMind's loop against a LangGraph agent
+
+Why a hand-written loop instead of an agent framework ([#48](https://github.com/cgaeking/rootmind/issues/48))?
+The [baseline](baselines/langgraph/README.md) puts RootMind's five tools (executed by
+`rootmind.tools`, so every tool result is identical) and its system prompt into LangChain's stock
+agent, `langchain.agents.create_agent`, a LangGraph graph of a model node and a tool node. Both
+agents ran the 16 cases with `--runs 3`, one after the other, against the same Ollama server, on the
+same index, scored by the same code.
+
+Setup, 2026-10-25: `granite4.1:8b` (Q4_K_M, digest `444af1c4b2fe`) through Ollama 0.40.11 with
+`OLLAMA_CONTEXT_LENGTH=8192`; NVIDIA GeForce RTX 2070 (8 GB), Intel Core i7-9750H, 32 GB RAM,
+Windows 11 Pro; Python 3.12.4. Baseline: langchain 1.4.7, langchain-core 1.7.0, langgraph 1.2.17
+(langgraph-prebuilt 1.1.1), langchain-openai 1.7.2 against Ollama's OpenAI-compatible `/v1` API,
+openai 3.28.0 (the same SDK version RootMind's loop used). RootMind 2.4.0 on `fix/answer-consistency`
+(the checks of #47).
+
+| | RootMind's loop | LangGraph agent |
+|---|---|---|
+| mean pass rate | 98% | 98% |
+| cases passing every run | 15 of 16 | 15 of 16 |
+| cases with more than one tool path | 12 | 10 |
+| cases with more than one source set | 3 | 3 |
+| runs ending in an error | 0 of 48 | 0 of 48 |
+| runs that hit the step limit | 0 | 0 |
+| tool calls, total | 66 | 69 |
+| tool calls per run, median | 1 | 1 |
+| tokens, total | 295,258 | 300,655 |
+| tokens per run, median | 4,657 | 4,508 |
+| latency per run, median | 8.5 s | 8.4 s |
+| latency, total | 547 s | 556 s |
+
+Per case (RootMind / LangGraph):
+
+| case | pass | tool paths | source sets | median tool calls | mean tokens | p50 latency (s) |
+|---|---|---|---|---|---|---|
+| c01 | 100% / 100% | 1 / 1 | 1 / 1 | 1 / 1 | 3,353 / 3,328 | 5.3 / 3.9 |
+| c02 | 100% / 100% | 2 / 3 | 1 / 1 | 1 / 1 | 3,352 / 4,347 | 5.2 / 8.0 |
+| c03 | 100% / 100% | 2 / 2 | 1 / 1 | 1 / 1 | 3,555 / 4,161 | 5.1 / 6.2 |
+| c04 | 67% / 100% | 2 / 3 | 2 / 1 | 2 / 2 | 5,152 / 9,667 | 9.9 / 12.3 |
+| c05 | 100% / 100% | 2 / 1 | 1 / 1 | 1 / 1 | 4,039 / 3,308 | 7.8 / 6.2 |
+| c06 | 100% / 100% | 2 / 1 | 1 / 1 | 1 / 1 | 4,925 / 4,961 | 9.5 / 10.4 |
+| c07 | 100% / 67% | 1 / 1 | 2 / 3 | 1 / 1 | 4,754 / 4,734 | 10.8 / 9.8 |
+| c08 | 100% / 100% | 1 / 1 | 1 / 1 | 1 / 1 | 4,917 / 4,892 | 9.5 / 8.2 |
+| c09 | 100% / 100% | 2 / 1 | 1 / 1 | 1 / 1 | 3,951 / 3,658 | 6.5 / 6.8 |
+| c10 | 100% / 100% | 1 / 2 | 1 / 2 | 1 / 1 | 4,587 / 4,447 | 8.2 / 9.6 |
+| c11 | 100% / 100% | 3 / 3 | 1 / 1 | 1 / 1 | 14,082 / 8,080 | 22.0 / 22.4 |
+| c12 | 100% / 100% | 2 / 2 | 1 / 1 | 1 / 1 | 4,011 / 3,988 | 7.6 / 7.5 |
+| c13 | 100% / 100% | 2 / 3 | 1 / 1 | 2 / 3 | 8,510 / 16,814 | 22.3 / 29.6 |
+| c14 | 100% / 100% | 3 / 3 | 2 / 2 | 4 / 2 | 20,010 / 15,192 | 30.3 / 28.7 |
+| c15 | 100% / 100% | 2 / 2 | 1 / 1 | 1 / 1 | 4,299 / 4,263 | 7.0 / 5.8 |
+| c16 | 100% / 100% | 2 / 2 | 1 / 1 | 1 / 1 | 4,920 / 4,379 | 9.7 / 6.1 |
+
+What this shows:
+
+- **No measurable difference** on this model and corpus. Each agent failed one run of 48, for a
+  reason the loop does not decide: RootMind's c04 run 2 got an empty reply from the model after a
+  correct search (reported as "The model stopped without producing an answer"); the baseline's
+  c07 run 2 answered the right price but cited the invoice instead of the price list. Tool calls,
+  tokens and latency are within run-to-run noise; the per-case token differences (c11, c13, c14)
+  come from single runs with a few more or fewer searches. With three runs per case, one run is
+  33 points of a case's pass rate, so neither column is better.
+- The parts where the two loops differ were **not exercised**: no run of either reached the
+  iteration or recursion limit (RootMind would then ask once more for an answer, the baseline ends
+  without one), RootMind's Ollama "search first" nudge never fired (the model searched first in all
+  96 runs), no turn asked for more than one tool (RootMind caps a turn at 8), no tool call
+  returned an error, and the model sent no malformed tool arguments. Earlier runs of RootMind's loop did hit the iteration limit (one run each in the "before" and
+  "after" runs above) and answered correctly in the fallback call; the baseline would have scored
+  such a run as a fail. This comparison neither confirms nor refutes that edge.
+- c16 (a follow-up) passed 3 of 3 in both, with RootMind condensing the question first and the
+  baseline getting the earlier turns as messages.
+- Consistency (cases with more than one tool path or source set) is the model's: most "distinct
+  tool paths" differ only in the wording of the one search query.
+
+What was compared: the loop and the framework's message handling, with the same prompt, tools,
+tool results, model, endpoint, call parameters, corpus, index, scoring and machine. What was not
+compared: hosted models (none was run, since that costs money; the commands above take
+`--provider anthropic|openai|xai`), other local models, LangGraph features beyond the stock agent
+(middleware, retries, checkpointing, LangSmith), and runs long enough to measure the rare edges
+above. Raw results and traces stay in `evals/results/` (gitignored).
