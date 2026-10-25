@@ -395,13 +395,14 @@ def test(exe_dir: Path, api: int, mcp_port: int, work: Path) -> None:
     scoped = token_file.read_text().strip()
 
     def search(token: str, word: str, port: int = mcp_port) -> tuple[int, str]:
-        code, result = mcp(
-            port,
-            token,
-            "tools/call",
-            {"name": "search_documents", "arguments": {"query": word}},
-            request_id=4,
-        )
+        address = "127.0.0.2" if port == net_port else "127.0.0.1"
+        body = {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {"name": "search_documents", "arguments": {"query": word}},
+        }
+        code, result = http("POST", f"http://{address}:{port}/mcp", token, body)
         return code, json.dumps(result)
 
     code, found = search(scoped, "nebulaharborbeta")
