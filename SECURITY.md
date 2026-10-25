@@ -39,9 +39,19 @@ to some folders. Its different trust model is described in
 | Chat titles (`POST /chat/title`) | Up to 500 characters each of the first question and its answer | The configured provider |
 | Model list (`POST /llm/models`) | The API key, to list models (none for Ollama) | The configured provider, or the Ollama server |
 | MCP tool calls | Tool results go to the MCP client, and from there to whatever model that client uses | Decided by the MCP client |
+| Langfuse tracing (`tracing.langfuse`, or `run_evals.py --langfuse`; off by default) | Per question: the question, every model call (model, token counts, stop reason, the model's text and tool requests), every tool call (arguments, the documents found, the result text up to 20,000 characters, which includes document text) and the answer with its sources | The Langfuse server in `LANGFUSE_BASE_URL`: a self-hosted Langfuse stays on your network; the default, Langfuse Cloud, is a third party |
 | Remote access, while it is on | The ngrok authtoken (to sign in), and every request and answer through the public address, including the MCP token in the `Authorization` header: ngrok terminates TLS at its edge | ngrok; a cloud assistant's requests and the document text it reads also go to that assistant's provider |
 
-RootMind has no telemetry and no update check. The desktop app's CSP only
+RootMind has no telemetry and no update check. Tracing is off by default;
+with it off, the agent loop makes no tracing calls and loads no tracing code
+(a test asserts that nothing is imported, written or sent). The local trace
+file (`tracing.local`, `run_evals.py --trace`) never leaves the computer.
+Langfuse export loads the optional `langfuse` package only when it is turned
+on; its keys come only from the `LANGFUSE_*` environment variables, never from
+`config.yaml`. No trace contains an API key: provider errors are recorded only
+by type and RootMind's own message, and key- and token-like strings
+(`sk-…`, `xai-…`, `pk-…`, `Bearer …`) are replaced with `[redacted]` in every
+field. The desktop app's CSP only
 allows network requests to `localhost` and `127.0.0.1`. With remote access
 off (the default), the RootMind service opens no connection to ngrok and does
 not even load the SDK.
@@ -65,6 +75,7 @@ The backend keeps its files in its home folder (`RLM_HOME`):
 | ngrok authtoken (remote access) | `data\ngrok_authtoken.txt` | Only in the service's folder: readable by SYSTEM, Administrators and the MCP service account, **not** by the installing account's standard token. Never in `config.yaml`, never returned by the API, never logged (see [Remote access](#remote-access-ngrok)). Kept by an uninstall without **Delete the application data** |
 | Remote access status | `data\remote_access.json` | State, public address, last error and time; no secrets. Written by the MCP service account in place |
 | Logs | Service: `logs\backend\`, `logs\mcp-http\` and `logs\install.log`. Command line: the console | Contain file paths, questions and tool arguments. RootMind never logs API keys or tokens, only a short fingerprint of a token; provider error messages are logged as the provider sends them |
+| Traces (only with `tracing.local: true`) | `logs\traces\<time>-<process>.jsonl` and `.md` in the home folder; eval runs: the folder given to `--trace` | Questions, the model's text and tool arguments, search hits and the document text the model read (up to 20,000 characters per tool result), answers and sources, in plain text. No API keys. Same permissions as the other logs; RootMind does not rotate or delete them, so delete them when you no longer need them |
 | Chat history | `%APPDATA%\io.github.cgaeking.rootmind\conversations`; Linux: `~/.local/share/io.github.cgaeking.rootmind/conversations` | Questions, answers and source paths in plain JSON |
 | Custom backend address and token | The desktop app's local storage | Only when you connect to a backend under Settings → Advanced |
 | Data of the RootMind 1.x built-in backend | `%LOCALAPPDATA%\io.github.cgaeking.rootmind\backend` | Left in place by the upgrade to 2.0 and no longer used: its `config.yaml` (with API keys saved in 1.x), index and logs. Delete the folder, or tick **Delete the application data** when uninstalling, which removes it with the chats |

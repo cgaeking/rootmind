@@ -31,6 +31,11 @@ uv run python scripts/run_evals.py        # retrieval regression (dry evals), of
 python ../scripts/check_versions.py       # backend, desktop and bundle versions match
 ```
 
+The Langfuse exporter is tested with a fake client; one more test runs it
+against the real SDK (exporting nothing) when the optional extra is installed:
+`uv sync --extra tracing`, then `uv sync` to return to the default
+environment.
+
 The Claude Desktop bundle in `packaging/mcpb/` has its own tests (Node 24,
 standard library only) and is validated with the mcpb CLI; see
 [packaging/mcpb/README.md](packaging/mcpb/README.md):

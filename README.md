@@ -764,6 +764,30 @@ llm:
   Measure the one you use with `scripts/run_evals.py --mode live --provider
   ollama --model <name>` (see [`backend/evals`](backend/evals/README.md)).
 
+## Tracing the agent loop
+
+Tracing is off by default. Turned on, it records every step of a question:
+each model call (purpose, tokens, stop reason, the tools it asked for, time)
+and each tool call (arguments, result size, the documents a search returned,
+the windows a read returned), and the answer.
+
+- **Evals:** `scripts/run_evals.py --trace <folder>` writes a JSONL file and
+  a readable Markdown summary per eval run (see
+  [`backend/evals`](backend/evals/README.md#tracing-a-run)).
+- **Backend:** `tracing: {local: true}` in `config.yaml` writes the same
+  files under `logs/traces/` in RootMind's data folder. Nothing leaves the
+  computer.
+- **Langfuse (optional):** `tracing: {langfuse: true}`, or `--langfuse` for the
+  eval runner, exports traces to a Langfuse server. It needs the `tracing`
+  extra (`uv sync --extra tracing`; not part of the packaged backend) and
+  `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` in the
+  environment. A self-hosted Langfuse keeps traces on your network; Langfuse
+  Cloud is a third party.
+
+Traces contain your questions, the model's tool arguments and the document
+text it read. They never contain API keys. See
+[SECURITY.md](SECURITY.md#what-leaves-the-machine).
+
 ## Run from source
 
 You need [uv](https://docs.astral.sh/uv/); it installs Python 3.12 if
@@ -923,6 +947,7 @@ backend/
   src/rootmind/
     rlm_engine/engine.py   agent loop
     tools.py               tool registry, argument validation, result formatting
+    tracing/               optional tracing of the agent loop: local JSONL, Langfuse export
     mcp_stdio.py           MCP server over stdio
     mcp_http.py            MCP server over HTTP with a bearer token
     api/                   REST API (FastAPI)

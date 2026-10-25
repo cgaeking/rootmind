@@ -174,6 +174,25 @@ def create_connectors(
     return connectors
 
 
+# The tracer of the current tracing settings, kept across config reloads that
+# do not change them (so a local trace file is not split at every save).
+_tracer_cache: dict[tuple[bool, bool, str], Any] = {}
+
+
+def _tracer(config: AppConfig) -> Any:
+    """The question-loop tracer for ``config.tracing``; None (and no import) when it is off."""
+    if not (config.tracing.local or config.tracing.langfuse):
+        return None
+    logs = app_home() / "logs"
+    key = (config.tracing.local, config.tracing.langfuse, str(logs))
+    if key not in _tracer_cache:
+        from ..tracing import tracer_from_config
+
+        _tracer_cache.clear()
+        _tracer_cache[key] = tracer_from_config(config.tracing, logs)
+    return _tracer_cache[key]
+
+
 def _new_state(config: AppConfig, reuse_db: DocumentRepository | None = None) -> SimpleNamespace:
     """Build all config-dependent objects without touching ``app_state``."""
     from ..rlm_engine.engine import KnowledgeBaseEngine
@@ -193,7 +212,7 @@ def _new_state(config: AppConfig, reuse_db: DocumentRepository | None = None) ->
         connector_errors=errors,
         indexer=indexer,
         sync_manager=SyncManager(db=db, connectors=connectors, config=config, indexer=indexer),
-        rlm_engine=KnowledgeBaseEngine(db=db, config=config),
+        rlm_engine=KnowledgeBaseEngine(db=db, config=config, tracer=_tracer(config)),
     )
 
 
