@@ -283,7 +283,8 @@ Release with `RootMind-Setup-x64.exe`, the Linux packages
 `rootmind.mcpb` (Claude Desktop), `rootmind-backend-windows-x64.zip`,
 `rootmind-backend-linux-x64.tar.gz`, `SHA256SUMS.txt` and attestations. The release notes are the version's
 section of `CHANGELOG.md` plus a fixed part about the downloads and how to
-verify them.
+verify them. Its last job, "MCP Registry", then updates the bundle's entry in
+the official MCP Registry (see **MCP Registry** below).
 
 1. **Versions.** Set the new version in `backend/pyproject.toml`,
    `desktop/package.json`, `desktop/src-tauri/Cargo.toml` and
@@ -309,7 +310,10 @@ verify them.
    The run's summary shows the release notes, the installer's size and its
    SHA-256; the artifacts are `rootmind-installer-windows-x64`,
    `rootmind-backend-windows-x64`, `rootmind-backend-linux-x64`,
-   `rootmind-linux-packages`, `winget-manifests` and `rootmind-mcpb`.
+   `rootmind-linux-packages`, `winget-manifests` and `rootmind-mcpb`. The job
+   "MCP Registry" renders `server.json` from the dry run's bundle and
+   validates it (against the vendored schema and with `mcp-publisher
+   validate`); it publishes nothing.
 5. **Manual checks** in Windows Sandbox or a throwaway virtual machine, with
    the installer from the dry run:
    - a first install by double-click, including the SmartScreen warning and
@@ -377,6 +381,11 @@ verify them.
    ```
 
    The first job fails early if `CHANGELOG.md` has no section for the version.
+7. **MCP Registry.** After "Publish the release", the job "MCP Registry"
+   publishes the version to the registry; check that it passed and that
+   <https://registry.modelcontextprotocol.io/v0.1/servers/io.github.cgaeking%2Frootmind/versions/latest>
+   shows the new version. If it failed, the GitHub release is not affected:
+   re-run the failed job, or publish by hand (below).
 
 **winget.** The manifests are prepared in `packaging/winget/` and rendered by
 every release run, but RootMind is not submitted to the winget repository
@@ -384,6 +393,51 @@ yet; the first submission is planned once the binaries are code-signed.
 [packaging/winget/README.md](packaging/winget/README.md) has the submission
 steps. Do not add `winget install` to the README before the first submission
 is merged.
+
+**MCP Registry.** The bundle is listed in the official
+[MCP Registry](https://registry.modelcontextprotocol.io) as
+`io.github.cgaeking/rootmind` (package type `mcpb`). The entry's template is
+`packaging/mcpb/server.json`, with `${VERSION}` and `${FILE_SHA256}` as
+placeholders; `scripts/check_versions.py` checks its name, `$schema` and
+placeholders, and the schema it names is vendored in `packaging/mcpb/schemas/`.
+For a tag, the job "MCP Registry" in `release.yml`:
+
+- downloads `rootmind.mcpb` and `SHA256SUMS.txt` from the published release,
+  checks that the bundle is the one the `mcpb` job built, and renders
+  `server.json` with `scripts/registry_server_json.py` (version, download URL,
+  and the SHA-256 of that file, which must match `SHA256SUMS.txt`);
+- validates it against the vendored schema and with `mcp-publisher validate`;
+- logs in with `mcp-publisher login github-oidc` (the job's `id-token: write`;
+  the registry grants the namespace `io.github.<repository owner>/*`) and runs
+  `mcp-publisher publish`, then reads the entry back.
+
+`mcp-publisher` is pinned in the job (`MCP_PUBLISHER_VERSION`) and checked
+against `MCP_PUBLISHER_SHA256`, the hash of `mcp-publisher_linux_amd64.tar.gz`
+in the release's `registry_<version>_checksums.txt`; update both together.
+Prereleases are not published. A version can be published only once: a re-run
+that finds the version with the same URL and hash does nothing, one with
+another hash fails. A wrong entry cannot be overwritten; mark it with
+`mcp-publisher status --status deprecated` (or `deleted`) and publish a new
+patch release. The registry is in preview and may reset its data; the next
+release creates the entry again, or publish the current version by hand.
+
+If the OIDC login fails, the job uses the repository secret
+`MCP_GITHUB_TOKEN` when it exists: a classic personal access token of the
+owner with the scopes `read:org` and `read:user`. To publish by hand, install
+the same `mcp-publisher` version from
+[its releases](https://github.com/modelcontextprotocol/registry/releases)
+(check the archive against the release's checksums file), then:
+
+```bash
+gh release download vX.Y.Z --repo cgaeking/rootmind \
+  --pattern rootmind.mcpb --pattern SHA256SUMS.txt --dir registry
+python scripts/registry_server_json.py --mcpb registry/rootmind.mcpb \
+  --sums registry/SHA256SUMS.txt --tag vX.Y.Z --out registry
+mcp-publisher validate registry/server.json
+mcp-publisher login github      # signs in as the owner in the browser
+mcp-publisher publish registry/server.json
+mcp-publisher logout
+```
 
 **One-time repository settings** (GitHub web UI):
 

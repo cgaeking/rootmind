@@ -368,6 +368,12 @@ noch nicht signiert, deshalb kennzeichnet Claude Desktop es als nicht
 signiert. Quelltext und Funktionsweise:
 [packaging/mcpb](packaging/mcpb/README.md) (englisch).
 
+Das Bundle steht auch in der offiziellen
+[MCP Registry](https://registry.modelcontextprotocol.io) als
+`io.github.cgaeking/rootmind`. Jedes Release (kein Vorabrelease) aktualisiert
+den Eintrag mit seiner Download-URL und SHA-256, sodass Clients, die aus der
+Registry installieren, das aktuelle Bundle bekommen.
+
 Claude Desktop startet nur lokale (stdio-)MCP-Server; die Erweiterung ist ein
 solcher Server und leitet an den HTTP-Endpunkt des Dienstes weiter. Das
 Programm im Ordner der App (`rootmind-backend.exe mcp`) kann für die
@@ -1007,7 +1013,7 @@ desktop/
                            linux/ und tauri.linux.conf.json für Linux-Dienst und -Pakete
   scripts/                 Smoke-Test des Installers
 packaging/winget/          Vorlagen für winget-Manifeste
-packaging/mcpb/            Bundle für Claude Desktop (rootmind.mcpb): Brücke von stdio zu HTTP, Manifest, Tests
+packaging/mcpb/            Bundle für Claude Desktop (rootmind.mcpb): Brücke von stdio zu HTTP, Manifest, Tests, Vorlage für die MCP Registry
 scripts/                   Versionsprüfung, Release Notes, Backend-Vorbereitung, winget-Rendering,
                            Aktualisierung der NSIS-Vorlage
 .github/workflows/         CI und Release
@@ -1071,7 +1077,7 @@ Secrets. Nur der Release-Job darf in das Repository schreiben:
 | [`backend.yml`](.github/workflows/backend.yml) | ruff check und Format-Prüfung; die Versionsprüfung über Backend, Desktop und das Bundle für Claude Desktop; die Tests der Release-Skripte unter Ubuntu und Windows; pytest mit Coverage unter Ubuntu (Python 3.12 und 3.14) und Windows (Python 3.12); den Such-Regressionstest im Dry-Modus |
 | [`backend-exe.yml`](.github/workflows/backend-exe.yml) | Die PyInstaller-onedir-Builds unter Windows und unter Ubuntu 22.04, je einen Smoke-Test der Programmdatei (REST, MCP über HTTP und stdio, Indizierung jedes Dateityps) und ihre Tree-Hashes; danach End-to-End-Tests des Dienstes: auf dem Windows-Runner mit Administratorrechten die Windows-Dienste (Installation, Berechtigungen, Tokens, Lese-Beschränkung, Update und Deinstallation), unter Ubuntu die systemd-Benutzer-Units des Runner-Kontos (Ablehnungen, Installation, Dateimodi, Tokens, Indizierung, Neustarts, Update, MCP aus und an, Deinstallation). Bei Pull Requests laufen die Dienst-Tests nur, wenn sich dienstbezogener Code geändert hat |
 | [`desktop.yml`](.github/workflows/desktop.yml) | ESLint, TypeScript-Typprüfung, vitest, Vite-Build, `cargo fmt`, `cargo clippy`, `cargo check`, `cargo test` unter Windows; `cargo clippy` und `cargo test` unter Ubuntu 22.04 |
-| [`release.yml`](.github/workflows/release.yml) | Für einen Versions-Tag `v*`: das Backend über `backend-exe.yml`; den Installer für alle Benutzer mit diesem Backend, eine Prüfung, dass er eine installierte Version ohne Neuinstallations-Seite an Ort und Stelle aktualisiert, und einen Smoke-Test auf dem Runner mit Administratorrechten, der RootMind mit seinen Windows-Diensten installiert, aktualisiert, neu installiert und deinstalliert und es still als SYSTEM installiert (nur die App), den Dienst wie die App einrichtet und ihn als SYSTEM aktualisiert; die winget-Manifeste, gegen ihre Schemas geprüft; `rootmind.mcpb` für Claude Desktop, getestet, geprüft und gepackt; die Linux-Pakete (.deb, .rpm, AppImage) mit dem Linux-Backend, wobei das .deb auf dem Runner installiert und beide gepackten Backends gestartet werden; dann ein GitHub-Release mit Installer, Linux-Paketen, Bundle, beiden Backend-Archiven, `SHA256SUMS.txt` und Attestierungen. Manuelle Läufe und Pull Requests, die das Packaging ändern, sind Probeläufe, die nichts veröffentlichen |
+| [`release.yml`](.github/workflows/release.yml) | Für einen Versions-Tag `v*`: das Backend über `backend-exe.yml`; den Installer für alle Benutzer mit diesem Backend, eine Prüfung, dass er eine installierte Version ohne Neuinstallations-Seite an Ort und Stelle aktualisiert, und einen Smoke-Test auf dem Runner mit Administratorrechten, der RootMind mit seinen Windows-Diensten installiert, aktualisiert, neu installiert und deinstalliert und es still als SYSTEM installiert (nur die App), den Dienst wie die App einrichtet und ihn als SYSTEM aktualisiert; die winget-Manifeste, gegen ihre Schemas geprüft; `rootmind.mcpb` für Claude Desktop, getestet, geprüft und gepackt; die Linux-Pakete (.deb, .rpm, AppImage) mit dem Linux-Backend, wobei das .deb auf dem Runner installiert und beide gepackten Backends gestartet werden; dann ein GitHub-Release mit Installer, Linux-Paketen, Bundle, beiden Backend-Archiven, `SHA256SUMS.txt` und Attestierungen; danach, außer bei Vorabreleases, den Eintrag des Bundles in der MCP Registry (`server.json` aus der `rootmind.mcpb` des Releases erzeugt und mit `mcp-publisher` über GitHub OIDC veröffentlicht). Manuelle Läufe und Pull Requests, die das Packaging ändern, sind Probeläufe, die nichts veröffentlichen; sie erzeugen und prüfen `server.json` |
 | [`mcpb.yml`](.github/workflows/mcpb.yml) | Das Bundle für Claude Desktop: die `node:test`-Tests der Brücke unter Ubuntu und Windows, dann das Manifest mit der mcpb-CLI geprüft und das Bundle gepackt |
 | [`secrets.yml`](.github/workflows/secrets.yml) | detect-secrets über alle versionierten Dateien, gegen die geprüfte Baseline `.secrets.baseline` |
 
