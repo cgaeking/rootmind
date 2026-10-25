@@ -2,3 +2,6 @@
 README.md
 test/
 *.mcpb
+# The MCP Registry entry (server.json template) and its schema.
+/server.json
+schemas/
