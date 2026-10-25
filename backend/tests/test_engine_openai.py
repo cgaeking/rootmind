@@ -12,6 +12,8 @@ from helpers import SDK_TEST_KEY, doc_id, make_engine
 from rootmind import tools
 from rootmind.rlm_engine import engine as engine_module
 from rootmind.rlm_engine.engine import (
+    EMPTY_ANSWER_FALLBACK,
+    EMPTY_ANSWER_PROMPT,
     GENERIC_FAILURE_ANSWER,
     ITERATION_LIMIT_PROMPT,
     SEARCH_FIRST_PROMPT,
@@ -202,6 +204,72 @@ async def test_empty_content_reports_the_finish_reason(openai_config, indexed_re
     assert result["stop_reasons"] == ["content_filter"]
 
 
+def _search():
+    return openai_response(
+        tool_calls=[openai_tool_call("c1", "search_documents", {"query": "time off"})]
+    )
+
+
+@pytest.mark.parametrize("content", [None, "", " \n "])
+async def test_empty_answer_after_a_search_is_retried_once(openai_config, indexed_repo, content):
+    fake = FakeOpenAI(
+        [_search(), openai_response(content=content), openai_response(content="21 days.")]
+    )
+
+    result = await make_engine(openai_config, indexed_repo, fake).query("How much PTO?")
+
+    assert result["answer"] == "21 days."
+    assert len(fake.calls) == 3
+    assert result["stop_reasons"] == ["tool_calls", "stop", "stop"]
+    assert result["tokens_used"] == 3 * 15
+    retry = fake.calls[2]
+    assert "tool_choice" not in retry  # an ordinary iteration: tools stay available
+    # The empty assistant turn is not sent back, only the follow-up.
+    assert retry["messages"][:-1] == fake.calls[1]["messages"]
+    assert retry["messages"][-1] == {"role": "user", "content": EMPTY_ANSWER_PROMPT}
+
+
+async def test_second_empty_answer_returns_the_fallback(openai_config, indexed_repo):
+    fake = FakeOpenAI([_search(), openai_response(content=""), openai_response(content=None)])
+
+    result = await make_engine(openai_config, indexed_repo, fake).query("q", max_iterations=5)
+
+    assert result["answer"] == EMPTY_ANSWER_FALLBACK
+    assert len(fake.calls) == 3
+
+
+async def test_empty_answer_at_the_iteration_cap_uses_the_final_call(openai_config, indexed_repo):
+    fake = FakeOpenAI([_search(), openai_response(content=""), openai_response(content="Found.")])
+
+    result = await make_engine(openai_config, indexed_repo, fake).query("q", max_iterations=2)
+
+    assert result["answer"] == "Found."
+    final = fake.calls[-1]
+    assert len(fake.calls) == 3
+    assert final["tool_choice"] == "none"
+    assert final["messages"][-1] == {"role": "user", "content": ITERATION_LIMIT_PROMPT}
+    assert {"role": "user", "content": EMPTY_ANSWER_PROMPT} not in final["messages"]
+
+
+async def test_empty_answer_at_the_cap_and_after_it_returns_the_fallback(
+    openai_config, indexed_repo
+):
+    fake = FakeOpenAI([_search(), openai_response(content=""), openai_response(content="  ")])
+
+    result = await make_engine(openai_config, indexed_repo, fake).query("q", max_iterations=2)
+
+    assert result["answer"] == EMPTY_ANSWER_FALLBACK
+
+
+async def test_non_empty_answer_is_not_retried(openai_config, indexed_repo):
+    fake = FakeOpenAI([_search(), openai_response(content="21 days.")])
+
+    result = await make_engine(openai_config, indexed_repo, fake).query("q", max_iterations=5)
+
+    assert result["answer"] == "21 days."
+    assert len(fake.calls) == 2
+
+
 async def test_length_finish_reason_marks_the_answer_as_cut_off(openai_config, indexed_repo):
     fake = FakeOpenAI([openai_response(content="partial", finish_reason="length")])
     result = await make_engine(openai_config, indexed_repo, fake).query("q")
@@ -348,6 +416,40 @@ async def test_ollama_second_answer_without_a_search_is_accepted(ollama_config, 
 
     assert result["answer"] == "Still no tool."
     assert len(fake.calls) == 2
+
+
+async def test_ollama_empty_answer_after_a_search_is_retried(ollama_config, indexed_repo):
+    """Regression (#47, case c04 with granite4.1:8b): the empty reply became the answer."""
+    fake = FakeOpenAI(
+        [
+            _search(),
+            openai_response(content="", finish_reason="stop"),
+            openai_response(content="21 days (handbook.txt)."),
+        ]
+    )
+
+    result = await make_engine(ollama_config, indexed_repo, fake).query("How much PTO?")
+
+    assert result["answer"] == "21 days (handbook.txt)."
+    assert fake.calls[2]["messages"][-1] == {"role": "user", "content": EMPTY_ANSWER_PROMPT}
+    assert SEARCH_FIRST_PROMPT not in str(fake.calls[2]["messages"])
+
+
+async def test_ollama_empty_first_reply_gets_the_search_first_retry(ollama_config, indexed_repo):
+    """Without a search the search-first retry comes first; the empty-answer retry is separate."""
+    fake = FakeOpenAI(
+        [
+            openai_response(content=""),
+            openai_response(content=""),
+            openai_response(content="Nothing found."),
+        ]
+    )
+
+    result = await make_engine(ollama_config, indexed_repo, fake).query("q")
+
+    assert result["answer"] == "Nothing found."
+    assert fake.calls[1]["messages"][-1] == {"role": "user", "content": SEARCH_FIRST_PROMPT}
+    assert fake.calls[2]["messages"][-1] == {"role": "user", "content": EMPTY_ANSWER_PROMPT}
 
 
 def test_openai_still_forces_the_first_tool_call(openai_config, indexed_repo):
