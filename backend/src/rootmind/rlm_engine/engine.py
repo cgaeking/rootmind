@@ -80,6 +80,21 @@ GENERIC_FAILURE_ANSWER = (
     "The request could not be completed (maximum number of tool iterations reached)."
 )
 TRUNCATED_NOTE = "\n\n[The answer was cut off at the output token limit.]"
+# Some models (seen with granite4.1:8b through Ollama) sometimes end a turn with
+# neither text nor a tool call, typically right after a successful search. Such a
+# reply is retried once with this follow-up; a second empty reply gets the fallback.
+EMPTY_ANSWER_PROMPT = (
+    "Your last reply was empty. Give your final answer now, based on the search results and "
+    "document passages you have seen so far, and name the source. If they do not contain the "
+    "answer, say so honestly."
+)
+EMPTY_ANSWER_FALLBACK = (
+    "The request could not be completed (the model returned an empty answer, also when asked "
+    "again)."
+)
+# Stop reasons that mean the provider withheld the answer on purpose. An empty
+# reply with one of them is reported as it is; asking again would not help.
+NO_RETRY_STOP_REASONS = frozenset({"refusal", "content_filter"})
 
 API_KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "xai": "XAI_API_KEY"}
 
@@ -277,9 +292,14 @@ def _no_answer(stop_reason: str | None) -> str:
 
 def _final_text(text: str, stop_reason: str | None, truncated: bool) -> str:
     """The answer of a final turn: a notice when it is empty or was cut off."""
-    if not text:
+    if not text.strip():
         return _no_answer(stop_reason)
     return text + TRUNCATED_NOTE if truncated else text
+
+
+def _is_empty_reply(text: str | None, stop_reason: str | None) -> bool:
+    """A final turn without any answer text that is worth asking for once more."""
+    return not (text or "").strip() and stop_reason not in NO_RETRY_STOP_REASONS
 
 
 @dataclass
@@ -776,6 +796,8 @@ class KnowledgeBaseEngine:
     ) -> str:
         model = self.config.llm.model
         messages: list[dict[str, Any]] = [{"role": "user", "content": question}]
+        empty_retried = False
+        ended_empty = False
 
         for iteration in range(max_iterations):
             logger.info(f"Agent iteration {iteration + 1}")
@@ -808,10 +830,29 @@ class KnowledgeBaseEngine:
             # max_tokens, stop_sequence or refusal. Continuing after those would
             # send an empty user turn, which the API rejects.
             if response.stop_reason != "tool_use" or not tool_uses:
+                answer_text = _anthropic_text(response)
+                if _is_empty_reply(answer_text, response.stop_reason):
+                    if empty_retried:
+                        logger.warning("The model returned an empty answer again; giving up")
+                        if usage.trace is not None:
+                            usage.trace.event("empty_answer_fallback")
+                        return EMPTY_ANSWER_FALLBACK
+                    empty_retried = True
+                    logger.warning("The model returned an empty answer; asking once more")
+                    if usage.trace is not None:
+                        usage.trace.event("empty_answer_retry")
+                    if iteration + 1 == max_iterations:
+                        # No iteration left: the final call below asks for the answer.
+                        ended_empty = True
+                        break
+                    # The empty turn is not sent back (the API rejects empty
+                    # assistant content); the follow-up joins the last user turn.
+                    _append_user_text(messages, EMPTY_ANSWER_PROMPT)
+                    continue
                 if response.stop_reason == "max_tokens":
                     logger.warning("Answer cut off at the output token limit")
                 return _final_text(
-                    _anthropic_text(response),
+                    answer_text,
                     response.stop_reason,
                     truncated=response.stop_reason == "max_tokens",
                 )
@@ -838,9 +879,10 @@ class KnowledgeBaseEngine:
         # Iteration cap reached without a final answer. Ask once more, with
         # tools still declared (the history contains tool blocks) but disabled,
         # to answer from what was already found instead of a generic failure.
-        answer = GENERIC_FAILURE_ANSWER
+        # It also serves as the retry for an empty answer in the last iteration.
+        answer = EMPTY_ANSWER_FALLBACK if ended_empty else GENERIC_FAILURE_ANSWER
         if usage.trace is not None:
-            usage.trace.event("iteration_limit", iterations=max_iterations)
+            usage.trace.event("iteration_limit", iterations=max_iterations, ended_empty=ended_empty)
         try:
             _append_user_text(messages, ITERATION_LIMIT_PROMPT)
             final = await self._call_model(
@@ -857,7 +899,7 @@ class KnowledgeBaseEngine:
             )
             usage.record(_anthropic_tokens(final), final.stop_reason)
             text = _anthropic_text(final)
-            if text:
+            if text.strip():
                 answer = text + (TRUNCATED_NOTE if final.stop_reason == "max_tokens" else "")
         except Exception as e:
             logger.error(f"Final answer after the iteration limit failed: {e}")
@@ -869,6 +911,8 @@ class KnowledgeBaseEngine:
         model = self.config.llm.model
         provider = self.config.llm.provider
         nudged = False
+        empty_retried = False
+        ended_empty = False
         openai_tools = tools.openai_tools()
         # Chat Completions has no separate system parameter (unlike Anthropic's
         # `system=`), so the prompt goes in as a regular message.
@@ -917,6 +961,23 @@ class KnowledgeBaseEngine:
                     messages.append({"role": "assistant", "content": msg.content or ""})
                     messages.append({"role": "user", "content": SEARCH_FIRST_PROMPT})
                     continue
+                if _is_empty_reply(msg.content, finish_reason):
+                    if empty_retried:
+                        logger.warning("The model returned an empty answer again; giving up")
+                        if usage.trace is not None:
+                            usage.trace.event("empty_answer_fallback")
+                        return EMPTY_ANSWER_FALLBACK
+                    empty_retried = True
+                    logger.warning("The model returned an empty answer; asking once more")
+                    if usage.trace is not None:
+                        usage.trace.event("empty_answer_retry")
+                    if iteration + 1 == max_iterations:
+                        # No iteration left: the final call below asks for the answer.
+                        ended_empty = True
+                        break
+                    # The empty turn itself carries nothing and is not sent back.
+                    messages.append({"role": "user", "content": EMPTY_ANSWER_PROMPT})
+                    continue
                 if finish_reason == "length":
                     logger.warning("Answer cut off at the output token limit")
                 return _final_text(msg.content or "", finish_reason, finish_reason == "length")
@@ -952,9 +1013,9 @@ class KnowledgeBaseEngine:
                 # results start with "Error:" so the model can tell them apart.
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result.text})
 
-        answer = GENERIC_FAILURE_ANSWER
+        answer = EMPTY_ANSWER_FALLBACK if ended_empty else GENERIC_FAILURE_ANSWER
         if usage.trace is not None:
-            usage.trace.event("iteration_limit", iterations=max_iterations)
+            usage.trace.event("iteration_limit", iterations=max_iterations, ended_empty=ended_empty)
         try:
             messages.append({"role": "user", "content": ITERATION_LIMIT_PROMPT})
             final = await self._call_model(
@@ -972,7 +1033,7 @@ class KnowledgeBaseEngine:
             finish_reason = getattr(final.choices[0], "finish_reason", None)
             usage.record(_openai_tokens(final), finish_reason)
             text = final.choices[0].message.content
-            if text:
+            if text and text.strip():
                 answer = text + (TRUNCATED_NOTE if finish_reason == "length" else "")
         except Exception as e:
             logger.error(f"Final answer after the iteration limit failed: {e}")

@@ -10,6 +10,7 @@ import each other. Run from the backend's development environment::
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -25,7 +26,7 @@ if str(SCRIPTS) not in sys.path:
 
 @pytest.fixture
 def make_repo(tmp_path):
-    """Build a minimal repository with the four files that carry the version."""
+    """Build a minimal repository with the four files that carry the version and the registry template."""
 
     def make(
         backend: str = "1.2.0", package: str = "1.2.0", cargo: str = "1.2.0", mcpb: str = "1.2.0"
@@ -44,8 +45,27 @@ def make_repo(tmp_path):
         )
         (root / "packaging" / "mcpb").mkdir(parents=True, exist_ok=True)
         (root / "packaging" / "mcpb" / "manifest.json").write_text(
-            json.dumps({"manifest_version": "0.3", "name": "rootmind", "version": mcpb}),
+            json.dumps(
+                {
+                    "manifest_version": "0.3",
+                    "name": "rootmind",
+                    "version": mcpb,
+                    "repository": {
+                        "type": "git",
+                        "url": "https://github.com/cgaeking/rootmind.git",
+                    },
+                }
+            ),
             encoding="utf-8",
+        )
+        # The MCP Registry template and its schema, as in the repository.
+        shutil.copyfile(
+            ROOT / "packaging" / "mcpb" / "server.json", root / "packaging" / "mcpb" / "server.json"
+        )
+        shutil.copytree(
+            ROOT / "packaging" / "mcpb" / "schemas",
+            root / "packaging" / "mcpb" / "schemas",
+            dirs_exist_ok=True,
         )
         return root
 
