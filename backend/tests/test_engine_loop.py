@@ -110,6 +110,32 @@ async def test_source_cites_the_hit_inside_the_suggested_read_window(app_config,
     assert result["sources"][0]["page"] == "Page 2"
 
 
+async def test_multi_word_query_cites_the_page_of_the_match(app_config, indexed_repo):
+    """Regression (#55): a query that is not a literal phrase lost the page of the source."""
+    invoice = doc_id(indexed_repo, "invoice.pdf")
+
+    def read_suggested_window(kwargs):
+        hit_list = kwargs["messages"][-1]["content"][0]["content"]
+        assert "Location: Page 2" in hit_list
+        start, end = (int(x) for x in re.findall(r"start_char=(\d+), end_char=(\d+)", hit_list)[0])
+        args = {"doc_id": invoice, "start_char": start, "end_char": end}
+        return anthropic_response(tool_use("t2", "read_document", args))
+
+    fake = FakeAnthropic(
+        [
+            anthropic_response(
+                tool_use("t1", "search_documents", {"query": "invoice INV-7 due date"})
+            ),
+            read_suggested_window,
+            anthropic_response(text("2026-04-30")),
+        ]
+    )
+
+    result = await make_engine(app_config, indexed_repo, fake).query("When is INV-7 due?")
+
+    assert result["sources"][0]["page"] == "Page 2"
+
+
 async def test_read_from_the_start_without_a_hit_has_no_location(app_config, indexed_repo):
     invoice = doc_id(indexed_repo, "invoice.pdf")
     fake = FakeAnthropic(

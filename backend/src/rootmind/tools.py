@@ -416,6 +416,49 @@ def _format_hits(results: list[dict[str, Any]], header: str, fuzzy: bool) -> str
     return "\n".join(out)
 
 
+def _already_read(ctx: ToolContext, doc_id: str, start: int, end: int) -> bool:
+    """True when earlier reads of this question already returned all of ``[start, end)``."""
+    if end <= start:
+        return False
+    reach = start
+    for first, last in sorted((s or 0, e) for d, s, e in ctx.read_windows if d == doc_id):
+        if first > reach:
+            break
+        reach = max(reach, last)
+        if reach >= end:
+            return True
+    return False
+
+
+def _reread_note(ctx: ToolContext, doc_id: str, start: int, end: int, total: int) -> str:
+    """A note for a read that only repeats text this question already read, else "".
+
+    Small models sometimes re-read narrow windows of the same document until
+    the iteration limit ends the loop (#47: eight reads of 30-150 characters,
+    48k tokens instead of about 5k). The text is still returned, so nothing is
+    withheld; the note says that it is already in the conversation and
+    suggests a wider window instead. ``ctx`` lives for one question, and the
+    loop keeps every tool result of a question in the conversation, so the
+    earlier text really is there. The MCP transports use one context per
+    call, so they never add the note.
+    """
+    if not _already_read(ctx, doc_id, start, end):
+        return ""
+    if _already_read(ctx, doc_id, 0, total):
+        return (
+            "Note: you already read this whole document in this conversation; the text is "
+            "above. Answer from it instead of reading it again.\n\n"
+        )
+    wide_start = max(0, start - HINT_LOOKBEHIND)
+    wide_end = min(total, end + HINT_LOOKAHEAD)
+    return (
+        f"Note: chars {start:,}-{end:,} of this document were already returned by an earlier "
+        "read_document call in this conversation; the text is above. Reading the same part "
+        "again adds nothing. Answer from it, or read a wider window for more context, e.g. "
+        f'read_document(doc_id="{doc_id}", start_char={wide_start}, end_char={wide_end}).\n\n'
+    )
+
+
 # --- tool implementations --------------------------------------------------------
 
 
@@ -541,6 +584,7 @@ def _read_document(repo: DocumentRepository, args: dict, ctx: ToolContext) -> To
     result = repo.get_document_content(doc_id, start, end)
     if not result:
         return ToolResult(f"Error: document not found: {doc_id}", is_error=True)
+    note = _reread_note(ctx, doc_id, start, end, total)
     ctx.read_windows.append((doc_id, start_given, end))
 
     location = repo.resolve_page(doc_id, start) if start > 0 else None
@@ -561,7 +605,7 @@ def _read_document(repo: DocumentRepository, args: dict, ctx: ToolContext) -> To
             "part, or read a window around a search hit.]"
         )
     body = _neutralize(result["content"])
-    return ToolResult(f"{header}\n<document {attrs}>\n{body}\n</document>{footer}")
+    return ToolResult(f"{note}{header}\n<document {attrs}>\n{body}\n</document>{footer}")
 
 
 def _get_statistics(repo: DocumentRepository, args: dict, ctx: ToolContext) -> ToolResult:
