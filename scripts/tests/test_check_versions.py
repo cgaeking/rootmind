@@ -1,4 +1,5 @@
-"""scripts/check_versions.py: the four versions agree with each other and with the tag."""
+"""scripts/check_versions.py: the four versions agree with each other and with the tag,
+and the MCP Registry template matches the bundle."""
 
 from __future__ import annotations
 
@@ -110,3 +111,89 @@ def test_this_repository():
     assert check_versions.main([]) == 0
     assert check_versions.main(["--tag", f"v{version}"]) == 0
     assert check_versions.main(["--tag", "v9.9.9"]) == 1
+
+
+def _edit_template(root, change):
+    path = root / "packaging" / "mcpb" / "server.json"
+    template = json.loads(path.read_text(encoding="utf-8"))
+    change(template)
+    path.write_text(json.dumps(template), encoding="utf-8")
+
+
+def test_registry_template_of_this_repository():
+    assert check_versions.registry_template_problems() == []
+    assert check_versions.registry_expectations() == {
+        "name": "io.github.cgaeking/rootmind",
+        "repository": "https://github.com/cgaeking/rootmind",
+        "identifier": "https://github.com/cgaeking/rootmind/releases/download/v${VERSION}/rootmind.mcpb",
+    }
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda t: t.update(name="io.github.someone/rootmind"), "name is"),
+        (lambda t: t.update(version="1.2.0"), "version must be the placeholder"),
+        (
+            lambda t: t["packages"][0].update(
+                identifier="https://github.com/cgaeking/rootmind/releases/download/v1.2.0/rootmind.mcpb"
+            ),
+            "identifier must be",
+        ),
+        (lambda t: t["packages"][0].update(fileSha256="ab" * 32), "fileSha256 must be"),
+        (lambda t: t["packages"][0].update(version="1.2.0"), "package's version"),
+        (lambda t: t["packages"][0].update(registryType="npm"), "registryType"),
+        (lambda t: t["packages"].append(dict(t["packages"][0])), "exactly one package"),
+        (
+            lambda t: t.update(repository={"url": "https://github.com/x/y", "source": "github"}),
+            "repository.url",
+        ),
+        (
+            lambda t: t.update(
+                {
+                    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json"
+                }
+            ),
+            "not vendored",
+        ),
+        (
+            lambda t: t.update({"$schema": "https://example.com/server.schema.json"}),
+            "not a server.json schema",
+        ),
+    ],
+)
+def test_registry_template_is_checked(make_repo, capsys, change, message):
+    root = make_repo()
+    _edit_template(root, change)
+    assert check_versions.main([], root=root) == 1
+    err = capsys.readouterr().err
+    assert "MCP Registry template does not match" in err
+    assert "packaging/mcpb/server.json" in err
+    assert message in err
+
+
+def test_registry_name_follows_the_bundle_manifest(make_repo, capsys):
+    root = make_repo()
+    manifest_path = root / "packaging" / "mcpb" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = "rootmind-next"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert check_versions.main([], root=root) == 1
+    assert "expected 'io.github.cgaeking/rootmind-next'" in capsys.readouterr().err
+
+
+def test_vendored_schema_must_carry_its_url(make_repo, capsys):
+    root = make_repo()
+    (schema,) = (root / "packaging" / "mcpb" / "schemas").glob("server.schema.*.json")
+    data = json.loads(schema.read_text(encoding="utf-8"))
+    data["$id"] = "https://example.com/other.json"
+    schema.write_text(json.dumps(data), encoding="utf-8")
+    assert check_versions.main([], root=root) == 1
+    assert "has $id 'https://example.com/other.json'" in capsys.readouterr().err
+
+
+def test_missing_registry_template(make_repo, capsys):
+    root = make_repo()
+    (root / "packaging" / "mcpb" / "server.json").unlink()
+    assert check_versions.main([], root=root) == 1
+    assert "packaging/mcpb/server.json" in capsys.readouterr().err

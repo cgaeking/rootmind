@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.cgaeking/rootmind",
+  "title": "RootMind",
+  "description": "Search your local documents with page citations. Needs the RootMind app installed.",
+  "repository": {
+    "url": "https://github.com/cgaeking/rootmind",
+    "source": "github"
+  },
+  "version": "${VERSION}",
+  "websiteUrl": "https://github.com/cgaeking/rootmind",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/cgaeking/rootmind/releases/download/v${VERSION}/rootmind.mcpb",
+      "fileSha256": "${FILE_SHA256}",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

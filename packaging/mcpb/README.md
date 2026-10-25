@@ -15,7 +15,9 @@ service; on by default).
 | `server/bridge.mjs` | The stdio-to-HTTP bridge |
 | `icon.png` | A copy of `desktop/src-tauri/icons/icon.png` (512×512) |
 | `test/` | `node:test` tests with a fake MCP server and a fake status command; not packed |
-| `.mcpbignore` | Keeps the tests and this README out of the bundle |
+| `.mcpbignore` | Keeps the tests, this README and the registry files out of the bundle |
+| `server.json` | Template of the bundle's entry in the MCP Registry (`io.github.cgaeking/rootmind`), with `${VERSION}` and `${FILE_SHA256}` placeholders; not packed |
+| `schemas/` | The registry's `server.json` schema, vendored for validation without a download; not packed |
 
 The bundle uses Node's standard library only, so it has no `package.json` and no `node_modules`.
 
@@ -85,6 +87,12 @@ CI: `.github/workflows/mcpb.yml` runs the tests on Linux and Windows and validat
 bundle for pull requests that touch this folder. For a version tag, `release.yml` builds
 `rootmind.mcpb` in the job `mcpb` and publishes it with the release, in `SHA256SUMS.txt` and with an
 attestation. The bundle is not signed (`mcpb sign`); Claude Desktop shows it as unsigned.
+
+After the release, the job `mcp-registry` renders `server.json` from the release's `rootmind.mcpb`
+(`scripts/registry_server_json.py`: version, download URL and the file's SHA-256) and publishes it
+to the [MCP Registry](https://registry.modelcontextprotocol.io) with `mcp-publisher`; prereleases
+are not published, and dry runs only render and validate. CONTRIBUTING.md (Releasing) has the
+details and the manual fallback.
 
 To try a build by hand, open the packed `rootmind.mcpb` in Claude Desktop (double-click it, or drag
 it onto Settings → Extensions), or run the bridge on its own and type JSON-RPC lines:
