@@ -86,13 +86,12 @@ interface Props {
 
 /**
  * The agent's steps for one question, as a list that opens and closes with a
- * click on its summary. While the question runs the list starts open, with a
- * timer on the current step, and closed it still shows the current step;
- * afterwards it starts closed.
+ * click on its summary. It starts closed; while the question runs, closed it
+ * still shows the current step with its timer.
  */
 export function AgentSteps({ steps, maxIterations, live, elapsedMs }: Props) {
   const [now, setNow] = useState(() => Date.now());
-  const [open, setOpen] = useState(live);
+  const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!live) return;
     setNow(Date.now());

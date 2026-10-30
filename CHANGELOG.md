@@ -6,7 +6,11 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ### Changed
 
-- Desktop: the agent's steps open and close with a click on their summary, also while the question runs ("Working: 7 steps, 0:42"); closed, the current step stays visible. Each step takes one line; a long search term or file list is cut off and shows in full on hover.
+- Desktop: the agent's steps open and close with a click on their summary, also while the question runs ("Working: 7 steps, 0:42"). They start closed; while the question runs, the current step with its timer stays visible below the summary. Each step takes one line; a long search term or file list is cut off and shows in full on hover.
+
+### Fixed
+
+- Desktop: the chat scrolls along while new steps of a question come in, as long as it is scrolled to the end; scrolled up to read, it stays where it is.
 
 ## [2.6.0] - 2026-10-30
 
