@@ -6,6 +6,7 @@
 
 [English](README.md) | **Deutsch**
 
+[![RootMind MCP server](https://mcprush.com/badge/rootmind-mcp/card.svg)](https://mcprush.com/to/rootmind-mcp?ref=badge)
 [![Neuestes Release](https://img.shields.io/github/v/release/cgaeking/rootmind)](https://github.com/cgaeking/rootmind/releases/latest)
 [![backend CI](https://github.com/cgaeking/rootmind/actions/workflows/backend.yml/badge.svg?branch=main)](https://github.com/cgaeking/rootmind/actions/workflows/backend.yml?query=branch%3Amain)
 [![desktop CI](https://github.com/cgaeking/rootmind/actions/workflows/desktop.yml/badge.svg?branch=main)](https://github.com/cgaeking/rootmind/actions/workflows/desktop.yml?query=branch%3Amain)
