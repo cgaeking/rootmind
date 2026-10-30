@@ -1,11 +1,14 @@
 """REST API routes."""
 
+import asyncio
+import json
 import logging
 import os
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, StringConstraints
 
 from .. import __version__
@@ -37,6 +40,7 @@ from ..remote_access import (
     sdk_info,
 )
 from ..rlm_engine.engine import (
+    DEFAULT_MAX_ITERATIONS,
     LLMConfigError,
     LLMProviderError,
     LLMTimeoutError,
@@ -49,6 +53,10 @@ logger = logging.getLogger(__name__)
 # the condense step. Older turns are dropped server-side regardless of what
 # the client sends, keeping the condense call's token cost bounded.
 MAX_HISTORY_TURNS = 4
+
+# POST /query/stream sends a comment line when nothing else happened for this
+# long, so the client can tell a long step from a lost connection.
+QUERY_STREAM_HEARTBEAT_SECONDS = 10.0
 
 # Request size limits. The engine also truncates each history turn before the
 # condense step; these bounds only reject requests that are clearly too large.
@@ -319,6 +327,75 @@ def _llm_http_error(e: Exception, action: str) -> HTTPException:
     return HTTPException(status_code=500, detail=f"{action} failed; see the backend log")
 
 
+def _history(request: "QueryRequest") -> list[dict[str, str]] | None:
+    """The request's last few non-empty turns, for the condense step."""
+    if not request.history:
+        return None
+    trimmed = [t for t in request.history if t.text and t.text.strip()]
+    return [{"role": t.role, "text": t.text} for t in trimmed[-MAX_HISTORY_TURNS:]] or None
+
+
+def _query_response(result: dict[str, Any]) -> "QueryResponse":
+    return QueryResponse(
+        answer=result["answer"],
+        sources=result["sources"],
+        tokens_used=result["tokens_used"],
+        tool_calls=result.get("tool_calls", []),
+        stop_reasons=result.get("stop_reasons", []),
+    )
+
+
+def _sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def query_events(
+    run: Callable[[Callable[[dict[str, Any]], None]], Awaitable[dict[str, Any]]],
+    start: dict[str, Any],
+    heartbeat: float = QUERY_STREAM_HEARTBEAT_SECONDS,
+) -> AsyncIterator[str]:
+    """Server-sent events of one question: ``start``, ``step``s, then ``result`` or ``error``.
+
+    ``run(emit)`` starts the question and reports its steps through ``emit``.
+    When the stream is closed early (the client disconnected, for example
+    with the Stop button), the question is cancelled: it makes no further
+    model or tool calls.
+    """
+    steps: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    task = asyncio.create_task(run(steps.put_nowait))
+    getter: asyncio.Future[dict[str, Any]] | None = None
+    try:
+        yield _sse("start", start)
+        while True:
+            getter = asyncio.ensure_future(steps.get())
+            done, _ = await asyncio.wait(
+                {getter, task}, timeout=heartbeat, return_when=asyncio.FIRST_COMPLETED
+            )
+            if getter in done:
+                yield _sse("step", getter.result())
+                continue
+            getter.cancel()
+            if task not in done:
+                yield ": keepalive\n\n"
+                continue
+            while not steps.empty():
+                yield _sse("step", steps.get_nowait())
+            try:
+                result = task.result()
+            except Exception as e:
+                error = _llm_http_error(e, "Query")
+                yield _sse("error", {"status": error.status_code, "detail": error.detail})
+            else:
+                yield _sse("result", _query_response(result).model_dump())
+            return
+    finally:
+        if getter is not None and not getter.done():
+            getter.cancel()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 def create_router(app_state: Any) -> APIRouter:
     """Create API router with all endpoints.
 
@@ -556,24 +633,48 @@ def create_router(app_state: Any) -> APIRouter:
         # Cap to the last few turns and drop empty ones server-side, so a
         # client can pass its whole transcript without feeding an
         # ever-growing (and mostly irrelevant) history into the condense step.
-        history = None
-        if request.history:
-            trimmed = [t for t in request.history if t.text and t.text.strip()]
-            history = [
-                {"role": t.role, "text": t.text} for t in trimmed[-MAX_HISTORY_TURNS:]
-            ] or None
+        history = _history(request)
 
         try:
             result = await app_state.rlm_engine.query(request.question, history=history)
         except Exception as e:
             raise _llm_http_error(e, "Query") from e
 
-        return QueryResponse(
-            answer=result["answer"],
-            sources=result["sources"],
-            tokens_used=result["tokens_used"],
-            tool_calls=result.get("tool_calls", []),
-            stop_reasons=result.get("stop_reasons", []),
+        return _query_response(result)
+
+    @router.post("/query/stream", tags=["Query"])
+    async def query_knowledge_base_stream(request: QueryRequest):
+        """Like ``POST /query``, with the agent's steps as server-sent events.
+
+        Events: ``start`` (``max_iterations``, ``provider``, ``model``), one
+        ``step`` per model or tool call starting or ending (``type``
+        ``model_start``/``model_end``/``tool_start``/``tool_end``/``note``,
+        ``step``, the tool's ``name`` and ``arguments``, ``hits``, ``files``,
+        ``reads``, ``duration_ms``), then ``result`` (the ``POST /query``
+        response) or ``error`` (``status``, ``detail``). A comment line every
+        few seconds while nothing else happens. Closing the connection
+        cancels the question.
+        """
+        from ..tracing.base import MultiTracer
+        from ..tracing.progress import ProgressTracer
+
+        engine = app_state.rlm_engine
+        history = _history(request)
+
+        def run(emit: Callable[[dict[str, Any]], None]) -> Awaitable[dict[str, Any]]:
+            progress = ProgressTracer(emit)
+            tracer = progress if engine.tracer is None else MultiTracer([engine.tracer, progress])
+            return engine.query(request.question, history=history, tracer=tracer)
+
+        start = {
+            "max_iterations": DEFAULT_MAX_ITERATIONS,
+            "provider": engine.config.llm.provider,
+            "model": engine.config.llm.model,
+        }
+        return StreamingResponse(
+            query_events(run, start),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     @router.post("/chat/title", tags=["Chat"])

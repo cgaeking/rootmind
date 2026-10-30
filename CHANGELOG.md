@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Added
+
+- `POST /query/stream` ([#65](https://github.com/cgaeking/rootmind/issues/65)): the same question as `POST /query`, with the agent's steps as server-sent events while it works: a `start` event (iteration limit, provider, model), one `step` event when a model or tool call starts and when it ends (the tool and its arguments, hits and the names of the files found, the windows read, duration, tokens), then `result` (the `POST /query` body) or `error`. A comment line every 10 seconds while a step runs tells a long step from a lost connection. Closing the connection cancels the question: no further model or tool calls start (a model call already sent finishes in the background and its result is discarded). Steps carry no document text. `POST /query`, the command line and MCP are unchanged.
+
 ### Fixed
 
 - A full-text search could take minutes on an index with very large documents ([#65](https://github.com/cgaeking/rootmind/issues/65)): highlighted snippets were computed for every row ranked above the deepest returned result, including large spreadsheet and CSV exports that a file type or folder filter dropped afterwards. On a real index (18,811 documents, 2.1 billion characters) one agent search for `"Sehr geehrte" Schulz` with a PDF filter took over nine minutes. Snippets are now computed only for the results that are returned; which documents are found, their order and their snippets are unchanged.

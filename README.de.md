@@ -576,6 +576,10 @@ flowchart LR
 4. **Antworten nennen ihre Quellen.** Die Antwort listet die Dokumente, die das
    Modell gelesen hat, mit Seite, Folie oder Tabellenblatt, wo sich das
    bestimmen lässt, jeden Tool-Aufruf und warum jeder LLM-Aufruf geendet hat.
+   `POST /query/stream` liefert dieselbe Antwort und meldet jeden Modell- und
+   Tool-Aufruf, wenn er beginnt und endet (Server-Sent Events), sodass ein
+   Client zeigen kann, was der Agent gerade tut; wird die Verbindung
+   geschlossen, endet die Frage.
 5. **MCP-Clients bringen ihr eigenes Modell mit.** Über MCP stellt RootMind
    dieselben Tool-Definitionen bereit, und das Modell des Clients entscheidet.
    Suche und Indizierung brauchen nie einen API-Key; nur Fragen
