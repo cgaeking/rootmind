@@ -1,4 +1,5 @@
-import { api } from "./client";
+import { api, apiEvents, ApiError } from "./client";
+import { labels } from "../i18n/labels";
 import type {
   HealthResponse,
   RootInfo,
@@ -6,6 +7,8 @@ import type {
   Statistics,
   SearchResponse,
   QueryResponse,
+  QueryStepEvent,
+  QueryStreamStart,
   ProgressResponse,
   RefreshResponse,
   SaveConfigResponse,
@@ -89,6 +92,67 @@ export const askQuestion = (
     },
     { timeoutMs: QUERY_TIMEOUT_MS },
   );
+
+// POST /query/stream sends a keepalive every 10 s while a step runs, so this
+// much silence means the connection is gone. The question itself may run as
+// long as the backend keeps working on it.
+export const QUERY_STREAM_IDLE_TIMEOUT_MS = 2 * 60_000;
+
+export interface AskStreamOptions {
+  history?: QueryTurn[];
+  signal?: AbortSignal;
+  /** The iteration limit, provider and model, before the first step. */
+  onStart?: (start: QueryStreamStart) => void;
+  /** Every model or tool call as it starts and ends. */
+  onStep?: (step: QueryStepEvent) => void;
+}
+
+/**
+ * Ask a question and follow the agent's steps (POST /query/stream). Resolves
+ * with the same answer as {@link askQuestion}. Aborting `signal` closes the
+ * connection, which stops the question in the backend too. A backend without
+ * the stream endpoint (older than 2.6) is asked with POST /query instead,
+ * without steps.
+ */
+export async function askQuestionStream(
+  question: string,
+  opts: AskStreamOptions = {},
+): Promise<QueryResponse> {
+  let result: QueryResponse | null = null;
+  let failure: ApiError | null = null;
+  try {
+    await apiEvents(
+      "/query/stream",
+      {
+        method: "POST",
+        body: JSON.stringify(
+          opts.history?.length ? { question, history: opts.history } : { question },
+        ),
+        signal: opts.signal,
+      },
+      {
+        idleTimeoutMs: QUERY_STREAM_IDLE_TIMEOUT_MS,
+        onEvent: ({ event, data }) => {
+          if (event === "start") opts.onStart?.(data as QueryStreamStart);
+          else if (event === "step") opts.onStep?.(data as QueryStepEvent);
+          else if (event === "result") result = data as QueryResponse;
+          else if (event === "error") {
+            const { status, detail } = data as { status: number; detail: string };
+            failure = new ApiError(status, detail);
+          }
+        },
+      },
+    );
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
+      return askQuestion(question, { history: opts.history, signal: opts.signal });
+    }
+    throw e;
+  }
+  if (failure) throw failure;
+  if (!result) throw new ApiError(0, labels.chat.streamEnded);
+  return result;
+}
 
 export const generateChatTitle = (question: string, answer?: string) =>
   api<{ title: string }>("/chat/title", {

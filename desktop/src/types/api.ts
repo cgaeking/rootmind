@@ -104,6 +104,54 @@ export interface QueryResponse {
   stop_reasons: string[];
 }
 
+/** The `start` event of POST /query/stream. */
+export interface QueryStreamStart {
+  max_iterations: number;
+  provider: string;
+  model: string;
+}
+
+/** A document window a read_document call returned. */
+export interface StepRead {
+  file_name: string | null;
+  location: string | null;
+  start: number | null;
+  end: number | null;
+}
+
+/** A `step` event of POST /query/stream: a model or tool call starting or ending. */
+export type QueryStepEvent =
+  | { type: "model_start"; step: number; purpose: string | null; iteration: number | null }
+  | {
+      type: "model_end";
+      step: number;
+      duration_ms: number;
+      stop_reason: string | null;
+      tokens: number;
+      tool_requests: number;
+      error?: string;
+    }
+  | {
+      type: "tool_start";
+      step: number;
+      iteration: number | null;
+      name: string;
+      arguments: Record<string, unknown> | string;
+    }
+  | {
+      type: "tool_end";
+      step: number;
+      duration_ms: number;
+      is_error: boolean;
+      hits: number;
+      files: string[];
+      reads: StepRead[];
+      result_chars: number;
+      skipped?: string;
+      error?: string;
+    }
+  | { type: "note"; kind: string };
+
 export interface RecentDoc {
   doc_id: string;
   file_name: string;

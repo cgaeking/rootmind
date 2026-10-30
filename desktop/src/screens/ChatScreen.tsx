@@ -7,7 +7,7 @@ import { useLiveBackend } from "../hooks/useLiveBackend";
 import { useChatStore } from "../state/chatStore";
 import { useStore } from "../state/store";
 import {
-  askQuestion,
+  askQuestionStream,
   search,
   getConfig,
   getDocumentPath,
@@ -16,12 +16,14 @@ import {
 } from "../api/rlm";
 import { ApiError, AbortedError } from "../api/client";
 import type { QuerySource } from "../types/api";
-import type { StoredMessage } from "../types/chat";
+import type { AgentStep, StoredMessage } from "../types/chat";
 import { Banner, Button } from "../components/ui";
 import { displayPath } from "../utils/paths";
 import { ConnBanner } from "../components/ConnBanner";
 import { Markdown } from "../components/Markdown";
 import { ChatLoader } from "../components/ChatLoader";
+import { AgentSteps } from "../components/AgentSteps";
+import { applyStepEvent, countCalls, finishOpenSteps } from "../state/agentSteps";
 import type { SearchResult } from "../types/api";
 import styles from "./ChatScreen.module.css";
 
@@ -29,6 +31,13 @@ const SEARCH_PAGE = 100;
 const SEARCH_MAX = 1000;
 // How many recent turns to send for multi-turn context (the backend caps it too).
 const HISTORY_TURNS = 6;
+// The backend's iteration limit, until a question's start event says otherwise.
+const DEFAULT_MAX_ITERATIONS = 10;
+
+/** The client clock, for step start times and a question's duration (event handlers only). */
+function clockNow(): number {
+  return Date.now();
+}
 // While the first index is being built, re-check this often.
 const BUILDING_POLL_MS = 5_000;
 
@@ -202,6 +211,10 @@ export function ChatScreen() {
   const endRef = useRef<HTMLDivElement>(null);
   // The question in flight, so the user can cancel one that hangs.
   const queryAbort = useRef<AbortController | null>(null);
+  // The agent's steps of the question in flight, shown live and kept with the answer.
+  const [liveSteps, setLiveSteps] = useState<AgentStep[]>([]);
+  const [maxIterations, setMaxIterations] = useState(DEFAULT_MAX_ITERATIONS);
+  const stepsRef = useRef<AgentStep[]>([]);
 
   const messages = active?.messages ?? NO_MESSAGES;
   // One request at a time. Its loader and Stop button show only in the
@@ -239,6 +252,18 @@ export function ChatScreen() {
     const isFirst = earlier.length === 0;
 
     setPending({ convId: conv.id, question: isQuestion });
+    stepsRef.current = [];
+    setLiveSteps([]);
+    let maxSteps = DEFAULT_MAX_ITERATIONS;
+    setMaxIterations(maxSteps);
+    const startedAt = clockNow();
+    // The steps to keep with the answer (or with the error or cancel note).
+    const withSteps = (message: StoredMessage): StoredMessage => {
+      const steps = finishOpenSteps(stepsRef.current, clockNow());
+      return steps.length > 0
+        ? { ...message, steps, elapsedMs: clockNow() - startedAt, maxIterations: maxSteps }
+        : message;
+    };
     let assistant: StoredMessage;
     try {
       if (!isQuestion) {
@@ -266,25 +291,43 @@ export function ChatScreen() {
           .filter((m) => m.text.trim() && !m.error)
           .slice(-HISTORY_TURNS)
           .map((m) => ({ role: m.role, text: m.text }));
-        const res = await askQuestion(q, { history, signal: queryAbort.current.signal });
-        assistant = {
+        const res = await askQuestionStream(q, {
+          history,
+          signal: queryAbort.current.signal,
+          onStart: (start) => {
+            maxSteps = start.max_iterations;
+            setMaxIterations(start.max_iterations);
+          },
+          onStep: (event) => {
+            stepsRef.current = applyStepEvent(stepsRef.current, event, clockNow());
+            setLiveSteps(stepsRef.current);
+          },
+        });
+        assistant = withSteps({
           id: assistantId,
           role: "assistant",
           text: res.answer,
           sources: res.sources,
           md: true,
-        };
+        });
       }
     } catch (e) {
-      assistant =
+      const calls = countCalls(stepsRef.current);
+      assistant = withSteps(
         e instanceof AbortedError
-          ? { id: assistantId, role: "assistant", text: labels.chat.cancelled, error: true }
+          ? {
+              id: assistantId,
+              role: "assistant",
+              text: calls > 0 ? labels.chat.cancelledAfter(calls) : labels.chat.cancelled,
+              error: true,
+            }
           : {
               id: assistantId,
               role: "assistant",
               text: labels.chat.errorPrefix(e instanceof ApiError ? e.message : String(e)),
               error: true,
-            };
+            },
+      );
     } finally {
       queryAbort.current = null;
       setBusy(false);
@@ -459,11 +502,22 @@ export function ChatScreen() {
                     <SourceList sources={m.sources} onOpen={openSource} onReveal={revealSource} />
                   )
                 )}
+                {m.steps && m.steps.length > 0 && (
+                  <AgentSteps
+                    steps={m.steps}
+                    maxIterations={m.maxIterations ?? DEFAULT_MAX_ITERATIONS}
+                    live={false}
+                    elapsedMs={m.elapsedMs}
+                  />
+                )}
               </div>
             );
           })}
 
           {loadingHere && <ChatLoader />}
+          {loadingHere && pending?.question && liveSteps.length > 0 && (
+            <AgentSteps steps={liveSteps} maxIterations={maxIterations} live />
+          )}
           {srcError && <Banner tone="err">{srcError}</Banner>}
           <div ref={endRef} />
         </div>
