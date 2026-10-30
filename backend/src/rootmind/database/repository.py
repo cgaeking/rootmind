@@ -659,10 +659,9 @@ class DocumentRepository:
 
         candidates = max(limit, _RANK_CANDIDATES)
         # doc_id -> best weighted score, plus where the doc was found first:
-        # (strategy index, rank within that strategy). Strategies run in
-        # descending precision order (phrase -> AND -> prefix -> OR ->
-        # filename), so the first one to find a doc is its most precise match
-        # and provides the snippet.
+        # (strategy index, FTS rowid). Strategies run in descending precision
+        # order (phrase -> AND -> prefix -> OR -> filename), so the first one
+        # to find a doc is its most precise match and provides the snippet.
         scores: dict[str, float] = {}
         first_hit: dict[str, tuple[int, int]] = {}
 
@@ -670,7 +669,7 @@ class DocumentRepository:
             for index, (label, column, match_query, weight, _) in enumerate(strategies):
                 # Only fixed SQL fragments are interpolated; the user query is bound.
                 sql = text(
-                    "SELECT doc_id, bm25(documents_fts) FROM documents_fts "  # noqa: S608
+                    "SELECT doc_id, rowid, bm25(documents_fts) FROM documents_fts "  # noqa: S608
                     f"WHERE {column} MATCH :query "
                     "ORDER BY bm25(documents_fts), rowid LIMIT :limit"
                 )
@@ -679,7 +678,7 @@ class DocumentRepository:
                 except Exception as e:  # malformed MATCH expression: try the next strategy
                     logger.debug("FTS strategy %s failed for %r: %s", label, match_query, e)
                     continue
-                for rank, (doc_id, bm25) in enumerate(rows):
+                for doc_id, rowid, bm25 in rows:
                     # bm25 magnitudes aren't comparable across MATCH query shapes
                     # (a broad OR query can score higher than a precise phrase
                     # purely because it matches more terms), so the weights
@@ -687,7 +686,7 @@ class DocumentRepository:
                     weighted = abs(bm25) * weight
                     if doc_id not in scores:
                         scores[doc_id] = weighted
-                        first_hit[doc_id] = (index, rank)
+                        first_hit[doc_id] = (index, rowid)
                     elif weighted > scores[doc_id]:
                         scores[doc_id] = weighted
 
@@ -737,40 +736,45 @@ class DocumentRepository:
     ) -> dict[str, str]:
         """Highlight each result with the strategy that found it first.
 
-        One query per strategy, in the same order as the ranking query and
-        limited to the deepest rank still needed, so snippet() runs for about
-        as many rows as are returned (a per-row ``rowid =`` lookup would
-        re-evaluate a broad prefix MATCH once per result).
+        One query per strategy, restricted to the FTS rowids of the returned
+        results, so snippet() runs only for them. snippet() tokenizes a
+        document's whole text, which takes long on documents with millions
+        of characters; ordering by bm25 with a LIMIT computed it for every
+        row ranked above the deepest result too, including the ones a file
+        type or folder filter drops afterwards (minutes on large spreadsheet
+        and CSV exports).
 
         Returns the raw content snippets (with the internal markers) by doc id,
         for :meth:`_attach_positions`. Snippets of the file name are not
         included: they say nothing about a place in the text.
         """
-        needed: dict[int, int] = {}  # strategy index -> rows to fetch
+        rowids: dict[int, list[int]] = {}  # strategy index -> FTS rowids to highlight
         for r in results:
-            index, rank = first_hit[r["doc_id"]]
-            needed[index] = max(needed.get(index, 0), rank + 1)
+            index, rowid = first_hit[r["doc_id"]]
+            rowids.setdefault(index, []).append(rowid)
 
         snippets: dict[str, str] = {}
         content_snippets: dict[str, str] = {}
         with self.engine.connect() as conn:
-            for index, depth in sorted(needed.items()):
+            for index, ids in sorted(rowids.items()):
                 _, column, match_query, _, snippet_column = strategies[index]
                 # Content snippets use a wider token window than the default:
                 # short windows often cut off table headers/labels a few lines
                 # above a matched data row, leaving a bare number the model
                 # can't interpret.
                 tokens = 200 if snippet_column == 2 else 64
-                # Only fixed SQL fragments are interpolated; the query and the
-                # markers are bound.
+                # Only fixed SQL fragments are interpolated; the query, the
+                # markers and the rowids are bound. The WHERE clause is
+                # evaluated before the snippet() column, so other matches of
+                # a broad query cost no snippet.
                 sql = text(
                     f"SELECT doc_id, snippet(documents_fts, {snippet_column}, :open, :close, "  # noqa: S608
                     f":ellipsis, {tokens}) FROM documents_fts WHERE {column} MATCH :query "
-                    "ORDER BY bm25(documents_fts), rowid LIMIT :limit"
-                )
+                    "AND rowid IN :rowids"
+                ).bindparams(bindparam("rowids", expanding=True))
                 params = {
                     "query": match_query,
-                    "limit": depth,
+                    "rowids": ids,
                     "open": _HIT_OPEN,
                     "close": _HIT_CLOSE,
                     "ellipsis": _SNIPPET_ELLIPSIS,
