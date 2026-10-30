@@ -99,9 +99,37 @@ describe("step texts", () => {
 });
 
 describe("AgentSteps", () => {
-  it("shows the steps open while the question runs", () => {
-    render(<AgentSteps steps={finishedSteps()} maxIterations={10} live />);
-    expect(screen.getByRole("status").textContent).toContain("Searching “Nadine Schulz” (pdf only)");
+  it("shows the live steps closed, with only the current step", () => {
+    const running = applyStepEvent(
+      finishedSteps().slice(0, 3),
+      { type: "tool_start", step: 9, iteration: 3, name: "search_documents", arguments: { query: "Anschreiben" } },
+      1000,
+    );
+    const { container } = render(<AgentSteps steps={running} maxIterations={10} live />);
+
+    expect(container.querySelector("details")?.open).toBe(false);
+    expect(screen.getByRole("status").textContent).toContain("Working: 4 steps");
+    const outside = container.querySelectorAll('[role="status"] > ol li');
+    expect(outside).toHaveLength(1);
+    expect(outside[0].textContent).toContain("Searching “Anschreiben”");
+  });
+
+  it("opens the live list on a click to all steps", () => {
+    const { container } = render(<AgentSteps steps={finishedSteps()} maxIterations={10} live />);
+    const details = container.querySelector("details")!;
+
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+
+    expect(container.querySelectorAll('[role="status"] > ol li')).toHaveLength(0);
+    expect(details.textContent).toContain("Searching “Nadine Schulz” (pdf only)");
+    expect(details.textContent).toContain("Reading Bewerbung.pdf");
+  });
+
+  it("puts each step on one line with the full text as a tooltip", () => {
+    const { container } = render(<AgentSteps steps={finishedSteps()} maxIterations={10} live />);
+    const text = container.querySelector("li:nth-child(2) span[title]");
+    expect(text?.getAttribute("title")).toBe("Searching “Nadine Schulz” (pdf only) · 4 hits: a.pdf, b.pdf, c.pdf … · 0.4 s");
   });
 
   it("shows a collapsed summary after the answer that opens to the steps", () => {

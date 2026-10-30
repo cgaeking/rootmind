@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, UIEvent } from "react";
 import { Link } from "react-router-dom";
 import { labels, useLanguage } from "../i18n/labels";
 import { useBackend } from "../hooks/useBackend";
@@ -227,9 +227,22 @@ export function ChatScreen() {
     queryAbort.current?.abort();
   }
 
+  // Whether the conversation is scrolled to (near) its end: new steps of the
+  // question in flight keep it there, but do not pull a reader back down.
+  const atEnd = useRef(true);
+  function onScroll(e: UIEvent<HTMLDivElement>) {
+    const box = e.currentTarget;
+    atEnd.current = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  }
+
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
+    atEnd.current = true;
   }, [messages, loadingHere]);
+
+  useEffect(() => {
+    if (atEnd.current) endRef.current?.scrollIntoView({ block: "end" });
+  }, [liveSteps]);
 
   async function send() {
     const q = input.trim();
@@ -446,7 +459,7 @@ export function ChatScreen() {
 
   return (
     <div className={styles.main}>
-        <div className={styles.messages}>
+        <div className={styles.messages} onScroll={onScroll}>
           <ConnBanner />
 
           {messages.length === 0 && conn === "online" && <EmptyChat />}

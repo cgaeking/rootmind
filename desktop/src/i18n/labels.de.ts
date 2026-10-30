@@ -344,6 +344,8 @@ export const labels = {
     steps: {
       summary: (n: number, time: string) =>
         n === 1 ? `So wurde gesucht: 1 Schritt, ${time}` : `So wurde gesucht: ${n} Schritte, ${time}`,
+      liveSummary: (n: number, time: string) =>
+        n === 1 ? `Arbeitet: 1 Schritt, ${time}` : `Arbeitet: ${n} Schritte, ${time}`,
       modelLoop: (iteration: number, max: number) => `Denkt nach (Schritt ${iteration} von max. ${max})`,
       modelCondense: "Formuliert die Folgefrage um",
       modelFallback: "Formuliert die Antwort aus dem Gefundenen",
