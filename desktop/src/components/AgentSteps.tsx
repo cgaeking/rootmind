@@ -85,12 +85,14 @@ interface Props {
 }
 
 /**
- * The agent's steps for one question. While it runs, an open list with a
- * timer on the current step; afterwards a collapsed summary that opens to the
- * same list.
+ * The agent's steps for one question, as a list that opens and closes with a
+ * click on its summary. While the question runs the list starts open, with a
+ * timer on the current step, and closed it still shows the current step;
+ * afterwards it starts closed.
  */
 export function AgentSteps({ steps, maxIterations, live, elapsedMs }: Props) {
   const [now, setNow] = useState(() => Date.now());
+  const [open, setOpen] = useState(live);
   useEffect(() => {
     if (!live) return;
     setNow(Date.now());
@@ -98,37 +100,47 @@ export function AgentSteps({ steps, maxIterations, live, elapsedMs }: Props) {
     return () => clearInterval(timer);
   }, [live]);
 
-  const list = (
-    <ol className={styles.list}>
-      {steps.map((step) => {
-        const running = step.durationMs === undefined;
-        const failed =
-          !running && (step.error !== undefined || !!step.skipped || !!step.interrupted);
-        const state = step.kind === "note" ? styles.note : running ? styles.running : failed ? styles.failed : styles.done;
-        return (
-          <li key={step.step} className={`${styles.item} ${state}`}>
-            <span className={styles.icon} aria-hidden="true">
-              {step.kind === "note" ? "•" : running ? "" : failed ? "✕" : "✓"}
-            </span>
-            <span className={styles.title}>{stepTitle(step, maxIterations)}</span>
-            {stepDetail(step, now) && <span className={styles.detail}> · {stepDetail(step, now)}</span>}
-          </li>
-        );
-      })}
-    </ol>
-  );
-
-  if (live) {
+  const item = (step: AgentStep) => {
+    const running = step.durationMs === undefined;
+    const failed = !running && (step.error !== undefined || !!step.skipped || !!step.interrupted);
+    const state = step.kind === "note" ? styles.note : running ? styles.running : failed ? styles.failed : styles.done;
+    const title = stepTitle(step, maxIterations);
+    const detail = stepDetail(step, now);
     return (
-      <div className={styles.live} role="status" aria-live="polite">
-        {list}
-      </div>
+      <li key={step.step} className={`${styles.item} ${state}`}>
+        <span className={styles.icon} aria-hidden="true">
+          {step.kind === "note" ? "•" : running ? "" : failed ? "✕" : "✓"}
+        </span>
+        <span className={styles.text} title={detail ? `${title} · ${detail}` : title}>
+          <span className={styles.title}>{title}</span>
+          {detail && <span className={styles.detail}> · {detail}</span>}
+        </span>
+      </li>
     );
-  }
-  return (
-    <details className={styles.summary}>
-      <summary>{labels.chat.steps.summary(countCalls(steps), formatDuration(elapsedMs ?? 0))}</summary>
-      {list}
+  };
+
+  const t = labels.chat.steps;
+  const summary = live
+    ? t.liveSummary(countCalls(steps), formatDuration(Math.max(0, now - (steps[0]?.startedAt ?? now))))
+    : t.summary(countCalls(steps), formatDuration(elapsedMs ?? 0));
+  const current = steps[steps.length - 1];
+
+  const details = (
+    <details
+      className={`${styles.steps} ${live ? "" : styles.finished}`}
+      open={open}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+    >
+      <summary>{summary}</summary>
+      <ol className={styles.list}>{steps.map(item)}</ol>
     </details>
+  );
+  if (!live) return details;
+  return (
+    <div className={styles.live} role="status" aria-live="polite">
+      {details}
+      {/* Closed, the list still shows what is happening right now. */}
+      {!open && current && <ol className={styles.list}>{item(current)}</ol>}
+    </div>
   );
 }

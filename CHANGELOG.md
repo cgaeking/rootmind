@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Changed
+
+- Desktop: the agent's steps open and close with a click on their summary, also while the question runs ("Working: 7 steps, 0:42"); closed, the current step stays visible. Each step takes one line; a long search term or file list is cut off and shows in full on hover.
+
 ## [2.6.0] - 2026-10-30
 
 ### Added
