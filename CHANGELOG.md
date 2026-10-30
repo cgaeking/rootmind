@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Fixed
+
+- A full-text search could take minutes on an index with very large documents ([#65](https://github.com/cgaeking/rootmind/issues/65)): highlighted snippets were computed for every row ranked above the deepest returned result, including large spreadsheet and CSV exports that a file type or folder filter dropped afterwards. On a real index (18,811 documents, 2.1 billion characters) one agent search for `"Sehr geehrte" Schulz` with a PDF filter took over nine minutes. Snippets are now computed only for the results that are returned; which documents are found, their order and their snippets are unchanged.
+
 ## [2.5.0] - 2026-10-25
 
 ### Added

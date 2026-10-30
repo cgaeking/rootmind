@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from rootmind.database import repository as repository_module
 
@@ -85,6 +85,44 @@ def test_snippets_do_not_change_the_ranking(filled):
         fast = [r["doc_id"] for r in filled.search_fulltext(query, with_snippets=False)]
         rich = [r["doc_id"] for r in filled.search_fulltext(query, with_snippets=True)]
         assert fast == rich
+
+
+def test_snippets_are_computed_only_for_returned_results(repo):
+    """Regression: snippet() ran for every row ranked above the deepest result.
+
+    With a file type filter that included documents the filter drops, and on
+    an index with huge spreadsheet exports one search took over nine minutes.
+    """
+    for i in range(30):
+        _add(repo, f"export{i}.csv", "Sehr geehrte Damen und Herren, Schulz " * 50, file_type="csv")
+    _add(
+        repo,
+        "letter.pdf",
+        "[Page 1]\nSehr geehrte Frau Schulz, anbei die Unterlagen.",
+        "docs",
+        "pdf",
+    )
+    rowids_per_snippet_query: list[int] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if "snippet(" in statement:
+            assert "LIMIT" not in statement
+            # open, close, ellipsis and the MATCH query; the rest are rowids.
+            rowids_per_snippet_query.append(len(parameters) - 4)
+
+    event.listen(repo.engine, "before_cursor_execute", capture)
+    try:
+        results = repo.search_fulltext("Sehr geehrte Schulz", limit=10, file_type="pdf")
+    finally:
+        event.remove(repo.engine, "before_cursor_execute", capture)
+
+    assert _names(results) == ["letter.pdf"]
+    assert (
+        results[0]["snippet"]
+        == "[Page 1]\n**Sehr** **geehrte** Frau **Schulz**, anbei die Unterlagen."
+    )
+    assert results[0]["page"] == "Page 1"
+    assert sum(rowids_per_snippet_query) == len(results)
 
 
 def test_filters(filled):
