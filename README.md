@@ -532,6 +532,9 @@ flowchart LR
 4. **Answers carry sources.** The response lists the documents the model read,
    with page, slide or sheet where it can be resolved, every tool call it
    made, and why each LLM call stopped.
+   `POST /query/stream` returns the same answer and sends every model and
+   tool call as it starts and ends (server-sent events), so a client can show
+   what the agent is doing; closing that connection stops the question.
 5. **MCP clients bring their own model.** Over MCP, RootMind serves the same
    tool definitions and the client's model does the deciding. Search and
    indexing never need an API key; only questions (`POST /query`), chat titles

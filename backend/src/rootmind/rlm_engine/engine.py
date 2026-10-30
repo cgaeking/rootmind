@@ -435,6 +435,11 @@ class KnowledgeBaseEngine:
         self._client = client
         self._tracer = tracer
 
+    @property
+    def tracer(self) -> "Tracer | None":
+        """The tracer of the tracing settings, or None when tracing is off."""
+        return self._tracer
+
     # --- plumbing ------------------------------------------------------------
 
     def _get_client(self):
@@ -700,6 +705,7 @@ class KnowledgeBaseEngine:
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         history: list[dict[str, str]] | None = None,
         trace_tags: dict[str, Any] | None = None,
+        tracer: "Tracer | None" = None,
     ) -> dict[str, Any]:
         """Answer a question with the agentic tool-use loop.
 
@@ -711,6 +717,8 @@ class KnowledgeBaseEngine:
                 before the loop runs (see :meth:`condense_question`).
             trace_tags: Labels for the trace (for example the eval case and
                 run); ignored without a tracer.
+            tracer: Tracer for this question instead of the engine's (for
+                example the engine's combined with a live progress report).
 
         Returns:
             ``{"answer", "sources", "tokens_used", "tool_calls", "stop_reasons"}``;
@@ -726,8 +734,9 @@ class KnowledgeBaseEngine:
         provider = self.config.llm.provider
 
         usage = _Usage()
-        if self._tracer is not None:
-            usage.trace = self._tracer.question(
+        tracer = tracer if tracer is not None else self._tracer
+        if tracer is not None:
+            usage.trace = tracer.question(
                 question=question,
                 provider=provider,
                 model=self.config.llm.model,
@@ -758,6 +767,20 @@ class KnowledgeBaseEngine:
 
             # Source lookups are SQLite queries; keep them off the event loop too.
             sources = await asyncio.to_thread(self._extract_sources, ctx, answer)
+        except asyncio.CancelledError:
+            # The client stopped the question (for example the Stop button,
+            # which closes POST /query/stream): no further calls are made.
+            # A model call already sent finishes in its worker thread; its
+            # result is discarded.
+            logger.info("Question cancelled after %d tool calls", len(ctx.tool_calls))
+            if usage.trace is not None:
+                usage.trace.end(
+                    error="cancelled",
+                    tokens_used=usage.tokens,
+                    stop_reasons=usage.stop_reasons,
+                    tool_calls=len(ctx.tool_calls),
+                )
+            raise
         except Exception as e:
             if usage.trace is not None:
                 usage.trace.end(
