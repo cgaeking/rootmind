@@ -1,4 +1,4 @@
-import type { QuerySource } from "./api";
+import type { QuerySource, StepRead } from "./api";
 
 export type Role = "user" | "assistant";
 
@@ -18,6 +18,37 @@ export interface StoredMessage {
   searchLimit?: number;
   /** True once content snippets ("descriptions") have been loaded for the list. */
   descriptionsLoaded?: boolean;
+  /** The agent's steps for this answer, shown collapsed below it. */
+  steps?: AgentStep[];
+  /** How long the question took, in ms (with `steps`). */
+  elapsedMs?: number;
+  /** The loop's iteration limit when the question ran (with `steps`). */
+  maxIterations?: number;
+}
+
+/** One step of the agent loop as the chat shows it (and keeps with the answer). */
+export interface AgentStep {
+  step: number;
+  kind: "model" | "tool" | "note";
+  /** Model calls: "loop", "condense" or "fallback". */
+  purpose?: string | null;
+  iteration?: number | null;
+  /** Tool calls: the tool and its arguments. */
+  name?: string;
+  arguments?: Record<string, unknown> | string;
+  /** Notes: what the loop decided (for example "iteration_limit"). */
+  note?: string;
+  /** When the step started, in ms on the client's clock (for the running timer). */
+  startedAt: number;
+  /** Set when the step ended. */
+  durationMs?: number;
+  hits?: number;
+  files?: string[];
+  reads?: StepRead[];
+  skipped?: string;
+  error?: string;
+  /** The question ended (stopped or failed) while this step was running. */
+  interrupted?: boolean;
 }
 
 export interface Conversation {

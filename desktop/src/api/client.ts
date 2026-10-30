@@ -122,3 +122,132 @@ export async function api<T>(path: string, init?: RequestInit, opts?: ApiOptions
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
+
+/** One server-sent event: its name (`message` when the block names none) and parsed JSON data. */
+export interface SseEvent {
+  event: string;
+  data: unknown;
+}
+
+/**
+ * Split `buffer` into complete server-sent events and the incomplete rest.
+ * Comment lines (keepalives, starting with ":") produce no event. Blocks are
+ * separated by a blank line; `data` is parsed as JSON.
+ */
+export function parseSse(buffer: string): { events: SseEvent[]; rest: string } {
+  const normalized = buffer.replace(/\r\n/g, "\n");
+  const blocks = normalized.split("\n\n");
+  const rest = blocks.pop() ?? "";
+  const events: SseEvent[] = [];
+  for (const block of blocks) {
+    let event = "message";
+    const data: string[] = [];
+    for (const line of block.split("\n")) {
+      if (!line || line.startsWith(":")) continue;
+      const colon = line.indexOf(":");
+      const field = colon === -1 ? line : line.slice(0, colon);
+      const value = colon === -1 ? "" : line.slice(colon + 1).replace(/^ /, "");
+      if (field === "event") event = value;
+      else if (field === "data") data.push(value);
+    }
+    if (data.length > 0) events.push({ event, data: JSON.parse(data.join("\n")) });
+  }
+  return { events, rest };
+}
+
+export interface EventStreamOptions {
+  /**
+   * Give up when nothing (not even a keepalive comment) arrives for this
+   * long, in ms. Pass 0 to disable.
+   */
+  idleTimeoutMs: number;
+  /** Called for every event, in order. */
+  onEvent: (event: SseEvent) => void;
+}
+
+/**
+ * POST to a server-sent events endpoint of the backend and hand every event
+ * to `onEvent` until the stream ends. Headers, 401 handling and error bodies
+ * work like {@link api}. There is no overall timeout: a stream may run as long
+ * as the backend keeps sending, and gives up only after `idleTimeoutMs` of
+ * silence. Aborting `init.signal` closes the connection (AbortedError).
+ */
+export async function apiEvents(
+  path: string,
+  init: RequestInit,
+  opts: EventStreamOptions,
+): Promise<void> {
+  const { baseUrl, token } = useStore.getState();
+  const idleCtrl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const touch = () => {
+    if (timer) clearTimeout(timer);
+    if (opts.idleTimeoutMs > 0) {
+      timer = setTimeout(
+        () => idleCtrl.abort(new DOMException("timeout", "TimeoutError")),
+        opts.idleTimeoutMs,
+      );
+    }
+  };
+  const signal = combineSignals(init.signal ?? undefined, idleCtrl.signal);
+  const failed = (e: unknown): ApiError => {
+    const name = (e as Error).name;
+    if (name === "AbortError" || name === "TimeoutError") {
+      if (init.signal?.aborted) return new AbortedError();
+      return new ApiError(0, labels.common.timeoutAfter(Math.round(opts.idleTimeoutMs / 1000)));
+    }
+    return new ApiError(0, (e as Error).message || labels.common.connectionFailed);
+  };
+
+  touch();
+  try {
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}${path}`, {
+        cache: "no-store",
+        ...init,
+        headers: requestHeaders(token, init.headers),
+        signal,
+      });
+    } catch (e) {
+      throw failed(e);
+    }
+
+    if (res.status === 401) {
+      const now = useStore.getState();
+      if (now.baseUrl === baseUrl && now.token === token) now.setConn("unauthorized");
+    }
+    if (!res.ok || !res.body) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json();
+        if (body && typeof body.detail === "string") detail = body.detail;
+      } catch {
+        // ignore non-JSON error bodies
+      }
+      throw new ApiError(res.status, detail);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (e) {
+        throw failed(e);
+      }
+      if (chunk.done) break;
+      touch();
+      buffer += decoder.decode(chunk.value, { stream: true });
+      const parsed = parseSse(buffer);
+      buffer = parsed.rest;
+      for (const event of parsed.events) opts.onEvent(event);
+    }
+    buffer += decoder.decode();
+    for (const event of parseSse(buffer + "\n\n").events) opts.onEvent(event);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
