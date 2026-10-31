@@ -2719,7 +2719,7 @@ dependencies = [
 
 [[package]]
 name = "rootmind-desktop"
-version = "2.6.0"
+version = "2.6.1"
 dependencies = [
  "getrandom 0.3.4",
  "glob",
