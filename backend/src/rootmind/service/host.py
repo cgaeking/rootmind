@@ -81,6 +81,12 @@ ERROR_FAILED_SERVICE_CONTROLLER_CONNECT = 1063
 ERROR_SERVICE_SPECIFIC_ERROR = 1066
 
 
+class StartFailedError(Exception):
+    """The service cannot start for a reason its message explains (for example a
+    port another program uses). Logged without a traceback; the service manager
+    restarts the service as after any failed start."""
+
+
 class ServiceConfigError(Exception):
     """A config, token or access error: the service stops and is not restarted."""
 
@@ -363,16 +369,22 @@ class ServiceRunner:
 
         import uvicorn
 
-        from ..main import bind_socket
+        from ..main import PortTakenError, bind_socket
 
         network_config = None
         if self.role == ROLE_MCP:
             network_config = self._network_config(config, app)
-        self.sock = bind_socket("127.0.0.1", self.port)
+        try:
+            self.sock = bind_socket("127.0.0.1", self.port)
+        except PortTakenError as e:
+            raise StartFailedError(str(e)) from None
         if network_config is not None:
             network = config.mcp_http.network
             try:
                 self.network_sock = bind_socket(network.bind, network.port)
+            except PortTakenError as e:
+                self.sock.close()
+                raise StartFailedError(str(e)) from None
             except OSError:
                 self.sock.close()
                 raise
@@ -600,6 +612,12 @@ def _service_class(role: str, port: int, user_sid: str | None, home: Path):
                 logger.error("%s cannot start: %s", self._svc_name_, e)
                 self._stop_with_config_error()
                 return
+            except StartFailedError as e:
+                # A known cause, without a traceback; the SCM restarts the
+                # service, so it starts once the port is free.
+                logger.error("%s cannot start: %s", self._svc_name_, e)
+                _exit_process(1)
+                return
             except BaseException:
                 logger.exception("%s failed to start", self._svc_name_)
                 _exit_process(1)
@@ -734,6 +752,10 @@ def run_linux_service(
         logger.error("%s cannot start: %s", name, e)
         logging.shutdown()
         return SERVICE_SPECIFIC_CONFIG_ERROR
+    except StartFailedError as e:
+        logger.error("%s cannot start: %s", name, e)
+        logging.shutdown()
+        return 1
     except BaseException:
         logger.exception("%s failed to start", name)
         logging.shutdown()

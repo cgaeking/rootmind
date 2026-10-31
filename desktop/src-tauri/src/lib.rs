@@ -8,6 +8,7 @@ mod imagepath;
 #[cfg(target_os = "linux")]
 mod linux;
 mod procnet;
+mod proof;
 mod service;
 mod tcptable;
 mod unitfile;

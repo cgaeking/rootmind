@@ -1,10 +1,11 @@
 // The IPv4 TCP listener table, as returned by
 // GetExtendedTcpTable(AF_INET, TCP_TABLE_OWNER_PID_LISTENER).
 //
-// The app sends the service's REST token only to the process that owns the
-// listening socket, and only when that process is the RootMind service
-// (service.rs). Parsing lives here, apart from the Win32 call, so it can be
-// tested with synthetic buffers.
+// The app hands out the service's REST token only when the server on the
+// port proves that it knows it (proof.rs). A service from before /proof is
+// checked here instead: the process that owns the listening socket must be
+// the RootMind service (service.rs). Parsing lives here, apart from the Win32
+// call, so it can be tested with synthetic buffers.
 //
 // Layout (MIB_TCPTABLE_OWNER_PID): a u32 entry count, then one
 // MIB_TCPROW_OWNER_PID per entry, six u32 fields each:

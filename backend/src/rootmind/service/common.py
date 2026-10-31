@@ -24,6 +24,7 @@ from typing import Any
 
 import yaml
 
+from ..auth import proves_token
 from . import SERVICE_DATABASE_PATH, ExitCode, ServiceCommandError
 
 MAX_MCP_TOKEN_BYTES = 4096
@@ -247,6 +248,31 @@ def database_in_service_folder(config_file: Path, root: Path, pathmod: Any = ntp
     path = raw if pathmod.isabs(raw) else pathmod.join(str(root), raw)
     path = pathmod.normcase(pathmod.normpath(path))
     return path.startswith(folder + pathmod.sep)
+
+
+def confirm_owner(env, name: str, url: str, port: int, pid: int, token: str) -> None:
+    """Refuse to send ``token`` unless the service itself answers on ``port``.
+
+    Another program (of any account, or WSL port forwarding) that bound the
+    port while the service was stopped would otherwise receive the token. The
+    service proves that it knows the token (:func:`proves_token`); only a
+    server without ``/proof`` is checked through the listener table instead,
+    which on some Windows systems does not show the service's socket at all.
+
+    Raises:
+        ServiceCommandError: exit 7, another program answers on the port.
+    """
+    proved = proves_token(env.http, url, token)
+    if proved:
+        return
+    if proved is None and env.port_owned_by(port, pid):
+        return
+    raise ServiceCommandError(
+        ExitCode.HEALTH_CHECK_FAILED,
+        f"The program that answers on 127.0.0.1:{port} could not prove that it is {name} "
+        f"(PID {pid}): another program may use the port. No token was sent to it. "
+        "Stop that program, then run this command again.",
+    )
 
 
 def check_auth(name: str, results: list[tuple[str, int, int]]) -> None:

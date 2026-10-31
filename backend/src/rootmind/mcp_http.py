@@ -10,8 +10,11 @@ Endpoints:
 - ``GET  /mcp/sse``      legacy SSE transport: event stream
 - ``POST /mcp/message``  legacy SSE transport: client-to-server messages
 - ``GET  /health``       liveness check, no auth
+- ``GET  /proof``        proof that the server knows the token (loopback, no auth;
+  see :mod:`rootmind.auth`)
 
-There are no OpenAPI or docs pages: everything except ``/health`` needs the token.
+There are no OpenAPI or docs pages: everything except ``/health`` and ``/proof``
+needs the token.
 
 Like the stdio server, it only serves by default and never indexes. Keep the
 index current with the REST API or ``rootmind index``. ``--index`` also runs
@@ -552,6 +555,17 @@ def create_app(
     async def health():
         """Liveness check (no auth)."""
         return {"status": "ok", "server": {"name": SERVER_NAME, "version": __version__}}
+
+    @app.get(auth.PROOF_PATH)
+    async def proof(request: Request):
+        """Proof that this server knows the default token, before a client sends it (no auth).
+
+        Only on loopback: the clients that check it (service install) are local.
+        """
+        if request.scope.get(NETWORK_SCOPE_KEY):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        status, body = auth.proof_response(expected.strip(), request.query_params.get("nonce"))
+        return JSONResponse(body, status_code=status)
 
     @app.post("/mcp")
     async def mcp_post(request: Request, identity: Annotated[TokenIdentity, Depends(authorize)]):

@@ -356,3 +356,53 @@ def test_api_without_token_serves_without_auth(rlm_home, monkeypatch):
     with rest_client(seen["app"]) as client:
         assert client.get("/status").status_code == 200
         assert client.get("/").json()["auth"] == "none"
+
+
+# --- GET /proof -------------------------------------------------------------------------
+
+
+NONCE = "ab" * 32
+
+
+def test_proof_answers_without_a_token_and_proves_it(secured):
+    response = secured.get("/proof", params={"nonce": NONCE})
+    assert response.status_code == 200
+    assert auth.proof_matches(TOKEN, NONCE, response.json())
+    assert not auth.proof_matches("another-token", NONCE, response.json())
+    assert TOKEN not in response.text
+
+
+@pytest.mark.parametrize("nonce", [None, "", "ab", "AB" * 32, "zz" * 32, "a" * 33, "ab" * 65])
+def test_proof_needs_a_hex_nonce(secured, nonce):
+    params = {} if nonce is None else {"nonce": nonce}
+    response = secured.get("/proof", params=params)
+    assert response.status_code == 400
+
+
+def test_other_methods_on_proof_need_the_token(secured):
+    assert secured.post("/proof", params={"nonce": NONCE}).status_code == 401
+
+
+def test_proves_token_tells_a_proof_a_wrong_one_and_an_older_server():
+    def server(status, body):
+        return lambda method, url: (status, body)
+
+    def proving(method, url):
+        nonce = url.split("nonce=", 1)[1]
+        return 200, {"proof": auth.token_proof(TOKEN.encode(), nonce)}
+
+    assert auth.proves_token(proving, "http://127.0.0.1:8000", TOKEN) is True
+    assert auth.proves_token(proving, "http://127.0.0.1:8000", "other") is False
+    assert auth.proves_token(server(200, {"proof": "0" * 64}), "u", TOKEN) is False
+    assert auth.proves_token(server(200, None), "u", TOKEN) is False
+    assert auth.proves_token(server(0, None), "u", TOKEN) is False  # nothing answers
+    assert auth.proves_token(server(404, {}), "u", TOKEN) is None  # MCP before /proof
+    assert auth.proves_token(server(401, {}), "u", TOKEN) is None  # REST before /proof
+
+
+def test_every_proof_request_has_a_new_nonce():
+    seen = []
+    auth.proves_token(lambda m, url: seen.append(url) or (0, None), "u", TOKEN)
+    auth.proves_token(lambda m, url: seen.append(url) or (0, None), "u", TOKEN)
+    assert seen[0] != seen[1]
+    assert all(auth.valid_nonce(url.split("nonce=", 1)[1]) for url in seen)

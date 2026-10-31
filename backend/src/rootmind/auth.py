@@ -6,17 +6,22 @@ holds the code they share:
 - :func:`resolve_token` reads a token from an environment variable or a file,
   and can generate the file on first use;
 - :func:`check_bearer` checks an ``Authorization`` header in constant time;
-- :func:`token_fingerprint` gives a short, non-reversible id for logs.
+- :func:`token_fingerprint` gives a short, non-reversible id for logs;
+- :func:`token_proof` and :func:`proof_matches` let a server prove that it
+  knows a token before a client sends it (``GET /proof``).
 
 Tokens are never logged or printed. Logs show only where a token came from and
 its fingerprint.
 """
 
 import hashlib
+import hmac
 import logging
 import os
 import secrets
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from .config import app_home
 
@@ -118,3 +123,70 @@ def check_bearer(header: str | None, expected: bytes) -> str | None:
     if not secrets.compare_digest(credentials.encode("utf-8"), expected):
         return INVALID_TOKEN
     return None
+
+
+# --- proof of the token -----------------------------------------------------------
+#
+# Before a client sends a token to 127.0.0.1:<port>, it asks the server there to
+# prove that it knows the token: ``GET /proof?nonce=<hex>`` answers
+# ``{"proof": HMAC-SHA256(token, PROOF_LABEL + nonce)}`` without a token. A
+# program that took the port does not know the token, so it cannot answer, and
+# the token never reaches it. This works where the TCP listener table does not
+# show the service's socket (seen on Windows) and is checked as well where it does.
+
+PROOF_PATH = "/proof"
+PROOF_LABEL = b"rootmind-token-proof\x00"
+_NONCE_HEX = frozenset("0123456789abcdef")
+
+
+def valid_nonce(nonce: object) -> bool:
+    """A nonce is 32 to 128 lowercase hex characters (16 to 64 random bytes)."""
+    return (
+        isinstance(nonce, str)
+        and 32 <= len(nonce) <= 128
+        and len(nonce) % 2 == 0
+        and set(nonce) <= _NONCE_HEX
+    )
+
+
+def token_proof(token: bytes, nonce: str) -> str:
+    """The proof that the holder of ``token`` answers for ``nonce`` (hex HMAC-SHA256)."""
+    return hmac.new(token, PROOF_LABEL + nonce.encode("ascii"), hashlib.sha256).hexdigest()
+
+
+def new_nonce() -> str:
+    return secrets.token_hex(32)
+
+
+def proof_matches(token: str, nonce: str, body: object) -> bool:
+    """Whether a ``/proof`` answer ``body`` proves ``token`` for ``nonce`` (constant time)."""
+    if not isinstance(body, dict) or not isinstance(body.get("proof"), str):
+        return False
+    expected = token_proof(token.strip().encode("utf-8"), nonce)
+    return secrets.compare_digest(
+        body["proof"].encode("ascii", "replace"), expected.encode("ascii")
+    )
+
+
+def proof_response(token: bytes, query_nonce: str | None) -> tuple[int, dict[str, str]]:
+    """The ``/proof`` answer: ``(200, {"proof": ...})`` or ``(400, {"detail": ...})``."""
+    if query_nonce is None or not valid_nonce(query_nonce):
+        return 400, {"detail": "nonce must be 32 to 128 lowercase hex characters"}
+    return 200, {"proof": token_proof(token, query_nonce)}
+
+
+def proves_token(http: Callable[[str, str], tuple[int, Any]], url: str, token: str) -> bool | None:
+    """Ask the server at ``url`` to prove that it knows ``token`` (``GET /proof``), without sending it.
+
+    Returns True for a valid proof, False for a server that cannot give one
+    (or nothing answering), and None when the answer cannot tell: 404 or 401,
+    which a RootMind server from before ``/proof`` gives. The caller then
+    falls back to the listener table.
+    """
+    nonce = new_nonce()
+    status, body = http("GET", f"{url}{PROOF_PATH}?nonce={nonce}")
+    if status == 200:
+        return proof_matches(token, nonce, body)
+    if status in (401, 404):
+        return None
+    return False

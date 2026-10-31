@@ -315,17 +315,25 @@ registered path lies under `%ProgramFiles%\RootMind Service\`. Removing the
 service is the uninstaller's job; the app sets it up only when the installer
 did not (Set up).
 
-**Token handoff.** Before the app reads the service's token, it checks that
-the process that listens on the service's port is the service itself: the
-process ID from the Service Control Manager must equal the owner of the
-listening socket. A program of another account (or forwarded from WSL) that
-takes over the port never receives the token. The check is repeated on every
+**Token handoff.** Before the app hands the service's token to its window,
+the server on the service's port must prove that it knows the token, without
+the token being sent: `GET /proof?nonce=<random>` answers
+`HMAC-SHA256(token, "rootmind-token-proof\0" + nonce)`, which only a holder of
+the token can compute, and a fresh nonce keeps an old answer from being
+replayed. A program of another account (or forwarded from WSL) that takes
+over the port cannot answer and never receives the token. The proof does not
+depend on the TCP listener table, which on some Windows systems does not list
+the service's socket at all. A service from before `/proof` (older than
+2.6.1) is checked as before: the process ID from the Service Control Manager
+must equal the owner of the listening socket. The check is repeated on every
 connection check (every 5 seconds, paused while a question is being
 answered). If the service crashes and another program binds its port before
 the next check, requests made in that window can still carry the token.
-`service install` makes the same check before its own test requests with the
-REST and MCP tokens: if another program listens on the port, it stops with
-exit code 7 and sends no token.
+`service install` and the `rootmind` command line make the same check before
+they send the REST or MCP token: if the program on the port cannot prove the
+token, `service install` stops with exit code 7 and sends no token.
+`/proof` answers only `GET` with a valid nonce; on the MCP server only on
+loopback, not on its network listener.
 
 **Approving the prompts.** Every program the app or the installer runs as
 administrator lies in a folder that only administrators can change: the
@@ -408,11 +416,13 @@ what the service runs, which is no more than the account can already do.
 `service.json` next to it names the copy for the Claude Desktop bundle and
 holds no secret.
 
-**Tokens and the listener check.** As on Windows, `service install` and the
-app send a token to the service only after checking that every socket that
-receives `127.0.0.1:<port>` belongs to the unit's main process (from
-`/proc/net/tcp`, `/proc/net/tcp6` and the process's `/proc/<pid>/fd`), so a
-program of another account that took the port first never receives a token.
+**Tokens and the proof.** As on Windows, `service install`, the app and the
+command line send a token to the service only after the server on the port
+proved that it knows it (`GET /proof`, above), so a program of another
+account that took the port first never receives a token. A service from
+before `/proof` is checked in the listener table instead: every socket that
+receives `127.0.0.1:<port>` must belong to the unit's main process (from
+`/proc/net/tcp`, `/proc/net/tcp6` and the process's `/proc/<pid>/fd`).
 
 **The unit files** carry no secret: the program path, the role and the port.
 `service install` changes only units that carry its marker and run a copy

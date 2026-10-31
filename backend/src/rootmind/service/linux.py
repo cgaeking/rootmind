@@ -63,6 +63,7 @@ from .common import (
     DEFAULT_CONFIG,
     Report,
     check_auth,
+    confirm_owner,
     database_in_service_folder,
     ensure_status_file,
     ensure_token,
@@ -294,15 +295,6 @@ def _wait_ready(env, manager, role: str, url: str, root: Path) -> int:
         env.sleep(0.5)
 
 
-def _check_listener(env, name: str, port: int, pid: int) -> None:
-    if not env.port_owned_by(port, pid):
-        raise ServiceCommandError(
-            ExitCode.HEALTH_CHECK_FAILED,
-            f"Another program listens on 127.0.0.1:{port}, not {name} (PID {pid}). "
-            "No token was sent to it. Stop that program, then run this command again.",
-        )
-
-
 def _start(manager, role: str, root: Path) -> None:
     name = UNIT_BY_ROLE[role]
     try:
@@ -318,7 +310,7 @@ def _start_and_check(env, manager, plan: _Plan, root: Path, tokens: dict[str, st
     name = UNIT_BY_ROLE[ROLE_BACKEND]
     _start(manager, ROLE_BACKEND, root)
     pid = _wait_ready(env, manager, ROLE_BACKEND, api_url, root)
-    _check_listener(env, name, plan.api_port, pid)
+    confirm_owner(env, name, api_url, plan.api_port, pid, tokens["rest"])
     check_auth(
         name,
         [
@@ -336,7 +328,7 @@ def _start_and_check(env, manager, plan: _Plan, root: Path, tokens: dict[str, st
     name = UNIT_BY_ROLE[ROLE_MCP]
     _start(manager, ROLE_MCP, root)
     pid = _wait_ready(env, manager, ROLE_MCP, mcp_url, root)
-    _check_listener(env, name, plan.mcp_port, pid)
+    confirm_owner(env, name, mcp_url, plan.mcp_port, pid, tokens["mcp"])
     check_auth(
         name,
         [

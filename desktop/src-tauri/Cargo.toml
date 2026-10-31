@@ -24,6 +24,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # One service change at a time, and the retries after a change (service.rs).
 tokio = { version = "1.53", features = ["sync", "time"] }
+# The /proof check before the token is handed out (proof.rs).
+sha2 = "0.10"
+getrandom = "0.3"
 
 # A second launch focuses the running window instead of opening a second one.
 # The plugin has no JavaScript API.
