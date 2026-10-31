@@ -286,8 +286,8 @@ das nur Administratoren ändern können.
   lesen kann.
 - Seine REST-API verlangt ein Token. Das Token liegt in
   `%ProgramData%\RootMind\data\rest_token.txt`, das nur dein Konto, SYSTEM und
-  Administratoren lesen können. Die App nutzt es erst, nachdem sie geprüft
-  hat, dass der Prozess des Dienstes selbst auf dem Port lauscht.
+  Administratoren lesen können. Die App nutzt es erst, nachdem der Dienst auf
+  dem Port bewiesen hat, dass er das Token kennt (ohne dass es gesendet wird).
 - Ein zweiter Dienst, `RootMind-MCP-HTTP`, stellt MCP über HTTP auf 127.0.0.1
   mit einem eigenen Bearer-Token bereit (siehe
   [MCP-Clients verbinden](#mcp-clients-verbinden)). Er ist standardmäßig
@@ -308,8 +308,8 @@ nichts daran braucht root oder eine Bestätigung:
   eigene Dienste (auf anderen Ports), wenn sie RootMind starten.
 - Sein REST-Token liegt in `~/.local/share/rootmind/data/rest_token.txt`, das
   nur dein Konto lesen kann (Modus 0600, in Ordnern mit Modus 0700). Die App
-  nutzt es erst, nachdem sie geprüft hat, dass der eigene Prozess der Unit auf
-  dem Port lauscht.
+  nutzt es erst, nachdem der Dienst auf dem Port bewiesen hat, dass er das
+  Token kennt.
 - MCP über HTTP und der Fernzugriff funktionieren wie unter Windows;
   **MCP über HTTP anbieten** fügt `rootmind-mcp-http.service` ohne Rückfrage
   hinzu oder entfernt ihn.
@@ -753,8 +753,8 @@ dem Backend-Archiv rufst du das Backend selbst auf: `rootmind-backend` (Linux:
 kennt `--json` für Skripte und `--help`.
 
 - **Wie er den Dienst findet.** Wie die App fragt er `service status` nach
-  dem Port und der Token-Datei, prüft, dass der Prozess des Dienstes selbst
-  auf dem Port lauscht, und schickt erst dann das REST-Token. Das Token steht
+  dem Port und der Token-Datei, lässt den Dienst auf dem Port beweisen, dass
+  er das Token kennt, und schickt erst dann das REST-Token. Das Token steht
   in `data/rest_token.txt` im Datenordner, den nur das Konto lesen kann, das
   den Dienst eingerichtet hat (unter Windows auch SYSTEM und Administratoren
   aus einer Eingabeaufforderung als Administrator). Von einem anderen Konto

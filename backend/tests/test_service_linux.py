@@ -13,11 +13,12 @@ import json
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
 
+from rootmind.auth import PROOF_PATH, token_proof
 from rootmind.service import ExitCode, cli, linux, linux_layout, systemd
 
 VERSION = "2.3.0"
@@ -207,11 +208,20 @@ class FakeLinuxEnv:
     def http(self, method, url, *, token=None, body=None):
         parts = urlsplit(url)
         self.http_log.append((method, parts.path, token is not None))
+        if parts.port in self.squatters:
+            # Another program answers on the port, but cannot prove the token.
+            if parts.path == PROOF_PATH:
+                return 200, {"proof": "0" * 64}
+            return 200, {"status": "healthy"}
         name = self._unit_on(parts.port)
         if name is None or name in self.unhealthy:
             return 0, None
         if parts.path == "/health":
             return 200, {"status": "healthy"}
+        if parts.path == PROOF_PATH:
+            file = "rest_token.txt" if name == BACKEND else "api_token.txt"
+            known = (self.root / "data" / file).read_text().strip().encode()
+            return 200, {"proof": token_proof(known, parse_qs(parts.query)["nonce"][0])}
         if name == BACKEND:
             expected = (self.root / "data" / "rest_token.txt").read_text().strip()
             if parts.path == "/":
@@ -326,8 +336,9 @@ def test_install_checks_health_listener_and_authentication(env):
     assert ("GET", "/health", False) in env.http_log
     assert ("GET", "/status", False) in env.http_log and ("GET", "/status", True) in env.http_log
     assert ("POST", "/mcp", False) in env.http_log and ("POST", "/mcp", True) in env.http_log
-    assert ("port_owned_by", 8000, env.manager.active[BACKEND]) in env.events
-    assert ("port_owned_by", 3000, env.manager.active[MCP]) in env.events
+    # Each service proves its token before the token is sent.
+    assert [p for _m, p, _t in env.http_log].count(PROOF_PATH) == 2
+    assert ("GET", PROOF_PATH, False) in env.http_log
 
 
 def test_no_mcp_http(env):
@@ -549,7 +560,7 @@ def test_no_token_goes_to_a_squatter(env):
     env.squatters[8000] = 666
     code, _out, err = run_install(env)
     assert code == ExitCode.HEALTH_CHECK_FAILED
-    assert "Another program listens on 127.0.0.1:8000" in err
+    assert "127.0.0.1:8000 could not prove that it is" in err
     assert not any(token for _m, _p, token in env.http_log)
 
 

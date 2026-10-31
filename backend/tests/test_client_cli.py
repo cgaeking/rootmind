@@ -14,12 +14,14 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
 from fake_rest import FAKE_REST_TOKEN, STORED_KEY, FakeRestServer
 from helpers import TEST_API_KEY, rest_client
 
+from rootmind.auth import token_proof
 from rootmind.client import commands, discovery
 from rootmind.client.rest import ClientError, ClientExit, RestClient, _detail, check_url
 from rootmind.main import build_parser, main
@@ -272,6 +274,47 @@ def test_no_token_after_the_port_changed_hands_while_waiting(
     polls = [r for r in fake.requests if r.path == "/index/status"]
     assert len(polls) == 2  # nothing after the port changed hands
     assert all(r.authorized for r in fake.requests)
+
+
+class ProvingProbe(FakeProbe):
+    """A machine whose service answers ``GET /proof`` (with ``proof_token``; None: a wrong proof)."""
+
+    def __init__(self, *args: Any, proof_token: str | None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.proof_token = proof_token
+        self.proofs: list[str] = []
+
+    def http(self, method: str, url: str) -> tuple[int, Any]:
+        self.proofs.append(url)
+        if self.proof_token is None:
+            return 200, {"proof": "0" * 64}
+        nonce = parse_qs(urlsplit(url).query)["nonce"][0]
+        return 200, {"proof": token_proof(self.proof_token.encode(), nonce)}
+
+
+def test_the_service_proves_the_token_where_the_listener_table_misses_it(
+    capsys, fake, token_file, use_probe
+):
+    # Some Windows systems list no listener for the service's socket: the
+    # proof is enough, before discovery and before every request with the token.
+    probe = use_probe(
+        ProvingProbe(fake.port, token_file, owner_pid=999, proof_token=FAKE_REST_TOKEN)
+    )
+    code, _out, err = cli(capsys, "folders", "list")
+    assert code == 0, err
+    assert fake.requests and all(r.authorized for r in fake.requests)
+    assert len(probe.proofs) == len(fake.requests) + 1
+    assert probe.ownership_checks == []
+    assert all(url.startswith(f"http://127.0.0.1:{fake.port}/proof?nonce=") for url in probe.proofs)
+
+
+def test_no_token_goes_to_a_program_that_cannot_prove_it(capsys, fake, token_file, use_probe):
+    # Even where the listener table names the service's PID.
+    use_probe(ProvingProbe(fake.port, token_file, proof_token=None))
+    code, _out, err = cli(capsys, "folders", "list")
+    assert code == ClientExit.NO_SERVICE
+    assert "no token was sent" in err
+    assert fake.requests == []
 
 
 def test_no_token_without_a_service_pid(capsys, fake, token_file, use_probe):

@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from helpers import TEST_TOKEN
 
-from rootmind import mcp_http
+from rootmind import auth, mcp_http
 from rootmind.mcp_http import TokenError, create_app, resolve_token
 
 AUTH = {"Authorization": f"Bearer {TEST_TOKEN}"}
@@ -86,6 +86,14 @@ def test_health_needs_no_auth(mcp):
     response = mcp.get("/health")
     assert response.status_code == 200
     assert response.json()["server"]["name"] == "rootmind"
+
+
+def test_proof_needs_no_auth_and_proves_the_token(mcp):
+    nonce = "cd" * 32
+    response = mcp.get("/proof", params={"nonce": nonce})
+    assert response.status_code == 200
+    assert auth.proof_matches(TEST_TOKEN, nonce, response.json())
+    assert mcp.get("/proof", params={"nonce": "x"}).status_code == 400
 
 
 def test_sse_endpoints_require_auth(mcp):

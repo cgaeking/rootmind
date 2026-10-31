@@ -13,11 +13,12 @@ import ntpath
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
 
+from rootmind.auth import PROOF_PATH, token_proof
 from rootmind.service import (
     BACKEND_SERVICE,
     MCP_SERVICE,
@@ -137,6 +138,7 @@ class FakeEnv:
         self.folders = 0
         self.clock = 0.0
         self.squatters: dict[int, int] = {}  # port -> PID of another program listening there
+        self.without_proof = False  # services from before GET /proof (404)
         self.owner_error: OSError | None = None
         self.source_problems: list[str] = []
 
@@ -240,11 +242,22 @@ class FakeEnv:
     def http(self, method, url, *, token=None, body=None):
         parts = urlsplit(url)
         self.http_log.append((method, parts.path, token is not None))
+        if parts.port in self.squatters:
+            # Another program answers on the port, but cannot prove the token.
+            if parts.path == PROOF_PATH:
+                return 200, {"proof": "0" * 64}
+            return 200, {"status": "healthy"}
         name = self._service_on(parts.port)
         if name is None or name in self.unhealthy:
             return 0, None
         if parts.path == "/health":
             return 200, {"status": "healthy"}
+        if parts.path == PROOF_PATH:
+            if self.without_proof:
+                return 404, {"detail": "Not Found"}
+            file = "rest_token.txt" if name == BACKEND_SERVICE else "api_token.txt"
+            known = (self.root / "data" / file).read_text().strip().encode()
+            return 200, {"proof": token_proof(known, parse_qs(parts.query)["nonce"][0])}
         if name == BACKEND_SERVICE:
             expected = (self.root / "data" / "rest_token.txt").read_text().strip()
             if parts.path == "/":
@@ -891,7 +904,26 @@ def test_start_failure(env):
     assert "did not start" in err
 
 
-def test_tokens_go_only_to_the_service_process(env):
+def test_the_services_prove_the_tokens_before_they_are_sent(env):
+    code, _out, err = run_install(env, mcp=True)
+    assert code == 0, err
+    proofs = [i for i, (_m, path, _t) in enumerate(env.http_log) if path == PROOF_PATH]
+    with_token = [i for i, (_m, _p, sent) in enumerate(env.http_log) if sent]
+    assert len(proofs) == 2
+    assert proofs[0] < with_token[0]
+    assert ("GET", PROOF_PATH, False) in env.http_log  # the proof request carries no token
+    # The proof is enough: the listener table is not needed.
+    assert not any(event[0] == "port_owned_by" for event in env.events)
+
+
+def test_the_proof_works_where_the_listener_table_shows_nothing(env):
+    env.port_owned_by = lambda port, pid: False  # the table misses the service's socket
+    code, _out, err = run_install(env, mcp=True)
+    assert code == 0, err
+
+
+def test_a_service_without_proof_is_checked_in_the_listener_table(env):
+    env.without_proof = True
     code, _out, err = run_install(env, mcp=True)
     assert code == 0, err
     assert ("port_owned_by", 8000, 4321) in env.events
@@ -902,7 +934,7 @@ def test_no_token_reaches_another_program_on_the_rest_port(env):
     env.squatters = {8000: 666}
     code, _out, err = run_install(env, mcp=True)
     assert code == ExitCode.HEALTH_CHECK_FAILED
-    assert "Another program listens on 127.0.0.1:8000" in err
+    assert "127.0.0.1:8000 could not prove that it is RootMind-Backend" in err
     assert "No token was sent" in err
     assert not any(with_token for _method, _path, with_token in env.http_log)
     assert BACKEND_SERVICE in env.manager.services  # kept for its log

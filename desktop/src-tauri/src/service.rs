@@ -56,6 +56,7 @@ use crate::app;
 #[cfg_attr(target_os = "linux", allow(unused_imports))]
 use crate::args;
 use crate::imagepath::{self, ImagePath, Role};
+use crate::proof::{self, Proof};
 use crate::tcptable;
 
 pub const BACKEND_SERVICE: &str = "RootMind-Backend";
@@ -679,20 +680,30 @@ fn collect_info() -> ServiceInfo {
     )
 }
 
-/// The listener check, then the token.
+/// The service's checks, then the token, then the proof that the server on
+/// the port knows it.
 fn connect() -> ServiceConnect {
     let backend = inspect(BACKEND_SERVICE, Role::Backend);
     let pid = backend.status.map_or(0, |status| status.pid);
-    connect_with(&backend, || platform::listeners_for(pid), rest_token)
+    connect_with(
+        &backend,
+        || platform::listeners_for(pid),
+        rest_token,
+        proof::ask,
+    )
 }
 
-/// The order that keeps the token safe: our service, running, and its own
-/// process listening on its port; only then is the token read. A listener
-/// table that cannot be read counts as a mismatch.
+/// The order that keeps the token safe: our service and running; then the
+/// token is read, and handed out only when the server on the port proves
+/// that it knows it (proof.rs). The token itself is never sent for that. A
+/// service from before /proof is checked in the listener table instead: its
+/// own process must listen on its port, and a table that cannot be read
+/// counts as a mismatch.
 pub fn connect_with(
     backend: &ServiceView,
     listeners: impl FnOnce() -> io::Result<Vec<tcptable::Listener>>,
     read_token: impl FnOnce() -> TokenRead,
+    prove: impl FnOnce(u16, &str) -> Proof,
 ) -> ServiceConnect {
     let Some(image) = &backend.image else {
         return ServiceConnect::failed(ConnectFailure::NotInstalled);
@@ -701,18 +712,20 @@ pub fn connect_with(
         Some(status) if SvcState::from_scm(status.state) == SvcState::Running => status.pid,
         _ => return ServiceConnect::failed(ConnectFailure::NotRunning),
     };
-    let owned = listeners()
-        .map(|table| tcptable::port_owned_by(&table, image.port, pid))
-        .unwrap_or(false);
+    let TokenRead::Readable(token) = read_token() else {
+        return ServiceConnect::failed(ConnectFailure::TokenUnreadable);
+    };
+    let owned = match prove(image.port, &token) {
+        Proof::Proved => true,
+        Proof::Failed => false,
+        Proof::Unknown => listeners()
+            .map(|table| tcptable::port_owned_by(&table, image.port, pid))
+            .unwrap_or(false),
+    };
     if !owned {
         return ServiceConnect::failed(ConnectFailure::ListenerMismatch);
     }
-    match read_token() {
-        TokenRead::Readable(token) => {
-            ServiceConnect::connected(format!("http://127.0.0.1:{}", image.port), token)
-        }
-        _ => ServiceConnect::failed(ConnectFailure::TokenUnreadable),
-    }
+    ServiceConnect::connected(format!("http://127.0.0.1:{}", image.port), token)
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
@@ -1155,7 +1168,7 @@ mod tests {
         assert!(build_info(true, &backend, &none, Some(&lower), &token, true).token_readable);
     }
 
-    // connect_with: the token is read only after every check passed.
+    // connect_with: the token is handed out only after every check passed.
 
     fn listener(addr: [u8; 4], port: u16, pid: u32) -> tcptable::Listener {
         tcptable::Listener {
@@ -1165,21 +1178,32 @@ mod tests {
         }
     }
 
+    /// Connect with `proof` as the answer of the server on the port; also
+    /// whether the token file was read and the table consulted.
     fn try_connect(
         backend: &ServiceView,
         table: io::Result<Vec<tcptable::Listener>>,
         token: TokenRead,
-    ) -> (ServiceConnect, bool) {
+        proof: Proof,
+    ) -> (ServiceConnect, bool, bool) {
         let read = std::cell::Cell::new(false);
+        let consulted = std::cell::Cell::new(false);
         let result = connect_with(
             backend,
-            || table,
+            || {
+                consulted.set(true);
+                table
+            },
             || {
                 read.set(true);
                 token
             },
+            |port, _token| {
+                assert_eq!(port, 8000);
+                proof
+            },
         );
-        (result, read.get())
+        (result, read.get(), consulted.get())
     }
 
     fn failure(result: &ServiceConnect) -> Option<ConnectFailure> {
@@ -1190,13 +1214,14 @@ mod tests {
     }
 
     #[test]
-    fn connect_reads_the_token_only_after_the_checks() {
+    fn connect_hands_out_the_token_only_after_the_proof() {
         let ours = view(Some(GOLDEN_BACKEND), Some(RUNNING), Role::Backend);
         let readable = || TokenRead::Readable("s3cret".into());
         let own = || Ok(vec![listener([127, 0, 0, 1], 8000, 4242)]);
 
-        let (result, read) = try_connect(&ours, own(), readable());
-        assert!(read);
+        // The proof is enough, also where the table misses the service's socket.
+        let (result, _, consulted) = try_connect(&ours, Ok(vec![]), readable(), Proof::Proved);
+        assert!(!consulted);
         match result {
             ServiceConnect::Connected { url, token, .. } => {
                 assert_eq!(url, "http://127.0.0.1:8000");
@@ -1205,22 +1230,21 @@ mod tests {
             ServiceConnect::Failed { reason, .. } => panic!("{reason:?}"),
         }
 
-        let cases: Vec<(
-            &str,
-            ServiceView,
-            io::Result<Vec<tcptable::Listener>>,
-            ConnectFailure,
-        )> = vec![
+        // A server that cannot prove the token never gets it, even where the
+        // table names the service's PID.
+        let (result, _, _) = try_connect(&ours, own(), readable(), Proof::Failed);
+        assert_eq!(failure(&result), Some(ConnectFailure::ListenerMismatch));
+
+        // Before the token file is read.
+        let early: Vec<(&str, ServiceView, ConnectFailure)> = vec![
             (
                 "not installed",
                 ServiceView::default(),
-                own(),
                 ConnectFailure::NotInstalled,
             ),
             (
                 "foreign service",
                 view(Some(r#""C:\x\other.exe""#), Some(RUNNING), Role::Backend),
-                own(),
                 ConnectFailure::NotInstalled,
             ),
             (
@@ -1233,7 +1257,6 @@ mod tests {
                     }),
                     Role::Backend,
                 ),
-                own(),
                 ConnectFailure::NotRunning,
             ),
             (
@@ -1246,47 +1269,64 @@ mod tests {
                     }),
                     Role::Backend,
                 ),
-                own(),
                 ConnectFailure::NotRunning,
             ),
+        ];
+        for (what, backend, expected) in early {
+            let (result, read, _) = try_connect(&backend, own(), readable(), Proof::Proved);
+            assert_eq!(failure(&result), Some(expected), "{what}");
+            assert!(
+                !read,
+                "{what}: the token was read before the service checks passed"
+            );
+        }
+
+        for token in [TokenRead::Missing, TokenRead::Denied, TokenRead::Invalid] {
+            let (result, read, _) = try_connect(&ours, own(), token, Proof::Proved);
+            assert!(read);
+            assert_eq!(failure(&result), Some(ConnectFailure::TokenUnreadable));
+        }
+    }
+
+    #[test]
+    fn a_service_without_proof_is_checked_in_the_listener_table() {
+        let ours = view(Some(GOLDEN_BACKEND), Some(RUNNING), Role::Backend);
+        let readable = || TokenRead::Readable("s3cret".into());
+
+        let (result, _, consulted) = try_connect(
+            &ours,
+            Ok(vec![listener([127, 0, 0, 1], 8000, 4242)]),
+            readable(),
+            Proof::Unknown,
+        );
+        assert!(consulted);
+        assert_eq!(failure(&result), None);
+
+        let cases: Vec<(&str, io::Result<Vec<tcptable::Listener>>)> = vec![
             (
                 "another process on the port",
-                ours.clone(),
                 Ok(vec![listener([127, 0, 0, 1], 8000, 666)]),
-                ConnectFailure::ListenerMismatch,
             ),
             (
                 "a wildcard listener of another process too",
-                ours.clone(),
                 Ok(vec![
                     listener([127, 0, 0, 1], 8000, 4242),
                     listener([0, 0, 0, 0], 8000, 666),
                 ]),
-                ConnectFailure::ListenerMismatch,
             ),
-            (
-                "nobody listens",
-                ours.clone(),
-                Ok(vec![]),
-                ConnectFailure::ListenerMismatch,
-            ),
+            ("nobody listens", Ok(vec![])),
             (
                 "the table cannot be read",
-                ours.clone(),
                 Err(io::Error::other("no table")),
-                ConnectFailure::ListenerMismatch,
             ),
         ];
-        for (what, backend, table, expected) in cases {
-            let (result, read) = try_connect(&backend, table, readable());
-            assert_eq!(failure(&result), Some(expected), "{what}");
-            assert!(!read, "{what}: the token was read before the checks passed");
-        }
-
-        for token in [TokenRead::Missing, TokenRead::Denied, TokenRead::Invalid] {
-            let (result, read) = try_connect(&ours, own(), token);
-            assert!(read);
-            assert_eq!(failure(&result), Some(ConnectFailure::TokenUnreadable));
+        for (what, table) in cases {
+            let (result, _, _) = try_connect(&ours, table, readable(), Proof::Unknown);
+            assert_eq!(
+                failure(&result),
+                Some(ConnectFailure::ListenerMismatch),
+                "{what}"
+            );
         }
     }
 
@@ -1603,16 +1643,16 @@ ExecStart=/bin/true
             Role::Backend,
         );
         let own = || Ok(vec![listener([127, 0, 0, 1], 8000, 4242)]);
-        let (result, read) = try_connect(&backend, own(), TokenRead::Readable("t".into()));
-        assert!(read);
+        // A service from before /proof: checked in the listener table.
+        let token = || TokenRead::Readable("t".into());
+        let (result, _, _) = try_connect(&backend, own(), token(), Proof::Unknown);
         assert!(matches!(result, ServiceConnect::Connected { .. }));
         // A socket of another process shows PID 0 on Linux (procnet.rs).
         let other = Ok(vec![
             listener([127, 0, 0, 1], 8000, 4242),
             listener([0, 0, 0, 0], 8000, 0),
         ]);
-        let (result, read) = try_connect(&backend, other, TokenRead::Readable("t".into()));
-        assert!(!read);
+        let (result, _, _) = try_connect(&backend, other, token(), Proof::Unknown);
         assert_eq!(failure(&result), Some(ConnectFailure::ListenerMismatch));
     }
 

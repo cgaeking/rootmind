@@ -28,6 +28,7 @@ unchanged. A ``--config`` given before them is passed on to ``mcp`` and
 """
 
 import argparse
+import errno
 import importlib
 import json
 import logging
@@ -158,11 +159,24 @@ def resolve_api_token(require_token: bool) -> str | None:
 # --- serving ---------------------------------------------------------------------
 
 
+# WSAEADDRINUSE, and WSAEACCES, which Windows gives when another program holds
+# the port with SO_EXCLUSIVEADDRUSE (or a development server binds it).
+_WINDOWS_PORT_TAKEN = (10048, 10013)
+
+
+class PortTakenError(OSError):
+    """Another program already uses the port; the message says so in plain words."""
+
+
 def bind_socket(host: str, port: int) -> socket.socket:
     """Create the API's socket, bound to ``host:port`` (port 0: any free port).
 
     On Windows the socket is exclusive (``SO_EXCLUSIVEADDRUSE``), so no other
     process can bind the same address while it is open.
+
+    Raises:
+        PortTakenError: another program already uses ``host:port``.
+        OSError: any other reason the socket cannot be bound.
     """
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     sock = socket.socket(family, socket.SOCK_STREAM)
@@ -172,6 +186,15 @@ def bind_socket(host: str, port: int) -> socket.socket:
         else:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
+    except OSError as e:
+        sock.close()
+        if getattr(e, "winerror", None) in _WINDOWS_PORT_TAKEN or e.errno == errno.EADDRINUSE:
+            raise PortTakenError(
+                e.errno,
+                f"Port {port} on {host} is already used by another program. Stop that "
+                "program, or choose another port in RootMind's settings.",
+            ) from e
+        raise
     except BaseException:
         sock.close()
         raise

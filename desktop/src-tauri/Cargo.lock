@@ -2721,9 +2721,11 @@ dependencies = [
 name = "rootmind-desktop"
 version = "2.6.0"
 dependencies = [
+ "getrandom 0.3.4",
  "glob",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

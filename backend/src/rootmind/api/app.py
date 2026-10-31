@@ -30,6 +30,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,7 +41,7 @@ from starlette.websockets import WebSocketClose
 
 from .. import __version__
 from ..access import UNRESTRICTED, FolderAccess
-from ..auth import TokenError, check_bearer
+from ..auth import PROOF_PATH, TokenError, check_bearer, proof_response
 from ..config import AppConfig, app_home, get_config
 from ..connectors import LocalConnector
 from ..database import DocumentRepository
@@ -363,6 +364,8 @@ class BearerAuthMiddleware:
     """Pure ASGI middleware: every request needs ``Authorization: Bearer <token>``.
 
     - HTTP: ``GET``/``HEAD`` on ``/`` and ``/health`` pass without a token.
+      ``GET /proof?nonce=...`` is answered here, without a token, with the
+      proof that this server knows it (:func:`rootmind.auth.token_proof`).
       Everything else without the right token gets 401 with
       ``WWW-Authenticate: Bearer``.
     - WebSocket: the handshake is refused (close code 1008) without the token.
@@ -380,6 +383,13 @@ class BearerAuthMiddleware:
         if scope["type"] == "http":
             if scope["method"] in OPEN_METHODS and scope["path"] in OPEN_PATHS:
                 await self.app(scope, receive, send)
+                return
+            if scope["method"] == "GET" and scope["path"] == PROOF_PATH:
+                # Answered here, where the token is: proof that this server
+                # knows it, before a client sends it (see rootmind.auth).
+                nonce = parse_qs(scope.get("query_string", b"").decode("latin-1")).get("nonce")
+                status, body = proof_response(self._expected, nonce[0] if nonce else None)
+                await JSONResponse(body, status_code=status)(scope, receive, send)
                 return
             reason = check_bearer(_authorization_header(scope), self._expected)
             if reason is None:

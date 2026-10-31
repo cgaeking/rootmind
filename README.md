@@ -262,8 +262,8 @@ only administrators can change.
   screen marks a folder it cannot read.
 - Its REST API requires a token. The token is in
   `%ProgramData%\RootMind\data\rest_token.txt`, which only your account,
-  SYSTEM and administrators can read. The app uses it only after checking that
-  the service's own process listens on the port.
+  SYSTEM and administrators can read. The app uses it only after the service
+  on the port proved that it knows the token (without the token being sent).
 - A second service, `RootMind-MCP-HTTP`, serves MCP over HTTP on 127.0.0.1
   with its own bearer token (see [Connect MCP clients](#connect-mcp-clients)).
   It is on by default; the checkbox **Serve MCP over HTTP** turns it off and
@@ -283,8 +283,7 @@ needs root or an approval:
   their own (on other ports) when they start RootMind.
 - Its REST token is in `~/.local/share/rootmind/data/rest_token.txt`, which
   only your account can read (mode 0600, in folders of mode 0700). The app
-  uses it only after checking that the unit's own process listens on the
-  port.
+  uses it only after the service on the port proved that it knows the token.
 - MCP over HTTP and remote access work as on Windows; **Serve MCP over HTTP**
   adds or removes `rootmind-mcp-http.service` without a prompt.
 - `systemctl --user status rootmind-backend` and
@@ -696,8 +695,8 @@ backend archive, call the backend itself: `rootmind-backend` (Linux:
 Every command takes `--json` for scripts and `--help`.
 
 - **How it finds the service.** Like the app, it asks `service status` for
-  the port and the token file, checks that the service's own process listens
-  on that port, and only then sends the REST token. The token is read from
+  the port and the token file, lets the service on that port prove that it
+  knows the token, and only then sends the REST token. The token is read from
   `data/rest_token.txt` in the data folder, which only the account that set
   up the service can read (on Windows also SYSTEM and administrators from an
   elevated prompt). From another account, or with `sudo`, the commands stop

@@ -4,12 +4,18 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Added
+
+- `GET /proof?nonce=<hex>` on the REST API and on MCP over HTTP (loopback only) ([#70](https://github.com/cgaeking/rootmind/issues/70)): answers, without a token, `HMAC-SHA256(token, "rootmind-token-proof\0" + nonce)`, so a client can check that the server on a port knows the token before it sends it.
+
 ### Changed
 
 - Desktop: the agent's steps open and close with a click on their summary, also while the question runs ("Working: 7 steps, 0:42"). They start closed; while the question runs, the current step with its timer stays visible below the summary. Each step takes one line; a long search term or file list is cut off and shows in full on hover.
 
 ### Fixed
 
+- Windows: `service install` (and so the installer, "error 7") and the app refused a running RootMind service with "Another program listens on 127.0.0.1:8000" on systems whose TCP listener table does not list the service's socket ([#70](https://github.com/cgaeking/rootmind/issues/70)). `service install`, the app and the `rootmind` command line now let the service prove that it knows its token (`GET /proof`) before they send it, instead of looking up the port's owner in that table; a program that took the port cannot give the proof and still never receives a token. A service from before this release is checked in the table as before.
+- A service whose port another program already uses (for example a development server on port 3000) now logs "Port 3000 on 127.0.0.1 is already used by another program" instead of a `WinError 10013` traceback ([#70](https://github.com/cgaeking/rootmind/issues/70)); `rootmind api` says the same. The service manager still restarts the service, so it starts once the port is free.
 - Desktop: the chat scrolls along while new steps of a question come in, as long as it is scrolled to the end; scrolled up to read, it stays where it is.
 
 ## [2.6.0] - 2026-10-30

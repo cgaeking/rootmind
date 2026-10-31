@@ -5,10 +5,11 @@ The same steps as the desktop app and the Claude Desktop bundle:
 1. ``service status`` (:func:`rootmind.service.install.status` on Windows,
    :func:`rootmind.service.linux.status` on Linux) names the REST port and the
    token file, without administrator rights;
-2. the service must be running, and the socket on ``127.0.0.1:<port>`` must
-   belong to the service's own process (the PID from the Service Control
-   Manager or systemd). Otherwise another program could have taken the port
-   and would receive the token;
+2. the service must be running, and the server on ``127.0.0.1:<port>`` must
+   prove that it knows the token (``GET /proof``, see :mod:`rootmind.auth`);
+   a service from before ``/proof`` must own the socket (the PID from the
+   Service Control Manager or systemd). Otherwise another program could have
+   taken the port and would receive the token;
 3. the token is read from its file: on Windows
    ``%ProgramData%\\RootMind\\data\\rest_token.txt`` (readable by the account
    that installed RootMind, SYSTEM and administrators), on Linux
@@ -28,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from ..auth import proves_token
 from .rest import ClientError, ClientExit, check_url
 
 URL_ENV = "RLM_URL"
@@ -45,6 +47,9 @@ class ServiceProbe(Protocol):
     def backend_pid(self) -> int | None: ...
 
     def port_owned_by(self, port: int, pid: int) -> bool: ...
+
+    # Optional: ``http(method, url) -> (status, JSON body)`` without a token,
+    # for the ``/proof`` check. A probe without it uses the listener table only.
 
 
 @dataclass
@@ -91,6 +96,10 @@ class _MachineProbe:
 
     def port_owned_by(self, port: int, pid: int) -> bool:
         return bool(self._env.port_owned_by(port, pid))
+
+    def http(self, method: str, url: str) -> tuple[int, Any]:
+        """One request without a token (the ``/proof`` check)."""
+        return self._env.http(method, url)
 
 
 def default_probe() -> ServiceProbe | None:
@@ -255,18 +264,24 @@ def _target(
             pid = probe.backend_pid()
         except Exception:  # the service manager cannot be asked
             pid = None
-        if not pid or not probe.port_owned_by(port, pid):
+
+        def still_owned(owner: int | None = pid, known: str = token) -> bool:
+            # The service proves that it knows the token, before every request
+            # that carries it. A service from before /proof: its process still
+            # listens on the port (a restarted service has a new PID).
+            http = getattr(probe, "http", None)
+            proved = proves_token(http, service_url, known) if http is not None else None
+            if proved is not None:
+                return proved
+            return bool(owner) and probe.port_owned_by(port, owner)
+
+        if not still_owned():
             raise ClientError(
-                f"cannot confirm that the RootMind service itself listens on 127.0.0.1:{port} "
+                f"cannot confirm that the RootMind service itself answers on 127.0.0.1:{port} "
                 "(another program may have taken the port); no token was sent. "
                 + _stopped_hint(probe.platform),
                 ClientExit.NO_SERVICE,
             )
-
-        def still_owned(owner: int = pid) -> bool:
-            # Still that process's port (a restarted service has a new PID).
-            return probe.port_owned_by(port, owner)
-
         verify = still_owned
 
     return Target(url=service_url, token=token, discovered=True, service=info, verify=verify)

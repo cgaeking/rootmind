@@ -90,6 +90,7 @@ from . import (
 )
 from .common import DEFAULT_CONFIG, Report, database_in_service_folder, read_token_file, status_json
 from .common import check_auth as _check_auth
+from .common import confirm_owner as _confirm_owner
 from .common import ensure_status_file as _ensure_status_file
 from .common import ensure_token as _ensure_token
 from .common import mcp_initialize as _mcp_initialize
@@ -424,20 +425,6 @@ def _wait_ready(env, manager, name: str, url: str, root: Path, log_folder: str) 
         env.sleep(0.5)
 
 
-def _check_listener(env, name: str, port: int, pid: int) -> None:
-    """Refuse to send a token unless the service's own process listens on ``port``.
-
-    Another program (of any account, or WSL port forwarding) that bound the
-    port while the service was stopped would otherwise receive the token.
-    """
-    if not env.port_owned_by(port, pid):
-        raise ServiceCommandError(
-            ExitCode.HEALTH_CHECK_FAILED,
-            f"Another program listens on 127.0.0.1:{port}, not {name} (PID {pid}). "
-            "No token was sent to it. Stop that program, then run this command again.",
-        )
-
-
 def _start_and_check(env, manager, plan: _Plan, root: Path, tokens: dict[str, str]) -> None:
     api_url = f"http://127.0.0.1:{plan.api_port}"
     try:
@@ -447,7 +434,7 @@ def _start_and_check(env, manager, plan: _Plan, root: Path, tokens: dict[str, st
             ExitCode.HEALTH_CHECK_FAILED, f"{BACKEND_SERVICE} did not start: {e}"
         ) from None
     pid = _wait_ready(env, manager, BACKEND_SERVICE, api_url, root, "backend")
-    _check_listener(env, BACKEND_SERVICE, plan.api_port, pid)
+    _confirm_owner(env, BACKEND_SERVICE, api_url, plan.api_port, pid, tokens["rest"])
     _check_auth(
         BACKEND_SERVICE,
         [
@@ -469,7 +456,7 @@ def _start_and_check(env, manager, plan: _Plan, root: Path, tokens: dict[str, st
             ExitCode.HEALTH_CHECK_FAILED, f"{MCP_SERVICE} did not start: {e}"
         ) from None
     pid = _wait_ready(env, manager, MCP_SERVICE, mcp_url, root, "mcp-http")
-    _check_listener(env, MCP_SERVICE, plan.mcp_port, pid)
+    _confirm_owner(env, MCP_SERVICE, mcp_url, plan.mcp_port, pid, tokens["mcp"])
     _check_auth(
         MCP_SERVICE,
         [

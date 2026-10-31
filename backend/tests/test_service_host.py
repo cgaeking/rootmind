@@ -335,7 +335,7 @@ def test_a_busy_port_is_not_a_config_error(home):
             user_sid="S-1-5-21-1",
             access_factory=access_factory([]),
         )
-        with pytest.raises(OSError):
+        with pytest.raises(host.StartFailedError, match="already used by another program"):
             runner.prepare()
     finally:
         blocker.close()
