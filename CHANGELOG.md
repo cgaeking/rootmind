@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-10-31
+
 ### Added
 
 - `GET /proof?nonce=<hex>` on the REST API and on MCP over HTTP (loopback only) ([#70](https://github.com/cgaeking/rootmind/issues/70)): answers, without a token, `HMAC-SHA256(token, "rootmind-token-proof\0" + nonce)`, so a client can check that the server on a port knows the token before it sends it.
