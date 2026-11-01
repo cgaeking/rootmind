@@ -142,3 +142,35 @@
     transform: translateX(0);
   }
 }
+
+/* A request in flight in this conversation (state/runs.ts). */
+.convRunning {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--accent);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: convSpin 0.9s linear infinite;
+}
+
+/* Answered while another conversation was on screen. */
+.convUnread {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+@keyframes convSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .convRunning {
+    animation: none;
+  }
+}

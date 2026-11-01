@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 
 import pytest
 from fakes import FakeAnthropic, anthropic_response, text, tool_use
@@ -158,3 +159,51 @@ async def test_closing_the_stream_cancels_the_question(app_config, indexed_repo)
 
     await asyncio.sleep(0.6)  # long enough for the in-flight call and a next one
     assert len(fake.calls) == 1
+
+
+async def test_two_questions_run_at_the_same_time(app_config, indexed_repo):
+    """The desktop app can ask in several chats at once: one engine, two streams in parallel.
+
+    The first model call of each question waits until the other one has started
+    too; asked one after the other, the barrier would break.
+    """
+    both_started = threading.Barrier(2, timeout=5)
+
+    def after_both(response):
+        def call(_kwargs):
+            both_started.wait()
+            return response
+
+        return call
+
+    fake = FakeAnthropic(
+        [
+            after_both(
+                anthropic_response(tool_use("t1", "search_documents", {"query": "time off"}))
+            ),
+            after_both(
+                anthropic_response(tool_use("t2", "search_documents", {"query": "handbook"}))
+            ),
+            anthropic_response(text("First answer.")),
+            anthropic_response(text("Second answer.")),
+        ]
+    )
+    engine = make_engine(app_config, indexed_repo, fake)
+
+    async def ask(question):
+        def run(emit):
+            return engine.query(question, tracer=ProgressTracer(emit))
+
+        chunks = [chunk async for chunk in routes.query_events(run, {}, heartbeat=0.05)]
+        return _parse("".join(chunks))
+
+    first, second = await asyncio.gather(ask("Paid time off?"), ask("Handbook?"))
+
+    answers = set()
+    for events in (first, second):
+        name, data = events[-1]
+        assert name == "result", data
+        answers.add(data["answer"])
+        # Each stream carries only its own question's steps.
+        assert [s["step"] for s in _steps(events) if s["type"].endswith("_start")] == [1, 2, 3]
+    assert answers == {"First answer.", "Second answer."}
