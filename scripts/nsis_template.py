@@ -15,6 +15,8 @@ marked "RootMind:" in the file:
   NSIS_HOOK_PREINSTALL refuses any other folder (``/D=``, a changed registry
   value), and ``service install`` refuses a program folder that
   non-administrators can change.
+- No default for the reinstall page's language string (``choowHowToInstall``),
+  which newer templates set for every language: nothing reads it any more.
 - A header that names the source and the versions.
 
 The template belongs to the tauri-bundler that the locked Tauri CLI uses, so
@@ -62,6 +64,9 @@ _LOCKED_CLI = re.compile(
     r"(?P=indent)[ ]+version: (?P<version>[^\s(]+)",
     re.MULTILINE,
 )
+# Every function the template calls by name must still be defined after the changes.
+_CALL = re.compile(r"^[ \t]*Call[ \t]+([A-Za-z_][\w.]*)[ \t]*$", re.MULTILINE)
+_FUNCTION = re.compile(r"^Function[ \t]+([A-Za-z_][\w.]*)[ \t]*$", re.MULTILINE)
 # The header line that names the versions; the offline test reads it.
 HEADER_VERSIONS = re.compile(
     r"^; RootMind: the NSIS template of tauri-bundler (?P<bundler>\S+) "
@@ -74,6 +79,14 @@ REINSTALL_PAGE = "; 4. Custom page to ask user if he wants to reinstall/uninstal
 DIRECTORY_PAGE = "; 5. Choose install directory page"
 DIRECTORY_PRE = "!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive"
 DIRECTORY_MACRO = "!insertmacro MUI_PAGE_DIRECTORY"
+WIX_FUNCTION = "Function FindWixInstall"
+# Since tauri-bundler 2.10.4: a default for a language string that only the
+# reinstall page reads, with a comment that names the page.
+REINSTALL_STRING_COMMENT = (
+    "; PageReinstall reads the misspelled `choowHowToInstall` as a fallback, and makensis warns"
+)
+REINSTALL_STRING = 'LangString choowHowToInstall 0 ""'
+LANGUAGES_LOOP = "{{#each languages}}"
 
 # What the patched template must not contain: the reinstall page and its
 # state, and the folder page.
@@ -83,6 +96,7 @@ FORBIDDEN = (
     "PageLeaveReinstall",
     "ReinstallPageCheck",
     "MUI_PAGE_DIRECTORY",
+    "choowHowToInstall",
 )
 # What it must keep: the installer hooks.
 REQUIRED = (
@@ -176,13 +190,32 @@ def render(upstream: str, *, cli: str, bundler: str) -> str:
         or page[-2:] != ["FunctionEnd", ""]
     ):
         raise TemplateError("the reinstall page of the upstream template has changed")
-    lines[start:end] = [*NO_REINSTALL_PAGE.splitlines(), ""]
+    # Since tauri-bundler 2.10.4 the page's block also defines FindWixInstall,
+    # which .onInit calls for its downgrade check: keep it, with its comment.
+    kept: list[str] = []
+    if WIX_FUNCTION in page:
+        first = page.index(WIX_FUNCTION)
+        while first > 0 and page[first - 1].startswith(";"):
+            first -= 1
+        last = page.index("FunctionEnd", page.index(WIX_FUNCTION))
+        kept = [*page[first : last + 1], ""]
+    lines[start:end] = [*NO_REINSTALL_PAGE.splitlines(), "", *kept]
 
     # 2. The directory page: its comment, the skip function and the page.
     directory = _index(lines, DIRECTORY_PAGE)
     if lines[directory + 1 : directory + 3] != [DIRECTORY_PRE, DIRECTORY_MACRO]:
         raise TemplateError("the directory page of the upstream template has changed")
     lines[directory : directory + 3] = NO_DIRECTORY_PAGE.splitlines()
+
+    # 3. The default for the reinstall page's language string (newer templates):
+    #    its comment up to the languages loop, and the line in the loop.
+    if REINSTALL_STRING_COMMENT in lines:
+        comment = _index(lines, REINSTALL_STRING_COMMENT)
+        loop = _index(lines, LANGUAGES_LOOP)
+        if loop <= comment or not all(line.startswith(";") for line in lines[comment:loop]):
+            raise TemplateError("the language string comment of the upstream template has changed")
+        del lines[comment:loop]
+        del lines[_index(lines, REINSTALL_STRING)]
 
     header = HEADER.format(bundler=bundler, cli=cli, path=UPSTREAM_TEMPLATE)
     text = header + "\n" + "\n".join(lines)
@@ -192,6 +225,9 @@ def render(upstream: str, *, cli: str, bundler: str) -> str:
     for marker in REQUIRED:
         if marker not in text:
             raise TemplateError(f"the upstream template no longer contains {marker!r}")
+    missing = sorted(set(_CALL.findall(text)) - set(_FUNCTION.findall(text)))
+    if missing:
+        raise TemplateError(f"the patched template calls functions it no longer defines: {missing}")
     if not text.isascii():
         raise TemplateError("the upstream template is not ASCII")
     if not text.endswith("\n"):
