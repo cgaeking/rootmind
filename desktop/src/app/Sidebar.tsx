@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { labels } from "../i18n/labels";
 import { useChatStore } from "../state/chatStore";
+import { cancelRun, useRuns } from "../state/runs";
 import { NavIcon } from "./navIcons";
 import type { NavIconName } from "./navIcons";
 import styles from "./Sidebar.module.css";
@@ -28,6 +29,10 @@ export function Sidebar({
   const newChat = useChatStore((s) => s.newChat);
   const openConv = useChatStore((s) => s.open);
   const remove = useChatStore((s) => s.remove);
+  // Conversations with a request in flight, and those answered while not on screen.
+  const runs = useRuns((s) => s.runs);
+  const unread = useRuns((s) => s.unread);
+  const markRead = useRuns((s) => s.markRead);
 
   useEffect(() => {
     void refresh();
@@ -40,6 +45,7 @@ export function Sidebar({
   }
 
   function handleOpen(id: string) {
+    markRead(id);
     void openConv(id);
     navigate("/chat");
     onNavigate?.();
@@ -61,12 +67,31 @@ export function Sidebar({
             title={c.title}
           >
             <span className={styles.convTitle}>{c.title}</span>
+            {runs[c.id] ? (
+              <span
+                className={styles.convRunning}
+                role="img"
+                aria-label={labels.sidebar.running}
+                title={labels.sidebar.running}
+              />
+            ) : (
+              unread[c.id] && (
+                <span
+                  className={styles.convUnread}
+                  role="img"
+                  aria-label={labels.sidebar.unread}
+                  title={labels.sidebar.unread}
+                />
+              )
+            )}
             <button
               className={styles.convDelete}
               title={labels.sidebar.deleteConversation}
               aria-label={labels.sidebar.deleteConversation}
               onClick={(e) => {
                 e.stopPropagation();
+                cancelRun(c.id);
+                markRead(c.id);
                 void remove(c.id);
               }}
             >
@@ -82,7 +107,9 @@ export function Sidebar({
             key={it.to}
             to={it.to}
             onClick={() => onNavigate?.()}
-            className={({ isActive }) => (isActive ? `${styles.link} ${styles.active}` : styles.link)}
+            className={({ isActive }) =>
+              isActive ? `${styles.link} ${styles.active}` : styles.link
+            }
           >
             <NavIcon name={it.icon} size={20} className={styles.linkIcon} />
             <span>{labels.nav[it.label]}</span>

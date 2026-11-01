@@ -5,39 +5,27 @@ import { labels, useLanguage } from "../i18n/labels";
 import { useBackend } from "../hooks/useBackend";
 import { useLiveBackend } from "../hooks/useLiveBackend";
 import { useChatStore } from "../state/chatStore";
-import { useStore } from "../state/store";
-import {
-  askQuestionStream,
-  search,
-  getConfig,
-  getDocumentPath,
-  getIndexStatus,
-  generateChatTitle,
-} from "../api/rlm";
-import { ApiError, AbortedError } from "../api/client";
+import { search, getConfig, getDocumentPath, getIndexStatus } from "../api/rlm";
+import { ApiError } from "../api/client";
 import type { QuerySource } from "../types/api";
-import type { AgentStep, StoredMessage } from "../types/chat";
+import type { StoredMessage } from "../types/chat";
 import { Banner, Button } from "../components/ui";
 import { displayPath } from "../utils/paths";
 import { ConnBanner } from "../components/ConnBanner";
 import { Markdown } from "../components/Markdown";
 import { ChatLoader } from "../components/ChatLoader";
 import { AgentSteps } from "../components/AgentSteps";
-import { applyStepEvent, countCalls, finishOpenSteps } from "../state/agentSteps";
-import type { SearchResult } from "../types/api";
+import {
+  DEFAULT_MAX_ITERATIONS,
+  SEARCH_PAGE,
+  cancelRun,
+  runRequest,
+  toSources,
+  useRuns,
+} from "../state/runs";
 import styles from "./ChatScreen.module.css";
 
-const SEARCH_PAGE = 100;
 const SEARCH_MAX = 1000;
-// How many recent turns to send for multi-turn context (the backend caps it too).
-const HISTORY_TURNS = 6;
-// The backend's iteration limit, until a question's start event says otherwise.
-const DEFAULT_MAX_ITERATIONS = 10;
-
-/** The client clock, for step start times and a question's duration (event handlers only). */
-function clockNow(): number {
-  return Date.now();
-}
 // While the first index is being built, re-check this often.
 const BUILDING_POLL_MS = 5_000;
 
@@ -107,22 +95,6 @@ function nextId(messages: StoredMessage[]): number {
 /** Message ids repeat across conversations; this key does not. */
 function messageKey(convId: string, messageId: number): string {
   return `${convId}:${messageId}`;
-}
-
-/** The request in flight: which conversation it belongs to and whether it can be stopped. */
-interface Pending {
-  convId: string;
-  question: boolean;
-}
-
-function toSources(results: SearchResult[]): QuerySource[] {
-  return results.map((r) => ({
-    id: r.doc_id,
-    file_name: r.file_name,
-    file_path: r.file_path,
-    // Strip FTS highlight markers (**match**); undefined when no snippet was loaded.
-    snippet: r.snippet ? r.snippet.replace(/\*\*/g, "").trim() : undefined,
-  }));
 }
 
 function SourceList({
@@ -199,32 +171,29 @@ export function ChatScreen() {
   const active = useChatStore((s) => s.active);
   const startConversation = useChatStore((s) => s.startConversation);
   const updateConversation = useChatStore((s) => s.updateConversation);
-  const setTitle = useChatStore((s) => s.setTitle);
-  const setBusy = useStore((s) => s.setBusy);
 
   const [input, setInput] = useState("");
-  const [pending, setPending] = useState<Pending | null>(null);
   const [onlySearch, setOnlySearch] = useState(false);
   const [srcError, setSrcError] = useState<string | null>(null);
   const [loadingMoreKey, setLoadingMoreKey] = useState<string | null>(null);
   const [loadingDescKey, setLoadingDescKey] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
-  // The question in flight, so the user can cancel one that hangs.
-  const queryAbort = useRef<AbortController | null>(null);
-  // The agent's steps of the question in flight, shown live and kept with the answer.
-  const [liveSteps, setLiveSteps] = useState<AgentStep[]>([]);
-  const [maxIterations, setMaxIterations] = useState(DEFAULT_MAX_ITERATIONS);
-  const stepsRef = useRef<AgentStep[]>([]);
 
   const messages = active?.messages ?? NO_MESSAGES;
-  // One request at a time. Its loader and Stop button show only in the
-  // conversation it belongs to; the answer is written there even if the user
-  // opens another conversation meanwhile.
-  const loading = pending !== null;
-  const loadingHere = pending !== null && pending.convId === active?.id;
+  const activeId = active?.id;
+  // The request in flight in this conversation, if any (state/runs.ts). It
+  // keeps running while another conversation or screen is open; other
+  // conversations can ask meanwhile.
+  const run = useRuns((s) => (activeId ? s.runs[activeId] : undefined));
+  const markRead = useRuns((s) => s.markRead);
+  const loadingHere = run !== undefined;
+
+  useEffect(() => {
+    if (activeId) markRead(activeId);
+  }, [activeId, markRead]);
 
   function cancel() {
-    queryAbort.current?.abort();
+    if (activeId) cancelRun(activeId);
   }
 
   // Whether the conversation is scrolled to (near) its end: new steps of the
@@ -240,18 +209,19 @@ export function ChatScreen() {
     atEnd.current = true;
   }, [messages, loadingHere]);
 
+  const liveSteps = run?.steps;
   useEffect(() => {
     if (atEnd.current) endRef.current?.scrollIntoView({ block: "end" });
   }, [liveSteps]);
 
   async function send() {
     const q = input.trim();
-    if (!q || loading) return;
+    if (!q || loadingHere) return;
     setInput("");
     const isQuestion = !onlySearch;
 
     // Add the question to the conversation it was typed in (a new one when
-    // none is open), and remember that conversation for the answer.
+    // none is open); the run writes the answer there (state/runs.ts).
     let userId = 1;
     const conv = active
       ? await updateConversation(active.id, (msgs) => {
@@ -260,109 +230,7 @@ export function ChatScreen() {
         })
       : await startConversation([{ id: userId, role: "user", text: q }]);
     if (!conv) return; // deleted in the meantime
-    const assistantId = userId + 1;
-    const earlier = conv.messages.slice(0, -1);
-    const isFirst = earlier.length === 0;
-
-    setPending({ convId: conv.id, question: isQuestion });
-    stepsRef.current = [];
-    setLiveSteps([]);
-    let maxSteps = DEFAULT_MAX_ITERATIONS;
-    setMaxIterations(maxSteps);
-    const startedAt = clockNow();
-    // The steps to keep with the answer (or with the error or cancel note).
-    const withSteps = (message: StoredMessage): StoredMessage => {
-      const steps = finishOpenSteps(stepsRef.current, clockNow());
-      return steps.length > 0
-        ? { ...message, steps, elapsedMs: clockNow() - startedAt, maxIterations: maxSteps }
-        : message;
-    };
-    let assistant: StoredMessage;
-    try {
-      if (!isQuestion) {
-        const res = await search(q, { limit: SEARCH_PAGE });
-        if (res.results.length === 0) {
-          assistant = { id: assistantId, role: "assistant", text: labels.chat.noResults };
-        } else {
-          // Fast result list (no snippets); descriptions + more pages load on demand.
-          assistant = {
-            id: assistantId,
-            role: "assistant",
-            text: "",
-            sources: toSources(res.results),
-            searchMode: true,
-            searchQuery: q,
-            searchLimit: SEARCH_PAGE,
-          };
-        }
-      } else {
-        queryAbort.current = new AbortController();
-        setBusy(true); // pause the heartbeat so a long question isn't read as offline
-        // Send recent turns for multi-turn context: text only (drop the bulky
-        // source lists and any error bubbles). The backend caps and condenses.
-        const history = earlier
-          .filter((m) => m.text.trim() && !m.error)
-          .slice(-HISTORY_TURNS)
-          .map((m) => ({ role: m.role, text: m.text }));
-        const res = await askQuestionStream(q, {
-          history,
-          signal: queryAbort.current.signal,
-          onStart: (start) => {
-            maxSteps = start.max_iterations;
-            setMaxIterations(start.max_iterations);
-          },
-          onStep: (event) => {
-            stepsRef.current = applyStepEvent(stepsRef.current, event, clockNow());
-            setLiveSteps(stepsRef.current);
-          },
-        });
-        assistant = withSteps({
-          id: assistantId,
-          role: "assistant",
-          text: res.answer,
-          sources: res.sources,
-          md: true,
-        });
-      }
-    } catch (e) {
-      const calls = countCalls(stepsRef.current);
-      assistant = withSteps(
-        e instanceof AbortedError
-          ? {
-              id: assistantId,
-              role: "assistant",
-              text: calls > 0 ? labels.chat.cancelledAfter(calls) : labels.chat.cancelled,
-              error: true,
-            }
-          : {
-              id: assistantId,
-              role: "assistant",
-              text: labels.chat.errorPrefix(e instanceof ApiError ? e.message : String(e)),
-              error: true,
-            },
-      );
-    } finally {
-      queryAbort.current = null;
-      setBusy(false);
-    }
-    try {
-      await updateConversation(conv.id, (msgs) => [...msgs, assistant]);
-    } finally {
-      setPending(null);
-    }
-    // Refine the auto-title via the LLM after the first real exchange.
-    if (isFirst && isQuestion && !assistant.error) {
-      void refineTitle(conv.id, q, assistant.text);
-    }
-  }
-
-  async function refineTitle(id: string, question: string, answer: string) {
-    try {
-      const { title } = await generateChatTitle(question, answer);
-      if (title) await setTitle(id, title);
-    } catch {
-      /* keep the derived title */
-    }
+    await runRequest(conv, q, isQuestion);
   }
 
   /** Update one message of conversation `convId` (not necessarily the one on screen). */
@@ -528,8 +396,13 @@ export function ChatScreen() {
           })}
 
           {loadingHere && <ChatLoader />}
-          {loadingHere && pending?.question && liveSteps.length > 0 && (
-            <AgentSteps steps={liveSteps} maxIterations={maxIterations} live />
+          {run?.question && run.steps.length > 0 && (
+            <AgentSteps
+              key={run.startedAt}
+              steps={run.steps}
+              maxIterations={run.maxIterations}
+              live
+            />
           )}
           {srcError && <Banner tone="err">{srcError}</Banner>}
           <div ref={endRef} />
@@ -554,7 +427,7 @@ export function ChatScreen() {
               />
               {labels.chat.searchOnly}
             </label>
-            {loadingHere && pending?.question ? (
+            {run?.question ? (
               <Button variant="primary" onClick={cancel}>
                 {labels.chat.stop}
               </Button>
@@ -562,7 +435,7 @@ export function ChatScreen() {
               <Button
                 variant="primary"
                 onClick={() => void send()}
-                disabled={loading || !input.trim() || conn !== "online"}
+                disabled={loadingHere || !input.trim() || conn !== "online"}
               >
                 {labels.chat.send}
               </Button>

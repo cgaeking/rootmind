@@ -40,6 +40,8 @@ export const labels = {
     newChat: "+ New chat",
     noConversations: "No conversations yet.",
     deleteConversation: "Delete conversation",
+    running: "Working on an answer",
+    unread: "New answer",
   },
   backendModal: {
     otherBackend: "Connect to another backend …",
