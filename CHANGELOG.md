@@ -4,9 +4,12 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-01
+
 ### Changed
 
 - Desktop: a question keeps running when you open Settings or another chat, and its steps and timer are there again when you come back ([#79](https://github.com/cgaeking/rootmind/issues/79)). Several chats can ask at the same time, one question per chat; Stop ends only that chat's question. The sidebar shows a spinner next to chats that are working and a dot next to chats whose answer came in while you were elsewhere. Deleting a chat stops its question.
+- Updated dependencies: the Anthropic Python SDK 2.x ([#77](https://github.com/cgaeking/rootmind/pull/77)), FastAPI, the OpenAI SDK, pypdf and SQLAlchemy; Tauri 2.12 with its CLI 2.12.4 and the installer template of tauri-bundler 2.10.4 ([#76](https://github.com/cgaeking/rootmind/pull/76), [#78](https://github.com/cgaeking/rootmind/pull/78)); React, Vite and Vitest.
 
 ## [2.6.1] - 2026-10-31
 
