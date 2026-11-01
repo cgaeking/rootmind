@@ -57,13 +57,17 @@ def test_template_has_no_reinstall_page():
     text = template_text()
     for marker in nsis_template.FORBIDDEN:
         assert marker not in text
-    # Nothing reads the installed version's uninstaller to run it; the
-    # install only writes the value.
+    # Nothing runs the installed version's uninstaller. The install writes
+    # the value; FindWixInstall (kept for the downgrade check in .onInit)
+    # only reads a WiX installation's value to see whether it is msiexec.
     uses = [line.strip() for line in lines() if "UninstallString" in line]
     assert uses == [
+        'ReadRegStr $R0 HKLM "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$1" "UninstallString"',
         'WriteRegStr SHCTX "${UNINSTKEY}" "UninstallString" "$\\"$INSTDIR\\uninstall.exe$\\""',
     ]
     assert "_?=" not in text
+    executed = [line.strip() for line in lines() if line.strip().startswith(("Exec", "nsExec"))]
+    assert executed and all("WEBVIEW2" in line or "webview2" in line.lower() for line in executed)
 
 
 def test_there_is_no_folder_page():
@@ -246,6 +250,46 @@ def test_render_applies_the_changes():
         "Function un.SkipIfPassive\n  ${IfThen} $PassiveMode = 1  ${|} Abort ${|}\nFunctionEnd\n"
     )
     assert "; 3. Install mode (if it is set to `both`)\n\n; 4. RootMind: no reinstall page." in text
+
+
+# The shape of tauri-bundler 2.10.4: FindWixInstall inside the reinstall
+# page's block and called from .onInit, and a language string default for the page.
+UPSTREAM_2_10_4 = UPSTREAM.replace(
+    "Page custom PageReinstall PageLeaveReinstall\n",
+    "Page custom PageReinstall PageLeaveReinstall\n\n"
+    "; Find a previous WiX installation and set $R6 to its uninstall registry key.\n"
+    'Function FindWixInstall\n  StrCpy $R6 ""\nFunctionEnd\n\n',
+).replace(
+    "Section Install\n",
+    "Function .onInit\n  Call FindWixInstall\nFunctionEnd\n\nSection Install\n",
+) + (
+    "; PageReinstall reads the misspelled `choowHowToInstall` as a fallback, and makensis warns\n"
+    "; about a language string that is read but never set.\n"
+    "{{#each languages}}\n"
+    '!insertmacro MUI_LANGUAGE "{{this}}"\n'
+    'LangString choowHowToInstall 0 ""\n'
+    "{{/each}}\n"
+)
+
+
+def test_render_keeps_find_wix_install_and_drops_the_page_string():
+    text = nsis_template.render(UPSTREAM_2_10_4, cli="2.12.4", bundler="2.10.4").replace(
+        "\r\n", "\n"
+    )
+    for marker in nsis_template.FORBIDDEN:
+        assert marker not in text
+    assert "Function FindWixInstall\n" in text and "Call FindWixInstall\n" in text
+    assert "; Find a previous WiX installation" in text
+    assert '{{#each languages}}\n!insertmacro MUI_LANGUAGE "{{this}}"\n{{/each}}\n' in text
+
+
+def test_render_refuses_a_call_to_a_function_it_removed():
+    upstream = UPSTREAM.replace(
+        "Section Install\n",
+        "Function .onInit\n  Call FindWixInstall\nFunctionEnd\n\nSection Install\n",
+    )
+    with pytest.raises(nsis_template.TemplateError, match="FindWixInstall"):
+        nsis_template.render(upstream, cli="2.99.0", bundler="2.98.0")
 
 
 def test_render_accepts_crlf_input():
