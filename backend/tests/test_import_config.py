@@ -191,7 +191,15 @@ def test_refuses_a_file_replaced_while_reading(tmp_path, home, monkeypatch):
             self.st_dev = info.st_dev
             self.st_ino = info.st_ino + 1
 
-    monkeypatch.setattr(config_module.os, "fstat", lambda fd: Swapped(real_fstat(fd)))
+    # Only the source looks replaced: fstat is os.fstat, which pytest itself
+    # also calls while the test runs (since pytest 9.2).
+    source_inode = os.stat(source).st_ino
+
+    def fstat(fd):
+        info = real_fstat(fd)
+        return Swapped(info) if info.st_ino == source_inode else info
+
+    monkeypatch.setattr(config_module.os, "fstat", fstat)
     _refused(source, home, "replaced")
 
 
