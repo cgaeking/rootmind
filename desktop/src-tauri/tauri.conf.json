@@ -47,11 +47,11 @@
     "linux": {
       "deb": {
         "section": "utils",
-        "recommends": ["systemd"],
+        "recommends": ["systemd", "tesseract-ocr", "tesseract-ocr-deu", "tesseract-ocr-eng"],
         "postInstallScript": "linux/postinst.sh"
       },
       "rpm": {
-        "recommends": ["systemd"],
+        "recommends": ["systemd", "tesseract", "tesseract-langpack-deu", "tesseract-langpack-eng"],
         "postInstallScript": "linux/postinst.sh"
       },
       "appimage": {

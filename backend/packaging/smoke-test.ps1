@@ -21,7 +21,9 @@
       build, and remote access is off by default (no tunnel is opened);
     - the client command search through that API (--url, --token-file);
     - mcp-http: 401 without and 200 with the token, the five tools;
-    - mcp over stdio: initialize and tools/list, with JSON-only stdout.
+    - mcp over stdio: initialize and tools/list, with JSON-only stdout;
+    - with -Ocr / -BundledOcr: ocr-check recognizes a generated scanned page
+      (the bundled Tesseract on Windows).
 
     Works with Windows PowerShell 5.1 and PowerShell 7 (also on Linux, for
     the Linux build). Everything is written
@@ -38,7 +40,11 @@ param(
     [int] $McpPort = 18766,
     [Parameter(Mandatory = $true)] [string] $WorkDir,
     # Default: the version in backend/pyproject.toml.
-    [string] $ExpectedVersion = ""
+    [string] $ExpectedVersion = "",
+    # Run ocr-check: recognize a generated scanned page with the Tesseract the
+    # backend finds. -BundledOcr: it must be the one in <ExeDir>/tesseract.
+    [switch] $Ocr,
+    [switch] $BundledOcr
 )
 
 Set-StrictMode -Version 2.0
@@ -212,6 +218,18 @@ try {
     $version = ($versionOutput -split '\s+')[-1]
     if ($version -ne $ExpectedVersion) { Fail "--version says '$versionOutput', expected $ExpectedVersion" }
     Pass "--version -> $versionOutput"
+
+    # --- text recognition (OCR) ---------------------------------------------------------
+    if ($Ocr -or $BundledOcr) {
+        $env:RLM_TESSERACT = $null
+        $ocrOutput = (& $Exe ocr-check 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { Fail "ocr-check exited with $($LASTEXITCODE): $ocrOutput" }
+        if ($BundledOcr) {
+            $bundled = [IO.Path]::GetFullPath((Join-Path $ExeDir "tesseract"))
+            if (-not $ocrOutput.ToLowerInvariant().Contains($bundled.ToLowerInvariant())) { Fail "ocr-check did not use the bundled Tesseract: $ocrOutput" }
+        }
+        Pass "ocr-check -> $ocrOutput"
+    }
 
     # --- api with a token --------------------------------------------------------------
     $apiHome = Join-Path $WorkDir "api-home"

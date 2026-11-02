@@ -295,3 +295,37 @@ def recognize(png: bytes, engine: Tesseract) -> str:
         message = result.stderr.decode("utf-8", "replace").strip().splitlines()
         raise RuntimeError(f"Tesseract failed: {message[-1] if message else result.returncode}")
     return result.stdout.decode("utf-8", "replace").strip()
+
+
+# --- self check (packaging smoke tests, support) -------------------------------------
+
+#: The words :func:`self_check` puts on its test page.
+SELF_CHECK_TEXT = "RootMind Texterkennung 2026"
+
+
+def self_check() -> str:
+    """Recognize a generated scanned PDF page end to end; a one-line report.
+
+    Exercises what a folder with OCR on uses: the scan check, page rendering
+    and the Tesseract that :func:`tesseract` finds.
+
+    Raises:
+        RuntimeError: no Tesseract, or the page was not read correctly.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    engine = tesseract()
+    if engine is None:
+        raise RuntimeError("no Tesseract found (bundled, RLM_TESSERACT or PATH)")
+    page = Image.new("L", (1240, 1754), 255)
+    font = ImageFont.load_default(size=64)
+    ImageDraw.Draw(page).text((100, 300), SELF_CHECK_TEXT, fill=0, font=font)
+    out = io.BytesIO()
+    page.save(out, format="PDF", resolution=150)
+    pdf = out.getvalue()
+    if scanned_pages(pdf) != [1]:
+        raise RuntimeError("the scan check did not find the scanned test page")
+    text = recognize(render_page(pdf, 1), engine)
+    if " ".join(text.split()) != SELF_CHECK_TEXT:
+        raise RuntimeError(f"recognized {text!r} instead of {SELF_CHECK_TEXT!r}")
+    return f"OCR ok: {engine.program} ({engine.version}), languages {'+'.join(engine.languages)}"

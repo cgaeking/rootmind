@@ -102,6 +102,16 @@ jobs:
           $size = ($files | Measure-Object -Property Length -Sum).Sum
           "Onedir build: $($files.Count) files, $([Math]::Round($size / 1MB, 1)) MB" | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY
 
+      # Text recognition: Tesseract and its German and English models next to
+      # rootmind-backend.exe (pinned downloads, checked by SHA-256).
+      - name: Bundle Tesseract
+        run: |
+          $sevenzip = (Get-Command 7z -ErrorAction Stop).Source
+          uv run --no-sync python packaging/bundle_tesseract.py --dest dist/rootmind-backend/tesseract `
+            --cache (Join-Path $env:RUNNER_TEMP "tesseract-cache") --sevenzip $sevenzip |
+            Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Version
         id: version
         run: |
@@ -114,7 +124,7 @@ jobs:
       - name: Smoke test
         run: >-
           ./packaging/smoke-test.ps1 -ExeDir dist/rootmind-backend -ApiPort 18765 -McpPort 18766
-          -WorkDir (Join-Path $env:RUNNER_TEMP "smoke")
+          -WorkDir (Join-Path $env:RUNNER_TEMP "smoke") -BundledOcr
 
       # Same algorithm as scripts/prepare_backend.py: SHA-256 over the sorted
       # "relpath<TAB>sha256<LF>" lines of every file, with "/" separators.
@@ -245,12 +255,17 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Version (Linux): $version" >> "$GITHUB_STEP_SUMMARY"
 
+      # The Linux packages recommend the distribution's Tesseract instead of
+      # bundling it; the smoke test checks the build with that one.
+      - name: Install Tesseract
+        run: sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-deu tesseract-ocr-eng
+
       # The same smoke test as on Windows, with PowerShell 7 (on the runner).
       - name: Smoke test
         shell: pwsh
         run: >-
           ./packaging/smoke-test.ps1 -ExeDir dist/rootmind-backend -ApiPort 18765 -McpPort 18766
-          -WorkDir (Join-Path $env:RUNNER_TEMP "smoke")
+          -WorkDir (Join-Path $env:RUNNER_TEMP "smoke") -Ocr
 
       - name: Tree hash
         id: tree
