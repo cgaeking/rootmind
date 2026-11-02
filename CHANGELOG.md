@@ -8,6 +8,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 - Text recognition (OCR) with Tesseract, per folder ([#82](https://github.com/cgaeking/rootmind/issues/82)): "Turn on text recognition (OCR)" under each folder in the app (`ocr: true` on a connector in `config.yaml`), off by default. In such a folder, scanned PDF pages and images (PNG, JPEG, TIFF, BMP, WebP of at least 300 px) become searchable. Only pages without a text layer that are mostly image are recognized; the check reads the PDF structure and renders nothing, so PDFs with text cost no extra time. Recognition runs in the background, one page at a time, on one core at low priority; the status screen shows the pages still waiting and can pause it. Results are cached by file content, so renaming, moving or re-indexing a file does not recognize it again. Turning OCR off for a folder drops its waiting work and removes its images from the index. `GET /ocr/status`, `POST /ocr/pause` and `POST /ocr/resume` on the REST API. The Windows installer brings Tesseract 5.5.3 with the most accurate German and English models (tessdata_best); the .deb and .rpm recommend the distribution's Tesseract, and with the AppImage (or the command line) the backend uses `tesseract` on the PATH or `RLM_TESSERACT`. `rootmind ocr-check` recognizes a generated scanned page and says which Tesseract it used.
 
+### Fixed
+
+- A document the answer quotes from a search snippet is listed under the answer's sources also when the model read other documents. Until now, once it had read any document, only the documents it read were listed, so a file named in the answer could be missing from "Sources".
+
 ## [2.7.0] - 2026-11-01
 
 ### Changed

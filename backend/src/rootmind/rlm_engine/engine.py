@@ -33,6 +33,7 @@ import json
 import logging
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -1116,10 +1117,11 @@ class KnowledgeBaseEngine:
     def _extract_sources(self, ctx: ToolContext, answer: str = "") -> list[dict[str, Any]]:
         """Collect the document references for an answer.
 
-        Documents the model actually read are the precise sources. If it only
-        searched or listed (e.g. an overview answer), fall back to the surfaced
-        documents, preferring those whose file name appears in the answer text,
-        so unrelated search hits are filtered out.
+        Documents the model actually read are the precise sources. Search or
+        list hits that the answer names (by file name or id) are sources too:
+        the model may quote a search snippet without reading the document. If
+        it read nothing and names no hit (e.g. an overview answer), every
+        surfaced document is a source.
         """
 
         def as_source(meta: dict[str, Any], page: str | None = None) -> dict[str, Any]:
@@ -1161,11 +1163,9 @@ class KnowledgeBaseEngine:
             if meta:
                 sources.append(as_source(meta, read_location(doc_id, start_char, end)))
                 seen_ids.add(doc_id)
+        read_any = bool(sources)
 
-        if sources:
-            return sources
-
-        # Fallback: documents surfaced via search/list.
+        # Documents surfaced via search/list, each with the location of its first hit.
         candidates = []
         for ref in ctx.referenced:
             doc_id = ref["doc_id"]
@@ -1178,12 +1178,20 @@ class KnowledgeBaseEngine:
 
         # A document counts as named when the answer has its file name or its
         # id (models sometimes cite the id from the search result instead).
-        ans = (answer or "").lower()
-        mentioned = [
-            c
-            for c in candidates
-            if (c[0]["file_name"] and c[0]["file_name"].lower() in ans)
-            or c[0]["doc_id"].lower() in ans
-        ]
-        chosen = mentioned if mentioned else candidates
-        return [as_source(meta, page) for meta, page in chosen[:MAX_SOURCES]]
+        # Names are compared in the same Unicode form ("Gäking" may come as
+        # a + combining umlaut from the file system).
+        ans = unicodedata.normalize("NFC", answer or "").lower()
+
+        def named(meta: dict[str, Any]) -> bool:
+            name = unicodedata.normalize("NFC", meta["file_name"] or "").lower()
+            return bool(name and name in ans) or meta["doc_id"].lower() in ans
+
+        mentioned = [c for c in candidates if named(c[0])]
+        # After reads, only the hits the answer cites as well (it can quote a
+        # search snippet without reading the document). Without reads: the
+        # cited hits, or every surfaced document (e.g. an overview answer).
+        if read_any:
+            chosen = mentioned
+        else:
+            chosen = mentioned if mentioned else candidates
+        return sources + [as_source(meta, page) for meta, page in chosen[:MAX_SOURCES]]
