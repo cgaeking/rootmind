@@ -155,7 +155,11 @@ Wähle das Paket für deine Distribution:
 Die Pakete installieren die App und ihr Backend nach `/usr/lib/RootMind` und
 ziehen WebKitGTK 4.1 nach; nur dieser Schritt braucht root. Das AppImage
 braucht keine Installation; es braucht FUSE 2 (das Paket `libfuse2`, unter
-Ubuntu 24.04 `libfuse2t64`). Prüfe den Download mit
+Ubuntu 24.04 `libfuse2t64`). Die Texterkennung (OCR, pro Ordner) nutzt das
+Tesseract der Distribution: Die Pakete empfehlen es, `apt` installiert es
+also mit; beim AppImage installiere `tesseract-ocr` und `tesseract-ocr-deu`
+(Fedora: `tesseract`, `tesseract-langpack-deu`) selbst. Der Windows-Installer
+bringt es mit. Prüfe den Download mit
 `sha256sum --check --ignore-missing SHA256SUMS.txt` (siehe
 [Downloads prüfen](#downloads-prüfen)).
 
@@ -1167,8 +1171,10 @@ Das vollständige Bedrohungsmodell steht in [SECURITY.md](SECURITY.md)
 - Die Release-Binärdateien sind noch nicht codesigniert (siehe
   [Installation](#installation)). RootMind ist noch nicht im
   winget-Repository; die erste Einreichung läuft.
-- Keine Texterkennung (OCR): Gescannte PDFs ohne Textebene liefern keinen
-  Text.
+- Die Texterkennung (OCR) für gescannte PDFs und Bilder ist standardmäßig
+  aus und wird pro Ordner eingeschaltet. Sie erkennt im Hintergrund eine
+  Seite nach der anderen; ein großes Scan-Archiv ist erst nach Stunden
+  vollständig durchsuchbar.
 - Alte `.doc`- und `.xls`-Dateien gehen an die DOCX- und XLSX-Parser und
   lassen sich meist nicht parsen.
 - Kein Streaming: Die Desktop-App wartet auf die vollständige Antwort.

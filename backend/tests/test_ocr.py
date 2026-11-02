@@ -299,3 +299,21 @@ def test_ocr_status_pause_and_resume(api):
     assert api.post("/ocr/pause").json()["paused"] is True
     assert api.get("/ocr/status").json()["paused"] is True
     assert api.post("/ocr/resume").json()["paused"] is False
+
+
+@needs_tesseract
+def test_ocr_check_command(capsys):
+    from rootmind.main import main
+
+    main(["ocr-check"])
+    assert capsys.readouterr().out.startswith("OCR ok: ")
+
+
+def test_ocr_check_command_without_tesseract(capsys, monkeypatch):
+    from rootmind.main import main
+
+    monkeypatch.setattr(ocr, "tesseract", lambda: None)
+    with pytest.raises(SystemExit) as exit_info:
+        main(["ocr-check"])
+    assert exit_info.value.code == 1
+    assert "no Tesseract found" in capsys.readouterr().err

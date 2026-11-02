@@ -6,6 +6,7 @@
       api [--host H] [--port P] [--require-token]
       index [--full] [--folder N] [--wait] [--local]
       rebuild-trigrams
+      ocr-check        recognize a generated scanned page (checks the Tesseract in use)
       mcp ...          MCP over stdio (rootmind.mcp_stdio)
       mcp tokens ...   the MCP over HTTP tokens of the service (rootmind.client)
       mcp-http ...     MCP over HTTP with a bearer token (rootmind.mcp_http)
@@ -314,6 +315,10 @@ def build_parser() -> argparse.ArgumentParser:
     client_commands.add_index_parser(subparsers)
 
     subparsers.add_parser("rebuild-trigrams", help="Rebuild the trigram index for fuzzy search")
+    subparsers.add_parser(
+        "ocr-check",
+        help="Check text recognition (OCR): recognize a generated scanned page",
+    )
     client_commands.add_parsers(subparsers)
 
     for name, help_text in (
@@ -486,6 +491,9 @@ def main(argv: list[str] | None = None):
     if args.command in client_commands.CLIENT_COMMANDS:
         _run_client(args)
         return
+    if args.command == "ocr-check":
+        run_ocr_check(args.debug)
+        return
     if args.command == "index":
         local, note = client_commands.index_runs_locally(args)
         if not local:
@@ -516,6 +524,19 @@ def main(argv: list[str] | None = None):
     except UsageError as e:
         logger.error("%s", e)
         sys.exit(2)
+
+
+def run_ocr_check(debug: bool = False) -> None:
+    """``ocr-check``: exit 0 and print what was used, or exit 1 with the reason."""
+    from . import ocr
+
+    _reconfigure_output()
+    _client_logging(debug)
+    try:
+        print(ocr.self_check())
+    except Exception as e:
+        print(f"OCR check failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def run_rebuild_trigrams(config: AppConfig):
