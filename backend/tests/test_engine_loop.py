@@ -624,6 +624,40 @@ async def test_sources_fall_back_to_search_hits_named_by_id(app_config, indexed_
     assert [s["file_name"] for s in result["sources"]] == ["orders.csv"]
 
 
+async def test_sources_keep_a_cited_search_hit_next_to_the_documents_read(app_config, indexed_repo):
+    """Regression: a document quoted from a search snippet was missing once another was read."""
+    invoice = doc_id(indexed_repo, "invoice.pdf")
+    fake = FakeAnthropic(
+        [
+            anthropic_response(tool_use("t1", "search_documents", {"query": "Bluebird"})),
+            anthropic_response(tool_use("t2", "read_document", {"doc_id": invoice})),
+            anthropic_response(
+                text("The snippet of orders.csv names Bluebird Trail Club; invoice.pdf bills it.")
+            ),
+        ]
+    )
+
+    result = await make_engine(app_config, indexed_repo, fake).query("Who is Bluebird?")
+
+    assert [s["file_name"] for s in result["sources"]] == ["invoice.pdf", "orders.csv"]
+
+
+async def test_sources_after_a_read_leave_out_uncited_search_hits(app_config, indexed_repo):
+    invoice = doc_id(indexed_repo, "invoice.pdf")
+    fake = FakeAnthropic(
+        [
+            anthropic_response(tool_use("t1", "search_documents", {"query": "Bluebird"})),
+            anthropic_response(tool_use("t2", "read_document", {"doc_id": invoice})),
+            anthropic_response(text("Bluebird Trail Club owes 1,179.36.")),
+        ]
+    )
+
+    result = await make_engine(app_config, indexed_repo, fake).query("Who is Bluebird?")
+
+    # orders.csv matched the search too, but the answer does not cite it.
+    assert [s["file_name"] for s in result["sources"]] == ["invoice.pdf"]
+
+
 async def test_engine_tools_only_see_configured_connectors(app_config, indexed_repo):
     app_config.connectors = []  # folder removed from the config, index not pruned yet
     fake = FakeAnthropic(
