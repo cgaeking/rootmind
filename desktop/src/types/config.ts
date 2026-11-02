@@ -20,6 +20,8 @@ export interface ConnectorDto {
   // null/undefined -> inherits the global indexer patterns.
   include?: string[] | null;
   exclude?: string[] | null;
+  /** Text recognition (OCR) for scanned PDF pages and images; omitted keeps the stored value. */
+  ocr?: boolean | null;
 }
 
 export interface IndexerConfigDto {

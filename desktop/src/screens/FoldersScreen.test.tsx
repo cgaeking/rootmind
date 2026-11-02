@@ -108,6 +108,24 @@ describe("FoldersScreen", () => {
     expect(shownPaths()).toEqual(["C:\\data\\a"]);
   });
 
+  it("turns OCR on for one folder and keeps it off for the others", async () => {
+    const cfg = config(["C:/data/a", "C:/data/b"]);
+    cfg.connectors[1].ocr = true;
+    vi.mocked(rlm.getConfig).mockResolvedValue(cfg);
+    render(<FoldersScreen />);
+    await screen.findByDisplayValue("C:\\data\\b");
+
+    const boxes = screen.getAllByRole("checkbox", {
+      name: "Turn on text recognition (OCR)",
+    }) as HTMLInputElement[];
+    expect(boxes.map((b) => b.checked)).toEqual([false, true]);
+
+    fireEvent.click(boxes[0]);
+    await waitFor(() => expect(rlm.saveConfig).toHaveBeenCalledTimes(1));
+    const body = vi.mocked(rlm.saveConfig).mock.calls[0][0];
+    expect(body.connectors?.map((c) => c.ocr)).toEqual([true, true]);
+  });
+
   it("saves a removal right away", async () => {
     vi.mocked(rlm.getConfig).mockResolvedValue(config(["C:/data/a", "C:/data/b"]));
     render(<FoldersScreen />);

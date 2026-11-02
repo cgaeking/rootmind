@@ -9,6 +9,7 @@ import type {
   QueryResponse,
   QueryStepEvent,
   QueryStreamStart,
+  OcrStatus,
   ProgressResponse,
   RefreshResponse,
   SaveConfigResponse,
@@ -37,6 +38,9 @@ export const getConnectors = () =>
   api<ConnectorsResponse>("/connectors", undefined, { timeoutMs: 60_000 });
 export const getStatistics = () => api<Statistics>("/statistics");
 export const getProgress = () => api<ProgressResponse>("/index/progress");
+export const getOcrStatus = () => api<OcrStatus>("/ocr/status");
+export const pauseOcr = () => api<OcrStatus>("/ocr/pause", { method: "POST" });
+export const resumeOcr = () => api<OcrStatus>("/ocr/resume", { method: "POST" });
 export const getRecentIndexed = (limit = 20) =>
   api<RecentResponse>(`/index/recent?limit=${limit}`);
 

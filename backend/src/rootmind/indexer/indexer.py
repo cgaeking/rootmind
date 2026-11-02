@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import PurePath
 from typing import Any
 
+from .. import ocr
 from ..config import AppConfig
 from ..connectors.base import BaseConnector
 from ..database.repository import DocumentRepository
@@ -76,6 +77,8 @@ class Indexer:
         self.config = config
         # Set from another thread to stop a running sync before its next file.
         self.cancel_event = threading.Event()
+        # Called when a file gets OCR work (wakes the OCR worker).
+        self.on_ocr_planned: Callable[[], None] | None = None
 
         # Progress tracking
         self._current_progress = self._empty_progress()
@@ -118,10 +121,17 @@ class Indexer:
             # Get metadata
             metadata = connector.get_metadata(file_path)
 
+            use_ocr = self.ocr_enabled(connector.name) and ocr.ocr_candidate(file_path)
+
             # Check if update is needed
             if not force:
                 existing = self.db.get_document_by_path(connector.name, file_path)
                 if existing and existing.content_hash == metadata.content_hash:
+                    if use_ocr:
+                        # OCR was turned on after the file was indexed.
+                        self._plan_ocr_if_new(
+                            connector, file_path, existing.id, metadata.content_hash
+                        )
                     logger.debug(f"Skipping unchanged file: {file_path}")
                     return IndexOutcome.SKIPPED
 
@@ -145,6 +155,9 @@ class Indexer:
                 )
                 return IndexOutcome.SKIPPED
 
+            if use_ocr and ocr.is_image(file_path):
+                return self._index_image(connector, file_path, metadata)
+
             # Check if file type is supported
             if not DocumentParser.is_supported(file_path):
                 logger.debug(f"Unsupported file type, skipping: {file_path}")
@@ -153,8 +166,10 @@ class Indexer:
             # Read and parse content
             content_bytes = connector.read_file(file_path)
             content_text = DocumentParser.parse(content_bytes, file_path)
+            # Scanned pages get their text from OCR later, in the background.
+            scans = ocr.scanned_pages(content_bytes) if use_ocr else []
 
-            if not content_text:
+            if not content_text and not scans:
                 logger.warning(f"Could not extract text from: {file_path}")
                 self.db.upsert_document(
                     connector_name=connector.name,
@@ -184,6 +199,8 @@ class Indexer:
                 page_count=page_count(content_text, metadata.file_type),
                 status="indexed",
             )
+            if use_ocr:
+                self._plan_ocr(connector, file_path, metadata.content_hash, scans)
 
             logger.info(f"Indexed: {file_path} ({len(content_text)} chars)")
             return IndexOutcome.INDEXED
@@ -207,6 +224,72 @@ class Indexer:
             except Exception as db_error:
                 logger.error(f"Could not record the error for {file_path}: {db_error}")
             return IndexOutcome.ERROR
+
+    # --- OCR planning (the work runs in ocr_worker.OcrWorker) --------------------------
+
+    def ocr_enabled(self, connector_name: str) -> bool:
+        """Whether the folder ``connector_name`` has text recognition (OCR) on."""
+        return any(c.name == connector_name and c.ocr for c in self.config.connectors)
+
+    def _plan_ocr(
+        self, connector: BaseConnector, file_path: str, content_hash: str, pages: list[int]
+    ) -> None:
+        doc_id = self.db.generate_doc_id(connector.name, file_path)
+        self.db.ocr_plan(doc_id, connector.name, file_path, content_hash, pages)
+        if pages and self.on_ocr_planned is not None:
+            self.on_ocr_planned()
+
+    def _plan_ocr_if_new(
+        self, connector: BaseConnector, file_path: str, doc_id: str, content_hash: str
+    ) -> None:
+        """Plan OCR for an unchanged file that was never checked with this content."""
+        state = self.db.ocr_state(doc_id)
+        if state is not None and state.content_hash == content_hash:
+            return
+        if ocr.is_image(file_path):
+            pages = [0] if ocr.large_enough(connector.read_file(file_path)) else []
+        else:
+            pages = ocr.scanned_pages(connector.read_file(file_path))
+        self._plan_ocr(connector, file_path, content_hash, pages)
+
+    def _index_image(self, connector: BaseConnector, file_path: str, metadata: Any) -> IndexOutcome:
+        """Store an image in a folder with OCR on; its text comes from OCR later.
+
+        Icons and thumbnails (too small to hold readable text) are skipped.
+        """
+        content = connector.read_file(file_path)
+        if not ocr.large_enough(content):
+            # Stored as skipped, so the next sync skips it by its hash
+            # instead of reading it again.
+            logger.debug(f"Image too small for OCR, skipping: {file_path}")
+            self.db.upsert_document(
+                connector_name=connector.name,
+                file_path=file_path,
+                file_name=metadata.name,
+                file_type=metadata.file_type,
+                size_bytes=metadata.size_bytes,
+                created_at=metadata.created_at,
+                modified_at=metadata.modified_at,
+                content_hash=metadata.content_hash,
+                status="skipped",
+                error_message="Image too small for text recognition",
+            )
+            self._plan_ocr(connector, file_path, metadata.content_hash, [])
+            return IndexOutcome.SKIPPED
+        self.db.upsert_document(
+            connector_name=connector.name,
+            file_path=file_path,
+            file_name=metadata.name,
+            file_type=metadata.file_type,
+            size_bytes=metadata.size_bytes,
+            created_at=metadata.created_at,
+            modified_at=metadata.modified_at,
+            content_hash=metadata.content_hash,
+            content_text="",
+            status="indexed",
+        )
+        self._plan_ocr(connector, file_path, metadata.content_hash, [0])
+        return IndexOutcome.INDEXED
 
     def index_connector(
         self,
@@ -336,7 +419,14 @@ class Indexer:
         # extracted text of every document of the connector.
         indexed = self.db.list_document_paths(connector_name)
 
-        stale_ids = [doc_id for doc_id, path in indexed if not connector.file_exists(path)]
+        # Images are indexed only for their recognized text: with OCR turned
+        # off for the folder, they leave the index.
+        drop_images = not self.ocr_enabled(connector_name)
+        stale_ids = [
+            doc_id
+            for doc_id, path in indexed
+            if (drop_images and ocr.is_image(path)) or not connector.file_exists(path)
+        ]
         if not stale_ids:
             return 0
 

@@ -122,3 +122,45 @@ class SyncStatus(Base):
             "is_syncing": self.is_syncing,
             "error_message": self.error_message,
         }
+
+
+class OcrDocument(Base):
+    """The OCR state of one document in a folder with OCR on (see rootmind.ocr).
+
+    One row per document that was checked for OCR at ``content_hash``:
+    ``pending`` (``pages`` waits for the background worker), ``done``,
+    ``none`` (nothing to recognize) or ``error``. A changed file (another
+    content hash) is checked again.
+    """
+
+    __tablename__ = "ocr_documents"
+
+    doc_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    connector_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Space-separated page numbers to recognize; "0" for an image.
+    pages: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now())
+
+    __table_args__ = (
+        Index("idx_ocr_documents_state", "state"),
+        Index("idx_ocr_documents_connector", "connector_name"),
+    )
+
+    @property
+    def page_numbers(self) -> list[int]:
+        return [int(p) for p in self.pages.split()]
+
+
+class OcrCache(Base):
+    """Recognized text by file content and page (0 for an image), so OCR runs once per content."""
+
+    __tablename__ = "ocr_cache"
+
+    content_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    page: Mapped[int] = mapped_column(Integer, primary_key=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now())

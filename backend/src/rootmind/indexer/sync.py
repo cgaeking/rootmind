@@ -12,6 +12,7 @@ from ..config import AppConfig
 from ..connectors.base import BaseConnector
 from ..database.repository import DocumentRepository
 from .indexer import Indexer, SyncCancelledError
+from .ocr_worker import OcrWorker
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,9 @@ class SyncManager:
         self.indexer = indexer or Indexer(db, connectors, config)
         self._guard = _guard_for(db)
         self._scheduler = None
+        # Text recognition in the background; runs while the scheduler runs.
+        self.ocr_worker = OcrWorker(db, connectors, config)
+        self.indexer.on_ocr_planned = self.ocr_worker.wake
         # The scheduled sync of every folder found another sync running and
         # waits for its retry; re-scans of single folders hold back meanwhile.
         self._scheduled_pending = False
@@ -265,6 +269,7 @@ class SyncManager:
                 triggered by a sync route); without it, APScheduler looks for
                 a running loop in the current thread and fails there.
         """
+        self.ocr_worker.start()
         interval_hours = getattr(self.config.indexer, "sync_interval_hours", None)
         schedule = self.config.indexer.sync_schedule
 
@@ -380,7 +385,8 @@ class SyncManager:
         )
 
     def shutdown_scheduler(self) -> None:
-        """Shut down the scheduler if running."""
+        """Shut down the scheduler if running, and the OCR worker."""
+        self.ocr_worker.stop()
         if self._scheduler:
             self._scheduler.shutdown()
             self._scheduler = None

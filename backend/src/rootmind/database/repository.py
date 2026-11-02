@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import bindparam, create_engine, delete, event, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import Base, Document, SyncStatus
+from .models import Base, Document, OcrCache, OcrDocument, SyncStatus
 
 logger = logging.getLogger(__name__)
 
@@ -456,6 +456,7 @@ class DocumentRepository:
             if not existing:
                 return 0
             session.execute(delete(Document).where(Document.id.in_(existing)))
+            session.execute(delete(OcrDocument).where(OcrDocument.doc_id.in_(existing)))
             session.commit()
 
         with self.engine.connect() as conn:
@@ -1349,3 +1350,137 @@ class DocumentRepository:
             progress_callback(total, total)
 
         return count
+
+    # --- OCR (see rootmind.ocr and rootmind.indexer.ocr_worker) ----------------------
+
+    def ocr_state(self, doc_id: str) -> OcrDocument | None:
+        """The OCR row of a document, or None when it was never checked."""
+        with self._get_session() as session:
+            row = session.get(OcrDocument, doc_id)
+            if row is not None:
+                session.expunge(row)
+            return row
+
+    def ocr_plan(
+        self,
+        doc_id: str,
+        connector_name: str,
+        file_path: str,
+        content_hash: str,
+        pages: list[int],
+    ) -> None:
+        """Record what a document needs: ``pages`` to recognize ("pending"), or nothing ("none")."""
+        with self._get_session() as session:
+            row = session.get(OcrDocument, doc_id)
+            if row is None:
+                row = OcrDocument(doc_id=doc_id)
+                session.add(row)
+            row.connector_name = connector_name
+            row.file_path = file_path
+            row.content_hash = content_hash
+            row.pages = " ".join(str(p) for p in pages)
+            row.state = "pending" if pages else "none"
+            row.error_message = None
+            row.updated_at = datetime.now()
+            session.commit()
+
+    def ocr_finish(self, doc_id: str, state: str, error_message: str | None = None) -> None:
+        """Mark a document's OCR ``done`` or ``error``."""
+        with self._get_session() as session:
+            row = session.get(OcrDocument, doc_id)
+            if row is None:
+                return
+            row.state = state
+            row.error_message = error_message
+            row.updated_at = datetime.now()
+            session.commit()
+
+    def ocr_forget(self, doc_id: str) -> None:
+        """Drop a document's OCR row, so the next sync checks the file again."""
+        with self._get_session() as session:
+            session.execute(delete(OcrDocument).where(OcrDocument.doc_id == doc_id))
+            session.commit()
+
+    def ocr_next(self, connector_names: Collection[str]) -> OcrDocument | None:
+        """The oldest pending OCR work of the given connectors, or None."""
+        if not connector_names:
+            return None
+        with self._get_session() as session:
+            row = session.execute(
+                select(OcrDocument)
+                .where(
+                    OcrDocument.state == "pending",
+                    OcrDocument.connector_name.in_(list(connector_names)),
+                )
+                .order_by(OcrDocument.updated_at)
+                .limit(1)
+            ).scalar_one_or_none()
+            if row is not None:
+                session.expunge(row)
+            return row
+
+    def ocr_drop_pending(self, keep: Collection[str]) -> int:
+        """Forget the pending OCR work of connectors not in ``keep`` (OCR turned off).
+
+        The rows are deleted, so turning OCR on again plans the work afresh.
+        Text that OCR already added stays in the index.
+        """
+        with self._get_session() as session:
+            result = session.execute(
+                delete(OcrDocument).where(
+                    OcrDocument.state == "pending",
+                    OcrDocument.connector_name.not_in(list(keep)),
+                )
+            )
+            session.commit()
+            return result.rowcount or 0
+
+    def ocr_pending(self, connector_names: Collection[str]) -> dict[str, int]:
+        """``{"documents": n, "pages": n}`` still waiting for OCR in the given connectors."""
+        if not connector_names:
+            return {"documents": 0, "pages": 0}
+        with self._get_session() as session:
+            rows = session.execute(
+                select(OcrDocument.pages).where(
+                    OcrDocument.state == "pending",
+                    OcrDocument.connector_name.in_(list(connector_names)),
+                )
+            ).scalars()
+            pages = [len(p.split()) for p in rows]
+        return {"documents": len(pages), "pages": sum(pages)}
+
+    def ocr_cached(self, content_hash: str, page: int) -> str | None:
+        """The text recognized earlier for this content and page, or None."""
+        with self._get_session() as session:
+            row = session.get(OcrCache, (content_hash, page))
+            return row.text if row is not None else None
+
+    def ocr_store(self, content_hash: str, page: int, recognized: str) -> None:
+        """Keep recognized text for this content and page."""
+        with self._get_session() as session:
+            session.merge(OcrCache(content_hash=content_hash, page=page, text=recognized))
+            session.commit()
+
+    def set_ocr_text(
+        self, doc_id: str, content_hash: str, content_text: str, page_count: int | None
+    ) -> bool:
+        """Replace a document's text with its text including the recognized pages.
+
+        Only when the document still has ``content_hash``: a file that changed
+        meanwhile is indexed and planned again. Returns whether it was written.
+        """
+        with self._get_session() as session:
+            doc = session.get(Document, doc_id)
+            if doc is None or doc.content_hash != content_hash:
+                return False
+            doc.content_text = content_text
+            doc.content_length = len(content_text) if content_text else None
+            if page_count is not None:
+                doc.page_count = page_count
+            doc.status = "indexed"
+            doc.error_message = None
+            file_name = doc.file_name
+            session.commit()
+        if content_text:
+            self._update_fts_index(doc_id, file_name, content_text, is_new=False)
+        return True

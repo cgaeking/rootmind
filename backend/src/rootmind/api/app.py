@@ -129,6 +129,16 @@ def protected_dirs(config: AppConfig) -> list[Path]:
     return sorted(folders)
 
 
+def _with_images(include: list[str], ocr: bool) -> list[str]:
+    """The include patterns of a folder, plus image files when it has OCR on."""
+    if not ocr:
+        return list(include)
+    from ..ocr import IMAGE_TYPES
+
+    extra = [f"*{ext}" for ext in sorted(IMAGE_TYPES) if f"*{ext}" not in include]
+    return [*include, *extra]
+
+
 def create_connectors(
     config: AppConfig,
     access: FolderAccess = UNRESTRICTED,
@@ -152,9 +162,12 @@ def create_connectors(
                 connector = LocalConnector(
                     name=connector_config.name,
                     root_path=connector_config.path,
-                    include_patterns=connector_config.include
-                    if connector_config.include is not None
-                    else config.indexer.include,
+                    include_patterns=_with_images(
+                        connector_config.include
+                        if connector_config.include is not None
+                        else config.indexer.include,
+                        connector_config.ocr,
+                    ),
                     exclude_patterns=connector_config.exclude
                     if connector_config.exclude is not None
                     else config.indexer.exclude,

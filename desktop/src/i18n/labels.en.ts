@@ -294,6 +294,16 @@ export const labels = {
     syncSummary: (indexed: string, total: string, date: string) =>
       `${indexed} / ${total} indexed · last sync: ${date}`,
     fileTypesTitle: "File types",
+    ocrTitle: "Text recognition (OCR)",
+    ocrDesc: "Scanned PDF pages and images in folders with OCR on, in the background.",
+    ocrPending: (pages: string, docs: string) => `${pages} pages in ${docs} files waiting`,
+    ocrIdle: "Nothing waiting.",
+    ocrCurrent: (file: string, page: number, pages: number) => `${file} · page ${page} of ${pages}`,
+    ocrPaused: "Paused",
+    ocrRunning: "running",
+    ocrPause: "Pause",
+    ocrResume: "Resume",
+    ocrUnavailable: "Tesseract was not found, so text recognition waits. Reinstall RootMind to add it.",
   },
   folders: {
     subtitle: "Folders to be indexed.",
@@ -313,6 +323,8 @@ export const labels = {
     notRemoved: (msg: string) => `The folder was not removed: ${msg}`,
     notChanged: (msg: string) => `The change was not saved: ${msg}`,
     staleConfig: "The backend changed in the meantime. Nothing was saved; check the folders again.",
+    ocr: "Turn on text recognition (OCR)",
+    ocrHint: "Also finds text in scanned PDFs and images. Runs in the background and takes time for many files.",
   },
   chat: {
     emptyPrompt: "Ask me something about your indexed documents.",

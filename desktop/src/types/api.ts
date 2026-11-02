@@ -166,6 +166,20 @@ export interface RecentResponse {
   documents: RecentDoc[];
 }
 
+/** GET /ocr/status: text recognition in the background. */
+export interface OcrStatus {
+  /** false: no Tesseract found, the work waits. */
+  available: boolean;
+  version: string | null;
+  languages: string[];
+  paused: boolean;
+  /** Folders with OCR on. */
+  folders: string[];
+  pending: { documents: number; pages: number };
+  /** The document being recognized: page `page` of `pages`. */
+  current: { file_path: string; page: number; pages: number } | null;
+}
+
 export interface ProgressResponse {
   total: number;
   processed: number;

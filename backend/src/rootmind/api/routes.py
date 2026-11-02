@@ -189,6 +189,9 @@ class ConnectorBody(BaseModel):
     # Minutes between re-scans of this folder (network shares); 0 removes the
     # setting, a missing value keeps the stored one.
     rescan_minutes: int | None = Field(None, ge=0, le=7 * 24 * 60)
+    # Text recognition (OCR) for scanned PDF pages and images in this folder;
+    # a missing value keeps the stored one.
+    ocr: bool | None = None
 
 
 class IndexerBody(BaseModel):
@@ -570,6 +573,28 @@ def create_router(app_state: Any) -> APIRouter:
         """Get current index/sync status."""
         return app_state.sync_manager.get_status()
 
+    @router.get("/ocr/status", tags=["Index"])
+    def get_ocr_status():
+        """Text recognition (OCR): engine, pause state and the pages still waiting."""
+        return app_state.sync_manager.ocr_worker.status()
+
+    @router.post("/ocr/pause", tags=["Index"])
+    def pause_ocr():
+        """Pause text recognition after the current page (until resumed or restarted)."""
+        from ..indexer import ocr_worker
+
+        ocr_worker.pause()
+        return app_state.sync_manager.ocr_worker.status()
+
+    @router.post("/ocr/resume", tags=["Index"])
+    def resume_ocr():
+        """Resume text recognition."""
+        from ..indexer import ocr_worker
+
+        ocr_worker.resume()
+        app_state.sync_manager.ocr_worker.wake()
+        return app_state.sync_manager.ocr_worker.status()
+
     @router.get("/index/progress", tags=["Index"])
     async def get_index_progress():
         """Get current indexing progress (when running)."""
@@ -711,6 +736,7 @@ def create_router(app_state: Any) -> APIRouter:
                     include=c.include,
                     exclude=c.exclude,
                     rescan_minutes=c.rescan_minutes,
+                    ocr=c.ocr,
                 )
                 for c in cfg.connectors
             ],
