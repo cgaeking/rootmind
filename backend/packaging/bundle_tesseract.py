@@ -49,6 +49,7 @@ INSTALLER = Download(
         "https://github.com/tesseract-ocr/tesseract/releases/download/5.5.3/"
         "tesseract-ocr-w64-setup-5.5.3.20260724.exe"
     ),
+    # pragma: allowlist nextline secret (a file hash)
     sha256="bee9e3434bd94fd65387d9be28cd467a41f61b1275383b55b0f59a1331270ae4",
     name="tesseract-ocr-w64-setup-5.5.3.20260724.exe",
 )
@@ -56,11 +57,13 @@ TESSDATA_TAG = "4.1.0"
 MODELS = (
     Download(
         url=f"https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/{TESSDATA_TAG}/deu.traineddata",
+        # pragma: allowlist nextline secret (a file hash)
         sha256="8407331d6aa0229dc927685c01a7938fc5a641d1a9524f74838cdac599f0d06e",
         name="deu.traineddata",
     ),
     Download(
         url=f"https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/{TESSDATA_TAG}/eng.traineddata",
+        # pragma: allowlist nextline secret (a file hash)
         sha256="8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba",
         name="eng.traineddata",
     ),
