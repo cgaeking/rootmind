@@ -295,6 +295,17 @@ export const labels = {
     syncSummary: (indexed: string, total: string, date: string) =>
       `${indexed} / ${total} indiziert · letzte Synchronisierung: ${date}`,
     fileTypesTitle: "Dateitypen",
+    ocrTitle: "Texterkennung (OCR)",
+    ocrDesc: "Gescannte PDF-Seiten und Bilder in Ordnern mit OCR, im Hintergrund.",
+    ocrPending: (pages: string, docs: string) => `${pages} Seiten in ${docs} Dateien warten`,
+    ocrIdle: "Nichts wartet.",
+    ocrCurrent: (file: string, page: number, pages: number) => `${file} · Seite ${page} von ${pages}`,
+    ocrPaused: "Pausiert",
+    ocrRunning: "läuft",
+    ocrPause: "Pausieren",
+    ocrResume: "Fortsetzen",
+    ocrUnavailable:
+      "Tesseract wurde nicht gefunden, die Texterkennung wartet. Installiere RootMind neu, um es hinzuzufügen.",
   },
   folders: {
     subtitle: "Verzeichnisse, die indiziert werden sollen.",
@@ -315,6 +326,9 @@ export const labels = {
     notChanged: (msg: string) => `Die Änderung wurde nicht gespeichert: ${msg}`,
     staleConfig:
       "Das Backend hat sich inzwischen geändert. Es wurde nichts gespeichert; prüfe die Ordner erneut.",
+    ocr: "OCR-Texterkennung einschalten",
+    ocrHint:
+      "Findet auch Text in gescannten PDFs und Bildern. Läuft im Hintergrund und dauert bei vielen Dateien eine Weile.",
   },
   chat: {
     emptyPrompt: "Frag mich etwas zu deinen indizierten Dokumenten.",

@@ -37,8 +37,20 @@ hiddenimports = []
 # miss. Both LLM SDKs are needed: openai also serves the xAI provider. The
 # ngrok SDK (remote access, imported only when it is turned on) is a native
 # extension (ngrok/ngrok.pyd) plus its package metadata, which the API reports.
+# pypdfium2 (OCR: finding and rendering scanned PDF pages) ships PDFium as a
+# native library in pypdfium2_raw, with version files read at import
+# (pypdfium2_cfg holds its settings).
 # Source files are left out (include_py_files=False); the bytecode is enough.
-for pkg in ("anthropic", "openai", "apscheduler", "pydantic", "ngrok"):
+for pkg in (
+    "anthropic",
+    "openai",
+    "apscheduler",
+    "pydantic",
+    "ngrok",
+    "pypdfium2",
+    "pypdfium2_raw",
+    "pypdfium2_cfg",
+):
     d, b, h = collect_all(pkg, include_py_files=False)
     datas += d
     binaries += b

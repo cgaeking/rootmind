@@ -2,9 +2,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { labels, useLanguage } from "../i18n/labels";
 import { useLiveBackend } from "../hooks/useLiveBackend";
 import { useStore } from "../state/store";
-import { getStatus, getStatistics, getProgress, getRecentIndexed, refreshIndex } from "../api/rlm";
+import {
+  getOcrStatus,
+  getProgress,
+  getRecentIndexed,
+  getStatistics,
+  getStatus,
+  pauseOcr,
+  refreshIndex,
+  resumeOcr,
+} from "../api/rlm";
 import { ApiError } from "../api/client";
-import type { ProgressResponse, RecentDoc, Statistics, StatusResponse } from "../types/api";
+import type { OcrStatus, ProgressResponse, RecentDoc, Statistics, StatusResponse } from "../types/api";
 import { Badge, Banner, Button, Row, Section } from "../components/ui";
 import { displayPath } from "../utils/paths";
 import { ConnBanner } from "../components/ConnBanner";
@@ -70,6 +79,7 @@ export function StatusScreen() {
   const [recent, setRecent] = useState<RecentDoc[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [ocr, setOcr] = useState<OcrStatus | null>(null);
 
   const prevRunning = useRef(false);
 
@@ -102,6 +112,13 @@ export function StatusScreen() {
           setProgress(null);
         }
         try {
+          const o = await getOcrStatus();
+          if (isLive(url)) setOcr(o);
+        } catch {
+          /* an older backend has no OCR */
+          if (isLive(url)) setOcr(null);
+        }
+        try {
           const docs = (await getRecentIndexed(15)).documents;
           if (isLive(url)) setRecent(docs);
         } catch {
@@ -125,6 +142,7 @@ export function StatusScreen() {
     setRecent([]);
     setError(null);
     setActionMsg(null);
+    setOcr(null);
     prevRunning.current = false;
     if (!live) return;
     void loadStats(live);
@@ -149,6 +167,17 @@ export function StatusScreen() {
       } else {
         setActionMsg(e instanceof ApiError ? e.message : String(e));
       }
+    }
+  }
+
+  async function toggleOcr() {
+    if (!live || !ocr) return;
+    const url = live;
+    try {
+      const o = ocr.paused ? await resumeOcr() : await pauseOcr();
+      if (isLive(url)) setOcr(o);
+    } catch (e) {
+      if (isLive(url)) setActionMsg(e instanceof ApiError ? e.message : String(e));
     }
   }
 
@@ -219,6 +248,47 @@ export function StatusScreen() {
               {labels.status.updateHint}
             </p>
           </Section>
+
+          {ocr && ocr.folders.length > 0 && (
+            <Section
+              title={labels.status.ocrTitle}
+              description={labels.status.ocrDesc}
+              actions={
+                ocr.paused ? (
+                  <Badge tone="muted">{labels.status.ocrPaused}</Badge>
+                ) : ocr.current ? (
+                  <Badge tone="ok">{labels.status.ocrRunning}</Badge>
+                ) : null
+              }
+            >
+              {!ocr.available && <Banner tone="err">{labels.status.ocrUnavailable}</Banner>}
+              <p className="muted">
+                {ocr.pending.documents > 0
+                  ? labels.status.ocrPending(fmtNum(ocr.pending.pages), fmtNum(ocr.pending.documents))
+                  : labels.status.ocrIdle}
+              </p>
+              {ocr.current && (
+                <p
+                  className="muted"
+                  style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  title={displayPath(ocr.current.file_path)}
+                >
+                  {labels.status.ocrCurrent(
+                    displayPath(ocr.current.file_path),
+                    ocr.current.page,
+                    ocr.current.pages,
+                  )}
+                </p>
+              )}
+              {(ocr.paused || ocr.pending.documents > 0) && (
+                <Row>
+                  <Button onClick={() => void toggleOcr()}>
+                    {ocr.paused ? labels.status.ocrResume : labels.status.ocrPause}
+                  </Button>
+                </Row>
+              )}
+            </Section>
+          )}
 
           <Section title={labels.status.recentTitle} actions={<Badge tone="muted">{recent.length}</Badge>}>
             {recent.length === 0 && <p className="muted">{labels.status.noDocuments}</p>}

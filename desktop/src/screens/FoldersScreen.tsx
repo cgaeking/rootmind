@@ -9,10 +9,12 @@ import type { AppConfigDto, ConnectorDto } from "../types/config";
 import { Banner, Button, Row, Section, TextInput } from "../components/ui";
 import { ConnBanner } from "../components/ConnBanner";
 import { displayPath, samePath, storedPath } from "../utils/paths";
+import styles from "./FoldersScreen.module.css";
 
 interface Entry {
   name: string; // preserved for existing folders; "" for new ones until saved
   path: string; // as stored (see utils/paths)
+  ocr: boolean; // text recognition for scanned PDFs and images
 }
 
 /** A folder path being edited: `index === entries.length` is a new row. */
@@ -54,7 +56,7 @@ function withNames(entries: Entry[]): Entry[] {
 
 function toConnectors(entries: Entry[]): ConnectorDto[] {
   // No include/exclude -> the folder inherits the global patterns.
-  return entries.map((e) => ({ name: e.name, type: "local", path: e.path }));
+  return entries.map((e) => ({ name: e.name, type: "local", path: e.path, ocr: e.ocr }));
 }
 
 /** A backend message that names a folder, with the path written the way the UI shows it. */
@@ -101,7 +103,7 @@ export function FoldersScreen() {
         setEntries(
           c.connectors
             .filter((x) => x.type === "local")
-            .map((x) => ({ name: x.name, path: x.path ?? "" })),
+            .map((x) => ({ name: x.name, path: x.path ?? "", ocr: !!x.ocr })),
         );
       })
       .catch((e) => {
@@ -169,7 +171,7 @@ export function FoldersScreen() {
 
   function addFolder(path: string) {
     if (!path || entries.some((e) => samePath(e.path, path))) return;
-    void persist([...entries, { name: "", path }], (reason) => ({
+    void persist([...entries, { name: "", path, ocr: false }], (reason) => ({
       index: null,
       message: labels.folders.notAdded(withDisplayPath(reason, path)),
     }));
@@ -180,6 +182,13 @@ export function FoldersScreen() {
     void persist(
       entries.filter((_, j) => j !== index),
       (reason) => ({ index, message: labels.folders.notRemoved(withDisplayPath(reason, path)) }),
+    );
+  }
+
+  function setOcr(index: number, ocr: boolean) {
+    void persist(
+      entries.map((e, j) => (j === index ? { ...e, ocr } : e)),
+      (reason) => ({ index, message: labels.folders.notChanged(reason) }),
     );
   }
 
@@ -243,6 +252,17 @@ export function FoldersScreen() {
             </Button>
           )}
         </Row>
+        {entry && (
+          <label className={styles.ocr} title={labels.folders.ocrHint}>
+            <input
+              type="checkbox"
+              checked={entry.ocr}
+              disabled={saving}
+              onChange={(ev) => setOcr(index, ev.currentTarget.checked)}
+            />
+            {labels.folders.ocr}
+          </label>
+        )}
         {entry?.name && entry.name in refused && (
           <Banner tone="err">
             {labels.folders.notAccessible(withDisplayPath(refused[entry.name], entry.path))}

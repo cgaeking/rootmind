@@ -1,0 +1,14 @@
+.ocr {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ocr input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+}

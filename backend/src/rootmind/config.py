@@ -133,6 +133,9 @@ class ConnectorConfig(BaseModel):
     # for network shares, where changes made on other machines raise no event.
     # None: only the regular schedule (indexer.sync_interval_hours).
     rescan_minutes: int | None = Field(default=None, ge=1, le=7 * 24 * 60)
+    # Recognize text in scanned PDF pages and images (Tesseract), in the
+    # background. Off by default: photo folders would cost a lot of CPU.
+    ocr: bool = False
 
 
 class IndexerConfig(BaseModel):
@@ -471,6 +474,12 @@ def save_config(data: dict, config_path: str | Path | None = None) -> AppConfig:
             for c in raw.get("connectors") or []
             if isinstance(c, dict)
         }
+        # ocr: true/false sets it, a missing value keeps the stored one.
+        stored_ocr = {
+            c.get("name"): bool(c.get("ocr"))
+            for c in raw.get("connectors") or []
+            if isinstance(c, dict)
+        }
         new_conns = []
         for c in data["connectors"]:
             entry = {"name": c["name"], "type": c.get("type", "local"), "path": c.get("path")}
@@ -483,6 +492,11 @@ def save_config(data: dict, config_path: str | Path | None = None) -> AppConfig:
                 rescan = stored_rescan.get(c["name"])
             if rescan:
                 entry["rescan_minutes"] = rescan
+            ocr = c.get("ocr")
+            if ocr is None:
+                ocr = stored_ocr.get(c["name"], False)
+            if ocr:
+                entry["ocr"] = True
             new_conns.append(entry)
         removed = {n for n in stored_rescan if isinstance(n, str)} - {c["name"] for c in new_conns}
         raw["connectors"] = new_conns

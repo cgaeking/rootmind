@@ -92,6 +92,14 @@ large shares. One sync runs at a time: a re-scan is skipped while another sync
 runs, and the scheduled sync of every folder, when it finds a re-scan running,
 retries every minute and holds the re-scans back until it has started.
 
+**Scanned documents (OCR).** `ocr: true` under a folder in `config.yaml`
+recognizes text in that folder's scanned PDF pages and images with
+[Tesseract](https://github.com/tesseract-ocr/tesseract) (install it, e.g.
+`apt install tesseract-ocr tesseract-ocr-deu`, or point `RLM_TESSERACT` at
+the program). Only PDF pages without a text layer are recognized, in the
+background, one page at a time at low priority; `GET /ocr/status` shows what
+is still waiting. Leave it off for photo collections.
+
 `--key-file -` reads the key from stdin instead (without echo in a terminal).
 For Ollama on another machine: `rootmind config llm --provider ollama --model
 qwen3:8b --base-url http://gpu-box:11434` (the questions and excerpts then
