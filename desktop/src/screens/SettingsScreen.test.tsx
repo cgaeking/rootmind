@@ -160,6 +160,31 @@ describe("SettingsScreen", () => {
   });
 });
 
+describe("SettingsScreen Advanced", () => {
+  it("is collapsed while the RootMind service is in use, with the service's address filled in", async () => {
+    useStore.setState({ kind: "service", baseUrl: "http://127.0.0.1:8000", token: "v", conn: "online" });
+    vi.mocked(rlm.getConfig).mockResolvedValue(configFor("a", 11));
+    render(<SettingsScreen />);
+    const toggle = await screen.findByRole("button", { name: "Show" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByLabelText(/^Backend address/)).toBeNull();
+
+    fireEvent.click(toggle);
+    expect((screen.getByLabelText(/^Backend address/) as HTMLInputElement).value).toBe("http://127.0.0.1:8000");
+    // A token only for a backend at another address.
+    expect(screen.queryByLabelText(/^TokenOnly for/)).toBeNull();
+    expect(screen.queryByText(/In use:/)).toBeNull();
+  });
+
+  it("is open while a backend at another address is in use, and says which", async () => {
+    serveConfigs();
+    render(<SettingsScreen />);
+    expect(await screen.findByRole("button", { name: "Hide" })).toBeTruthy();
+    expect(screen.getByText(`In use: ${A}`)).toBeTruthy();
+    expect(screen.getByLabelText(/^TokenOnly for/)).toBeTruthy();
+  });
+});
+
 describe("SettingsScreen language", () => {
   it("switches every label at once and keeps the choice", async () => {
     serveConfigs();

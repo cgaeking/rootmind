@@ -38,60 +38,80 @@ function pickDefaultModel(models: string[]): string {
   );
 }
 
-/** Settings → Advanced: a backend at another address (with an optional token), or back to the RootMind service. */
+/**
+ * Settings → Advanced (collapsed): the backend address, normally this
+ * computer's RootMind service (its address is filled in). Another address
+ * connects to a RootMind backend elsewhere, with an optional token; the
+ * address of the service stays the service (state/backendActions.ts). Open
+ * while a backend at another address is in use.
+ */
 function AdvancedSection() {
   const { kind, baseUrl, version, recheck } = useBackend();
   const token = useStore((s) => s.token);
-  const customUrl = kind === "custom" ? baseUrl : "";
-  const customToken = kind === "custom" ? (token ?? "") : "";
+  const custom = kind === "custom";
+  const shownUrl = baseUrl || DEFAULT_BASE_URL;
+  const customToken = custom ? (token ?? "") : "";
+
+  const [open, setOpen] = useState(custom);
+  useEffect(() => {
+    if (custom) setOpen(true);
+  }, [custom]);
 
   // The fields follow the store: the backend dialog can change the URL too.
-  const [urlDraft, setUrlDraft] = useState(customUrl);
+  const [urlDraft, setUrlDraft] = useState(shownUrl);
   const [tokenDraft, setTokenDraft] = useState(customToken);
-  useEffect(() => setUrlDraft(customUrl), [customUrl]);
+  useEffect(() => setUrlDraft(shownUrl), [shownUrl]);
   useEffect(() => setTokenDraft(customToken), [customToken]);
 
-  const inUse =
-    kind === "service"
-      ? labels.settings.inUse.service
-      : kind === "custom" && baseUrl
-        ? labels.settings.inUse.custom(baseUrl)
-        : labels.settings.inUse.none;
-
   return (
-    <Section title={labels.settings.advancedTitle} description={labels.settings.advancedDesc}>
-      <span className="muted">
-        {inUse}
-        {version && <> · {labels.settings.versionLabel(version)}</>}
-      </span>
-      <Field label={labels.settings.urlLabel} hint={labels.settings.urlHint}>
-        <TextInput
-          value={urlDraft}
-          onChange={(e) => setUrlDraft(e.currentTarget.value)}
-          placeholder={DEFAULT_BASE_URL}
-          spellCheck={false}
-        />
-      </Field>
-      <Field label={labels.settings.tokenLabel} hint={labels.settings.tokenHint}>
-        <TextInput
-          type="password"
-          value={tokenDraft}
-          onChange={(e) => setTokenDraft(e.currentTarget.value)}
-          spellCheck={false}
-          autoComplete="off"
-        />
-      </Field>
-      <Row>
-        <Button onClick={() => void connectCustom(urlDraft || DEFAULT_BASE_URL, tokenDraft)}>
-          {labels.settings.apply}
+    <Section
+      title={labels.settings.advancedTitle}
+      actions={
+        <Button onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+          {open ? labels.settings.advancedHide : labels.settings.advancedShow}
         </Button>
-        <Button onClick={() => void recheck()}>{labels.settings.check}</Button>
-        {kind === "custom" && inTauri() && (
-          <Button onClick={() => void connectService()} title={labels.settings.useDefaultHint}>
-            {labels.settings.useDefault}
-          </Button>
-        )}
-      </Row>
+      }
+    >
+      {open && (
+        <>
+          {custom && baseUrl && (
+            <span className="muted">
+              {labels.settings.inUse.custom(baseUrl)}
+              {version && <> · {labels.settings.versionLabel(version)}</>}
+            </span>
+          )}
+          <Field label={labels.settings.urlLabel} hint={labels.settings.urlHint}>
+            <TextInput
+              value={urlDraft}
+              onChange={(e) => setUrlDraft(e.currentTarget.value)}
+              placeholder={DEFAULT_BASE_URL}
+              spellCheck={false}
+            />
+          </Field>
+          {custom && (
+            <Field label={labels.settings.tokenLabel} hint={labels.settings.tokenHint}>
+              <TextInput
+                type="password"
+                value={tokenDraft}
+                onChange={(e) => setTokenDraft(e.currentTarget.value)}
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </Field>
+          )}
+          <Row>
+            <Button onClick={() => void connectCustom(urlDraft || DEFAULT_BASE_URL, tokenDraft)}>
+              {labels.settings.apply}
+            </Button>
+            <Button onClick={() => void recheck()}>{labels.settings.check}</Button>
+            {custom && inTauri() && (
+              <Button onClick={() => void connectService()} title={labels.settings.useDefaultHint}>
+                {labels.settings.useDefault}
+              </Button>
+            )}
+          </Row>
+        </>
+      )}
     </Section>
   );
 }

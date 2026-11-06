@@ -4,6 +4,14 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Changed
+
+- Desktop: Settings › RootMind service has two clear options for MCP over HTTP ([#87](https://github.com/cgaeking/rootmind/issues/87)):
+  - **Local** (the default) shows the endpoint with Copy and Copy token. "Reach MCP from Claude, n8n and other clients" opens a dialog for Claude Desktop (the `rootmind.mcpb` bundle), Claude Code (a ready `claude mcp add` command) and n8n, with copy buttons that fill in the token.
+  - **Remote** sets up the ngrok tunnel step by step: authtoken, domain, **Connect**, with a help dialog on where to get both. Once connected, it shows the public endpoint, **Turn off**, and the values of a Claude custom connector ready to copy, so RootMind works in Claude on the web and in the Claude app on the phone.
+  - The text under the section title and the service's address are gone.
+  - Settings › **Advanced** is collapsed and holds only the backend address. The address of this computer's RootMind service is treated as the service, also when it was entered there. Until now, entering it hid Remote access and the service's settings ("The app uses the backend at another address").
+
 ## [2.8.0] - 2026-11-02
 
 ### Added

@@ -190,5 +190,29 @@ export function n8nSnippet(endpoint: string, token: string): string {
   ].join("\n");
 }
 
-/** README section about connecting n8n to the MCP endpoint. */
-export const N8N_DOCS_URL = "https://github.com/cgaeking/rootmind#reach-mcp-from-n8n";
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/**
+ * Whether `url` is the address of this computer's RootMind service: the same
+ * port on a loopback host (127.0.0.1, localhost or ::1) over http. A backend
+ * entered under Settings › Advanced with that address is the service.
+ */
+export function isServiceAddress(url: string, info: ServiceInfo | null): boolean {
+  if (!info?.installed || !info.ours || !info.url) return false;
+  let given: URL;
+  let service: URL;
+  try {
+    given = new URL(url.trim());
+    service = new URL(info.url);
+  } catch {
+    return false;
+  }
+  const port = (u: URL) => u.port || (u.protocol === "https:" ? "443" : "80");
+  return (
+    given.protocol === "http:" &&
+    LOOPBACK_HOSTS.has(given.hostname) &&
+    LOOPBACK_HOSTS.has(service.hostname) &&
+    port(given) === port(service)
+  );
+}

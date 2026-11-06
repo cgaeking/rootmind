@@ -97,10 +97,11 @@ describe("platform wording", () => {
   it("switches the live labels to the Linux texts and back", () => {
     useLanguageStore.getState().setPref("en");
     useLanguageStore.getState().setPlatform("linux");
-    expect(i18n.labels.service.desc).toBe(en.linux.service.desc);
+    const text = () => i18n.labels.service.problems.notInstalled.text;
+    expect(text()).toBe(en.linux.service.problems.notInstalled.text);
     useLanguageStore.getState().setPref("de");
-    expect(i18n.labels.service.desc).toBe(de.linux.service.desc);
+    expect(text()).toBe(de.linux.service.problems.notInstalled.text);
     useLanguageStore.getState().setPlatform("windows");
-    expect(i18n.labels.service.desc).toBe(de.service.desc);
+    expect(text()).toBe(de.service.problems.notInstalled.text);
   });
 });

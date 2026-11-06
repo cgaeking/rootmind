@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RemoteAccessInfo } from "../types/api";
-import { canTurnOn, publicEndpoint, settingsChange } from "./remoteAccess";
+import { connectChange, publicEndpoint } from "./remoteAccess";
 
 const info: RemoteAccessInfo = {
   enabled: false,
@@ -16,19 +16,16 @@ describe("remote access helpers", () => {
     expect(publicEndpoint("https://a.ngrok.app/")).toBe("https://a.ngrok.app/mcp");
   });
 
-  it("sends only what changed", () => {
-    expect(settingsChange(info, "", null)).toBeNull();
-    expect(settingsChange(info, "  ", "saved.ngrok-free.app ")).toBeNull();
-    expect(settingsChange(info, " token ", null)).toEqual({ authtoken: "token" });
-    expect(settingsChange(info, "", "")).toEqual({ domain: "" });
-    expect(settingsChange(info, "t", "new.ngrok.app")).toEqual({ authtoken: "t", domain: "new.ngrok.app" });
-    expect(settingsChange({ ...info, domain: null }, "", "")).toBeNull();
-  });
-
-  it("can be turned on only with MCP over HTTP, an authtoken and the SDK", () => {
-    expect(canTurnOn(info, true)).toBe(true);
-    expect(canTurnOn(info, false)).toBe(false);
-    expect(canTurnOn({ ...info, authtoken_saved: false }, true)).toBe(false);
-    expect(canTurnOn({ ...info, sdk: { available: false, version: null } }, true)).toBe(false);
+  it("turns remote access on with only what changed", () => {
+    expect(connectChange(info, "", null)).toEqual({ enabled: true });
+    expect(connectChange(info, "  ", "saved.ngrok-free.app ")).toEqual({ enabled: true });
+    expect(connectChange(info, " token ", null)).toEqual({ enabled: true, authtoken: "token" });
+    expect(connectChange(info, "", "")).toEqual({ enabled: true, domain: "" });
+    expect(connectChange(info, "t", "new.ngrok.app")).toEqual({
+      enabled: true,
+      authtoken: "t",
+      domain: "new.ngrok.app",
+    });
+    expect(connectChange({ ...info, domain: null }, "", "")).toEqual({ enabled: true });
   });
 });

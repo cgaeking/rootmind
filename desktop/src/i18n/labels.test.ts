@@ -42,11 +42,13 @@ describe("the Linux wording", () => {
 
   it("is used for Linux and nowhere else", async () => {
     const { labelsFor, overlay } = await import("./labels");
-    expect(labelsFor("en", "windows").service.desc).toBe(en.service.desc);
-    expect(labelsFor("en", "other").service.desc).toBe(en.service.desc);
+    const text = (l: { service: { problems: { notInstalled: { text: string } } } }) =>
+      l.service.problems.notInstalled.text;
+    expect(text(labelsFor("en", "windows"))).toBe(text(en));
+    expect(text(labelsFor("en", "other"))).toBe(text(en));
     const linux = labelsFor("en", "linux");
-    expect(linux.service.desc).toBe(en.linux.service.desc);
-    expect(linux.service.desc).toMatch(/systemd user services/);
+    expect(text(linux)).toBe(en.linux.service.problems.notInstalled.text);
+    expect(text(linux)).toMatch(/systemd user services/);
     // Untouched texts stay, deep inside a replaced section too.
     expect(linux.service.title).toBe(en.service.title);
     expect(linux.service.problems.portBusy).toEqual(en.service.problems.portBusy);

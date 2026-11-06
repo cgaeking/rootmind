@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { useLanguageStore } from "../i18n/labels";
 import {
+  isServiceAddress,
   canRepair,
   changeMessage,
   isBlockedCode,
@@ -196,5 +197,28 @@ describe("n8nSnippet", () => {
     expect(text).toContain("http://127.0.0.1:3000/mcp");
     expect(text).toContain("Header Name: Authorization");
     expect(text).toContain("Header Value: Bearer tok");
+  });
+});
+
+describe("isServiceAddress", () => {
+  const ours = serviceInfoFixture({ installed: true, ours: true, url: "http://127.0.0.1:8000" });
+
+  it("matches the service's port on any loopback name", () => {
+    expect(isServiceAddress("http://127.0.0.1:8000", ours)).toBe(true);
+    expect(isServiceAddress(" http://localhost:8000/ ", ours)).toBe(true);
+    expect(isServiceAddress("http://[::1]:8000", ours)).toBe(true);
+  });
+
+  it("does not match another port, host or scheme", () => {
+    expect(isServiceAddress("http://127.0.0.1:8001", ours)).toBe(false);
+    expect(isServiceAddress("http://192.168.1.5:8000", ours)).toBe(false);
+    expect(isServiceAddress("https://127.0.0.1:8000", ours)).toBe(false);
+    expect(isServiceAddress("not a url", ours)).toBe(false);
+  });
+
+  it("needs this computer's own service", () => {
+    expect(isServiceAddress("http://127.0.0.1:8000", null)).toBe(false);
+    expect(isServiceAddress("http://127.0.0.1:8000", { ...ours, ours: false })).toBe(false);
+    expect(isServiceAddress("http://127.0.0.1:8000", { ...ours, url: null })).toBe(false);
   });
 });

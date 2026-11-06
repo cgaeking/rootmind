@@ -15,7 +15,7 @@ vi.mock("../api/backend", async (importOriginal) => ({
   serviceMcpToken: vi.fn(),
 }));
 
-// Remote access is tested in RemoteAccess.test.tsx; here only where it appears.
+// Local / Remote is tested in McpReach.test.tsx; here only where it appears.
 vi.mock("../api/rlm", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api/rlm")>()),
   getRemoteAccess: vi.fn(),
@@ -83,23 +83,23 @@ afterEach(() => {
 });
 
 describe("ServiceSection", () => {
-  it("shows the running service read-only, without an on/off switch", async () => {
+  it("shows the running service without an on/off switch or its address", async () => {
     render(<ServiceSection />);
     expect(await screen.findByText("Running")).toBeTruthy();
-    expect(screen.getByText(SERVICE)).toBeTruthy();
-    expect(screen.getByText("1.3.0")).toBeTruthy();
+    expect(screen.queryByText(SERVICE)).toBeNull();
+    expect(screen.queryByText(/runs as a Windows service/)).toBeNull();
     expect(screen.queryByRole("switch")).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
   });
 
-  it("shows the MCP endpoint and copies the token without displaying it", async () => {
+  it("starts in Local with the MCP endpoint, and copies the token without displaying it", async () => {
     vi.mocked(backend.serviceMcpToken).mockResolvedValue("mcp-secret");
     render(<ServiceSection />);
     expect(await screen.findByDisplayValue(MCP)).toBeTruthy();
-    const toggle = screen.getByRole("checkbox", {
-      name: "Serve MCP over HTTP (for Claude Desktop, n8n and other agents)",
-    }) as HTMLInputElement;
+    const toggle = screen.getByRole("checkbox", { name: "Serve MCP over HTTP (for Claude, n8n and other agents)" }) as HTMLInputElement;
     expect(toggle.checked).toBe(true);
+    expect((screen.getByRole("radio", { name: /^Local/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("radio", { name: /^Remote/ }) as HTMLInputElement).checked).toBe(false);
     expect(backend.serviceMcpToken).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Copy token" }));
@@ -108,33 +108,24 @@ describe("ServiceSection", () => {
     expect(screen.queryByText(/mcp-secret/)).toBeNull();
   });
 
-  it("shows remote access below MCP, and disables it while MCP over HTTP is off", async () => {
-    render(<ServiceSection />);
-    const remote = (await screen.findByRole("checkbox", {
-      name: "Reach MCP from the internet through ngrok",
-    })) as HTMLInputElement;
-    expect(screen.getByText("Remote access (ngrok)")).toBeTruthy();
-    expect(screen.queryByText("Turn on Serve MCP over HTTP first.")).toBeNull();
-    cleanup();
-
+  it("offers no Local or Remote while MCP over HTTP is off", async () => {
     vi.mocked(backend.serviceInfo).mockResolvedValue({
       ...ours,
       mcp: { installed: false, state: null, port: null, url: null },
     });
     render(<ServiceSection />);
-    expect(await screen.findByText("Turn on Serve MCP over HTTP first.")).toBeTruthy();
-    const disabled = (await screen.findByRole("checkbox", {
-      name: "Reach MCP from the internet through ngrok",
-    })) as HTMLInputElement;
-    expect(disabled.disabled).toBe(true);
-    expect(remote).toBeTruthy();
+    const toggle = (await screen.findByRole("checkbox", { name: "Serve MCP over HTTP (for Claude, n8n and other agents)" })) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(screen.queryByRole("radio")).toBeNull();
   });
 
-  it("hides remote access while the app uses another backend", async () => {
+  it("explains Remote while the app uses another backend, and switches to the service", async () => {
     useStore.setState({ kind: "custom", baseUrl: "http://example.test:9000", token: null, conn: "online" });
     render(<ServiceSection />);
-    await screen.findByText(/uses the backend at another address/);
-    expect(screen.queryByText("Remote access (ngrok)")).toBeNull();
+    await screen.findByText(/uses a RootMind backend at another address/);
+    fireEvent.click(await screen.findByRole("radio", { name: /^Remote/ }));
+    expect(await screen.findByText(/Remote runs in this computer's RootMind service/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use the RootMind service" })).toBeTruthy();
     expect(rlm.getRemoteAccess).not.toHaveBeenCalled();
   });
 
@@ -142,9 +133,7 @@ describe("ServiceSection", () => {
     vi.mocked(backend.serviceSetMcp).mockResolvedValue(failed(1223, true));
     render(<ServiceSection />);
     await screen.findByDisplayValue(MCP);
-    fireEvent.click(
-      screen.getByRole("checkbox", { name: "Serve MCP over HTTP (for Claude Desktop, n8n and other agents)" }),
-    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Serve MCP over HTTP (for Claude, n8n and other agents)" }));
     await waitFor(() => expect(backend.serviceSetMcp).toHaveBeenCalledWith(false));
     expect(await screen.findByText("Nothing was changed.")).toBeTruthy();
   });
@@ -224,7 +213,7 @@ describe("ServiceSection", () => {
     vi.mocked(backend.serviceInfo).mockResolvedValue({ ...ours, state: "stopped" });
     useStore.setState({ kind: "custom", baseUrl: "http://example.test:9000", token: null, conn: "online" });
     render(<ServiceSection />);
-    expect(await screen.findByText(/uses the backend at another address/)).toBeTruthy();
+    expect(await screen.findByText(/uses a RootMind backend at another address/)).toBeTruthy();
     expect(await screen.findByText(/The RootMind service is not running/)).toBeTruthy();
   });
 
