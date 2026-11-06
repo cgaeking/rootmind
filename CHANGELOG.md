@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.8.1] - 2026-11-06
+
 ### Changed
 
 - Desktop: Settings › RootMind service has two clear options for MCP over HTTP ([#87](https://github.com/cgaeking/rootmind/issues/87)):
