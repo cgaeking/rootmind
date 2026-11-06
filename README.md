@@ -271,10 +271,11 @@ only administrators can change.
 - A second service, `RootMind-MCP-HTTP`, serves MCP over HTTP on 127.0.0.1
   with its own bearer token (see [Connect MCP clients](#connect-mcp-clients)).
   It is on by default; the checkbox **Serve MCP over HTTP** turns it off and
-  on again (one administrator approval). Below it you choose who reaches it:
-  **Local** (programs on this computer, the default) or **Remote**, which
-  adds a public HTTPS address through ngrok for Claude on the web and on your
-  phone and other cloud assistants (see [Remote access](#remote-access)).
+  on again (one administrator approval). Below it, **Local** shows the
+  endpoint for programs on this computer with the MCP token, and the
+  **Remote** checkbox adds a public HTTPS address through ngrok for Claude on
+  the web and on your phone and other cloud assistants (see
+  [Remote access](#remote-access)).
 - The services run from their own copy of the program under
   `%ProgramFiles%\RootMind Service\`, which only administrators can change,
   and keep their data in `%ProgramData%\RootMind`.
@@ -303,7 +304,7 @@ security model.
 
 MCP clients get the same read-only tools as the app's agent and use their own
 model. Connect them to the service's MCP over HTTP: Settings → RootMind
-service shows the **MCP endpoint** and copies it and the token (**Copy
+service shows the **MCP endpoint** and copies it and the MCP token (**Copy MCP
 token**). For Claude Desktop there is a bundle that needs neither (see
 [Use RootMind in Claude Desktop](#use-rootmind-in-claude-desktop)). Claude
 Code:
@@ -396,24 +397,24 @@ RootMind can run the tunnel itself. The RootMind service's MCP server
 program needs to be installed. It is off by default.
 
 1. Create a free account at [ngrok.com](https://ngrok.com) and copy your
-   authtoken from the dashboard (**Your Authtoken**). Under **Domains**,
-   create the free static domain; without one, ngrok assigns an address that
-   changes after every restart. **Get your free ngrok authtoken and domain**
-   in the app walks you through this.
-2. In Settings → RootMind service, choose **Remote**, paste the authtoken and
-   the domain, choose **Connect** and confirm. The authtoken is never shown
-   again: the field then only says **Saved** (**Replace** and **Remove**
-   change it).
+   **ngrok Authtoken** from the dashboard (**Getting Started › Your
+   Authtoken**). Under **Domains**, create the free static domain; without
+   one, ngrok assigns an address that changes after every restart. **Get your
+   free ngrok Authtoken and domain** in the app walks you through this.
+2. In Settings → RootMind service, tick **Remote**, paste the ngrok Authtoken
+   and the domain, choose **Connect** and confirm. The ngrok Authtoken is
+   never shown again: the field then only says **Saved** (**Replace** and
+   **Remove** change it). The MCP token is refused there: it belongs in the
+   client, not in this field.
 3. The status changes to **Connected** and shows the **Public MCP endpoint**
-   (`https://<domain>/mcp`) with **Copy** and **Copy token**. **Use RootMind
+   (`https://<domain>/mcp`) with **Copy** and **Copy MCP token**. **Use RootMind
    in Claude on the web and on your phone** shows the connector values ready
    to copy; see [In the assistant](#in-the-assistant).
 
 Remote access needs **Serve MCP over HTTP**; turning that off turns remote
 access off too. Changes need no administrator approval, take effect within a
 few seconds and survive restarts and updates: the tunnel starts with the
-service. **Turn off** (or choosing **Local**) closes the public address at
-once. When the
+service. Unticking **Remote** closes the public address at once. When the
 connection to ngrok drops, the service reconnects; a refused connection (a
 wrong authtoken, a domain that is not yours or already in use) appears as the
 status with ngrok's message and is retried with growing pauses (up to five
@@ -468,7 +469,7 @@ Add a custom MCP connector (or n8n's MCP Client Tool) with:
 |---|---|
 | URL | `https://<your-public-address>/mcp` |
 | Transport | HTTP Streamable |
-| Authentication | header `Authorization: Bearer <token>` (Settings → RootMind service → **Copy token**) |
+| Authentication | header `Authorization: Bearer <token>` (Settings → RootMind service → **Copy MCP token**) |
 
 Clients that only offer an OAuth sign-in and cannot send a bearer token cannot
 connect this way.

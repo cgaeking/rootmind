@@ -69,6 +69,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
@@ -189,6 +190,59 @@ class NetworkListener:
                 return
             scope = {**scope, NETWORK_SCOPE_KEY: True}
         await self.app(scope, receive, send)
+
+
+# --- refused requests ----------------------------------------------------------------
+
+#: The same refusal (reason and client) is logged at most once per this many seconds.
+REFUSAL_LOG_INTERVAL_SECONDS = 60.0
+
+
+class RefusalLog:
+    """Logs refused requests (401/403) with their reason, client and path, never a token.
+
+    A client that keeps retrying is logged once per
+    :data:`REFUSAL_LOG_INTERVAL_SECONDS` per reason, with the number of
+    refusals in between.
+    """
+
+    def __init__(
+        self, interval: float = REFUSAL_LOG_INTERVAL_SECONDS, clock=time.monotonic
+    ) -> None:
+        self._interval = interval
+        self._clock = clock
+        self._last: dict[tuple[str, str], tuple[float, int]] = {}
+
+    @staticmethod
+    def client(request: Request) -> str:
+        """The client address; behind a tunnel or proxy the first X-Forwarded-For entry."""
+        forwarded = request.headers.get("x-forwarded-for", "")
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first[:64]
+        return request.client.host if request.client else "unknown"
+
+    def log(self, request: Request, status: int, reason: str) -> None:
+        client = self.client(request)
+        key = (reason, client)
+        now = self._clock()
+        last, skipped = self._last.get(key, (None, 0))
+        if last is not None and now - last < self._interval:
+            self._last[key] = (last, skipped + 1)
+            return
+        if len(self._last) > 1000:
+            self._last.clear()
+        self._last[key] = (now, 0)
+        more = f" ({skipped} more since the last entry)" if skipped else ""
+        logger.warning(
+            "Refused %s %s from %s: %s, %s%s",
+            request.method,
+            request.url.path,
+            client,
+            status,
+            reason,
+            more,
+        )
 
 
 # --- token handling --------------------------------------------------------------
@@ -370,6 +424,8 @@ def create_app(
             return state.folders
         return tools.folder_labels([c for c in state.connectors if c.name in allowed])
 
+    refusals = RefusalLog()
+
     def authenticate(presented: str, network: bool) -> TokenIdentity | None:
         """The identity of a presented token, or None. Every check runs in constant time."""
         raw = presented.encode("utf-8")
@@ -461,8 +517,11 @@ def create_app(
         await asyncio.to_thread(current_allowed)
         origins = extra_origins | frozenset(state.mcp.allowed_origins)
         if not origin_allowed(request.headers.get("origin"), origins):
+            refusals.log(request, 403, "origin not allowed")
             raise HTTPException(status_code=403, detail="Origin not allowed")
         if credentials is None:
+            header = request.headers.get("authorization")
+            refusals.log(request, 401, 'no "Bearer" scheme' if header else "missing bearer token")
             raise HTTPException(
                 status_code=401,
                 detail="Missing bearer token",
@@ -470,6 +529,7 @@ def create_app(
             )
         identity = authenticate(credentials.credentials, bool(request.scope.get(NETWORK_SCOPE_KEY)))
         if identity is None:
+            refusals.log(request, 401, "invalid token")
             raise HTTPException(
                 status_code=401,
                 detail="Invalid token",

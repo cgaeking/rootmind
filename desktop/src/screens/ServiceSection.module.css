@@ -129,10 +129,6 @@
   padding-left: 26px;
 }
 
-.grow {
-  flex-grow: 1;
-}
-
 /* Help dialogs. */
 .tabs {
   display: flex;

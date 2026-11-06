@@ -32,6 +32,7 @@ from ..config import (
     save_mcp_tokens,
 )
 from ..remote_access import (
+    MCP_TOKEN_REFUSED,
     RemoteAccessFiles,
     check_authtoken,
     effective_status,
@@ -397,6 +398,26 @@ async def query_events(
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+def _is_mcp_token(value: str) -> bool:
+    """Whether ``value`` is an MCP over HTTP token (the default one or a named one),
+    which is easily pasted in place of the ngrok Authtoken."""
+    import secrets
+
+    from ..mcp_http import token_file_path, token_sha256
+
+    try:
+        default = token_file_path().read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        default = ""
+    if default and secrets.compare_digest(value.encode("utf-8"), default.encode("utf-8")):
+        return True
+    digest = token_sha256(value)
+    return any(
+        secrets.compare_digest(digest.encode("ascii"), t.sha256.encode("ascii"))
+        for t in get_config().mcp_http.tokens
+    )
 
 
 def create_router(app_state: Any) -> APIRouter:
@@ -1028,6 +1049,8 @@ def create_router(app_state: Any) -> APIRouter:
                     domain = normalize_domain(body.domain)
                 if "authtoken" in fields:
                     if body.authtoken and body.authtoken.strip():
+                        if _is_mcp_token(body.authtoken.strip()):
+                            raise ValueError(MCP_TOKEN_REFUSED)
                         new_token = check_authtoken(body.authtoken)
                     else:
                         clear_token = True

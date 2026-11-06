@@ -530,3 +530,23 @@ def test_the_real_sdk_is_installed():
     """The ngrok SDK is a dependency (only imported; no tunnel)."""
     available, version = ra.sdk_info()
     assert available and version
+
+
+def test_ngrok_errors_read_as_one_line_with_their_code():
+    error = ValueError(
+        "failed to start listener",
+        "The endpoint 'https://x.ngrok-free.dev' is already online. Either\n1. stop it, or\n2. pool",
+        "ERR_NGROK_334",
+    )
+    assert ra.ngrok_message(error) == (
+        "The endpoint 'https://x.ngrok-free.dev' is already online. Either 1. stop it, or 2. pool"
+        " (ERR_NGROK_334)"
+    )
+    # The same error as the SDK prints it (a tuple with escaped line breaks).
+    printed = "('failed to connect session', 'The authtoken is not valid.\\nSee the dashboard.', 'ERR_NGROK_105')"
+    assert (
+        ra.ngrok_message(printed)
+        == "The authtoken is not valid. See the dashboard. (ERR_NGROK_105)"
+    )
+    assert ra.ngrok_message("network unreachable") == "network unreachable"
+    assert ra.ngrok_message(RuntimeError()) == ""

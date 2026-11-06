@@ -330,3 +330,57 @@ def test_initialize_sends_instructions(mcp):
     result = mcp.post("/mcp", json=body, headers=AUTH).json()["result"]
     assert "user's own files on this computer" in result["instructions"]
     assert "search_documents" in result["instructions"]
+
+
+# --- refused requests in the log --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("headers", "reason"),
+    [
+        ({}, "missing bearer token"),
+        ({"Authorization": f"Basic {TEST_TOKEN}"}, 'no "Bearer" scheme'),
+        ({"Authorization": "Bearer wrong-token-0000"}, "invalid token"),
+        (
+            {"Authorization": f"Bearer {TEST_TOKEN}", "Origin": "https://evil.example"},
+            "origin not allowed",
+        ),
+    ],
+)
+def test_refused_requests_are_logged_with_their_reason_never_the_token(
+    mcp, caplog, headers, reason
+):
+    response = mcp.post(
+        "/mcp", json=LIST, headers={**headers, "X-Forwarded-For": "160.79.106.17, 10.0.0.1"}
+    )
+    assert response.status_code in (401, 403)
+    refused = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Refused ")]
+    assert refused == [f"Refused POST /mcp from 160.79.106.17: {response.status_code}, {reason}"]
+    assert "wrong-token-0000" not in caplog.text
+
+
+def test_a_retrying_client_is_logged_once_per_interval():
+    from types import SimpleNamespace
+
+    now = [0.0]
+    log = mcp_http.RefusalLog(interval=60, clock=lambda: now[0])
+    request = SimpleNamespace(
+        method="POST",
+        url=SimpleNamespace(path="/mcp"),
+        headers={},
+        client=SimpleNamespace(host="127.0.0.1"),
+    )
+    messages = []
+    original = mcp_http.logger.warning
+    mcp_http.logger.warning = lambda msg, *args: messages.append(msg % args)
+    try:
+        for _ in range(5):
+            log.log(request, 401, "invalid token")
+        now[0] = 61
+        log.log(request, 401, "invalid token")
+    finally:
+        mcp_http.logger.warning = original
+    assert messages == [
+        "Refused POST /mcp from 127.0.0.1: 401, invalid token",
+        "Refused POST /mcp from 127.0.0.1: 401, invalid token (4 more since the last entry)",
+    ]

@@ -29,6 +29,7 @@ settings or the authtoken change, and writes the status file.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
 import json
@@ -70,7 +71,7 @@ BACKOFF_MAX_SECONDS = 300.0
 MAX_STATUS_BYTES = 64 * 1024
 MAX_ERROR_CHARS = 500
 
-NO_AUTHTOKEN = "No ngrok authtoken is saved. Enter it under Settings → RootMind service."
+NO_AUTHTOKEN = "No ngrok Authtoken is saved. Enter it under Settings → RootMind service → Remote."
 STOPPED_BY_NGROK = (
     "ngrok stopped the tunnel (from the ngrok dashboard or API). Turn remote access off "
     "and on again to reconnect."
@@ -90,6 +91,12 @@ def status_path(home: Path) -> Path:
     return home / "data" / STATUS_FILE_NAME
 
 
+#: Refusal when the MCP token is entered as the ngrok Authtoken (the two are easily mixed up).
+MCP_TOKEN_REFUSED = "This is the MCP token, not the ngrok Authtoken."  # noqa: S105 (a message)
+
+_NGROK_CODE = re.compile(r"ERR_NGROK_\d+")
+
+
 def check_authtoken(value: str) -> str:
     """The authtoken without surrounding whitespace.
 
@@ -100,10 +107,45 @@ def check_authtoken(value: str) -> str:
     token = value.strip()
     if not _AUTHTOKEN.fullmatch(token):
         raise ValueError(
-            "This does not look like an ngrok authtoken (16 to 256 letters, digits, '_', '-' "
-            "or '.'). Copy it from the ngrok dashboard (Your Authtoken)."
+            "Not an ngrok Authtoken (16 to 256 letters, digits, '_', '-' or '.'). "
+            "Copy it from the ngrok dashboard (Your Authtoken)."
         )
     return token
+
+
+def _ngrok_parts(error: BaseException | str) -> list[str]:
+    """The text parts of an ngrok SDK error: its string arguments, or the parts of
+    the tuple its message prints as ("('failed to start listener', '...', 'ERR_NGROK_334')")."""
+    if isinstance(error, BaseException):
+        parts = [a for a in error.args if isinstance(a, str)]
+        if parts:
+            return parts
+        error = str(error)
+    text = error.strip()
+    if text.startswith("(") and text.endswith(")"):
+        with contextlib.suppress(ValueError, SyntaxError, MemoryError, RecursionError):
+            value = ast.literal_eval(text)
+            if isinstance(value, tuple) and all(isinstance(v, str) for v in value):
+                return list(value)
+    return [text]
+
+
+def ngrok_message(error: BaseException | str) -> str:
+    """An ngrok error as one readable line: ngrok's message and its code, as in
+    "The endpoint 'https://…' is already online. … (ERR_NGROK_334)".
+
+    The SDK raises errors whose arguments are a short summary, the message and
+    the code; printed, they show as a Python tuple with escaped line breaks.
+    """
+    parts = _ngrok_parts(error)
+    codes = [p for p in parts if _NGROK_CODE.fullmatch(p.strip())]
+    texts = [p for p in parts if p not in codes and p.strip()]
+    # The message is the longest text; the first part is only a summary.
+    message = max(texts, key=len) if texts else ""
+    message = " ".join(message.replace("\\n", "\n").split())
+    if codes:
+        return f"{message} ({codes[0].strip()})" if message else codes[0].strip()
+    return message
 
 
 def normalize_domain(value: str | None) -> str | None:
@@ -595,7 +637,7 @@ class RemoteAccessManager:
         if self._session is None or generation != self._generation:
             return
         if kind == "disconnected":
-            message = redact(str(args[1]) if len(args) > 1 else "", self._token)
+            message = redact(ngrok_message(str(args[1])) if len(args) > 1 else "", self._token)
             logger.warning("Remote access: connection to ngrok lost, reconnecting: %s", message)
             self._set_status(CONNECTING, error=f"Connection lost, reconnecting: {message}")
         elif kind == "heartbeat":
@@ -673,7 +715,7 @@ class RemoteAccessManager:
             return f"ngrok did not answer within {self._connect_timeout:.0f} seconds"
         if isinstance(error, ImportError):
             return "The ngrok SDK is not available in this build"
-        return redact(str(error) or type(error).__name__, desired.authtoken)
+        return redact(ngrok_message(error) or type(error).__name__, desired.authtoken)
 
     async def _main(self) -> None:
         self._loop = asyncio.get_running_loop()

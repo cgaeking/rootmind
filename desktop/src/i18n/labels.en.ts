@@ -136,8 +136,9 @@ export const labels = {
     autoUpdate: "Updating the RootMind service to this app's version …",
     mcpToggle: "Serve MCP over HTTP (for Claude, n8n and other agents)",
     mcpUrlLabel: "MCP endpoint",
-    copyToken: "Copy token",
-    tokenFailed: (msg: string) => `Could not read the token: ${msg}`,
+    copyToken: "Copy MCP token",
+    copyTokenTitle: "MCP token (for Claude Desktop, n8n, etc.)",
+    tokenFailed: (msg: string) => `Could not read the MCP token: ${msg}`,
   },
   reach: {
     local: "Local",
@@ -146,12 +147,11 @@ export const labels = {
     remoteHint:
       "From anywhere, through an ngrok tunnel: Claude on the web and on your phone, n8n in the cloud. The local endpoint keeps working.",
     clientsLink: "Reach MCP from Claude, n8n and other clients",
-    ngrokLink: "Get your free ngrok authtoken and domain",
+    ngrokLink: "Get your free ngrok Authtoken and domain",
     claudeLink: "Use RootMind in Claude on the web and on your phone",
     connect: "Connect",
     connectNote: "Anyone with the MCP token can then read your indexed documents through the public address.",
     saveRetry: "Save and try again",
-    turnOff: "Turn off",
     connectedNote:
       "Your computer must be on and awake. Turn Remote off when you don't need it; that closes the public address at once.",
     needsService:
@@ -176,12 +176,12 @@ export const labels = {
       other: "Other clients: the endpoint above, transport HTTP Streamable, header Authorization: Bearer <token>.",
     },
     ngrok: {
-      title: "Get your ngrok authtoken and domain",
+      title: "Get your ngrok Authtoken and domain",
       intro: "ngrok gives your computer a public HTTPS address. The free plan is enough.",
       step1: "Create a free account at ngrok.com and sign in.",
-      step2: "Copy your authtoken: in the ngrok dashboard, open Your Authtoken and copy it.",
+      step2: "In the ngrok dashboard, open Getting Started › Your Authtoken and copy the ngrok Authtoken.",
       step3:
-        "Claim your free domain: open Domains, create the free static domain and copy its name (like name.ngrok-free.app). Without one, the address changes after every restart.",
+        "Open Domains, create the free static domain and copy its name (like name.ngrok-free.app). Without one, the address changes after every restart.",
       step4: "Paste both into RootMind and choose Connect.",
       open: "Open the ngrok dashboard",
     },
@@ -203,8 +203,15 @@ export const labels = {
   },
   remote: {
     sdkMissing: "This RootMind service cannot open tunnels: the ngrok SDK is missing. Update the service.",
-    authtokenLabel: "ngrok authtoken",
-    authtokenPlaceholder: "Paste your ngrok authtoken",
+    authtokenLabel: "ngrok Authtoken",
+    authtokenPlaceholder: "Paste your ngrok Authtoken",
+    isMcpToken: "This is the MCP token, not the ngrok Authtoken.",
+    notAuthtoken: "Not an ngrok Authtoken.",
+    errors: {
+      domainInUse: "Another tunnel is already using this domain.",
+      badAuthtoken: "The ngrok Authtoken is not valid.",
+      agentLimit: "Too many ngrok connections on this account.",
+    },
     authtokenSaved: "Saved",
     replace: "Replace",
     domainLabel: "Domain (recommended)",

@@ -4,6 +4,17 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Changed
+
+- Desktop: **Local** always shows the endpoint with Copy and **Copy MCP token**, also while Remote is on. **Remote** is a checkbox; unticking it closes the public address ([#90](https://github.com/cgaeking/rootmind/issues/90)).
+- The two secrets have clear names: **ngrok Authtoken** (as on ngrok's dashboard, in both languages) and **MCP token (for Claude Desktop, n8n, etc.)** ([#90](https://github.com/cgaeking/rootmind/issues/90)). The help dialog names the dashboard's pages in English, as ngrok shows them.
+- ngrok errors read as one line with their code. The usual ones are one sentence in the app, for example "Another tunnel is already using this domain. (ERR_NGROK_334)".
+
+### Fixed
+
+- The MCP token is refused as the ngrok Authtoken: in the app before anything is saved, and in `POST /remote-access` ("This is the MCP token, not the ngrok Authtoken."). Until now, saving it broke a running tunnel (`ERR_NGROK_105`).
+- MCP over HTTP logs refused requests with status, reason (`missing bearer token`, `no "Bearer" scheme`, `invalid token`, `origin not allowed`), client address (the first `X-Forwarded-For` entry behind the tunnel) and path, never the token. A retrying client is logged once a minute per reason, with a count. Until now, a client with a wrong token, such as a Claude connector, left no trace in `mcp-http.log`.
+
 ## [2.8.1] - 2026-11-06
 
 ### Changed

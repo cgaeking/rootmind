@@ -296,10 +296,10 @@ das nur Administratoren ändern können.
   mit einem eigenen Bearer-Token bereit (siehe
   [MCP-Clients verbinden](#mcp-clients-verbinden)). Er ist standardmäßig
   eingeschaltet; der Haken bei **MCP über HTTP anbieten** schaltet ihn aus und
-  wieder ein (eine Bestätigung als Administrator). Darunter wählst du, wer ihn
-  erreicht: **Lokal** (Programme auf diesem Computer, die Voreinstellung) oder
-  **Remote**, das über ngrok eine öffentliche HTTPS-Adresse für Claude im Web
-  und auf dem Handy und andere Cloud-Assistenten hinzufügt (siehe
+  wieder ein (eine Bestätigung als Administrator). Darunter zeigt **Lokal**
+  den Endpunkt für Programme auf diesem Computer mit dem MCP-Token, und der
+  Haken **Remote** fügt über ngrok eine öffentliche HTTPS-Adresse für Claude
+  im Web und auf dem Handy und andere Cloud-Assistenten hinzu (siehe
   [Fernzugriff](#fernzugriff)).
 - Die Dienste laufen aus einer eigenen Kopie des Programms unter
   `%ProgramFiles%\RootMind Service\`, die nur Administratoren ändern können,
@@ -335,7 +335,7 @@ Sicherheitsmodell.
 MCP-Clients bekommen dieselben lesenden Tools wie der Agent der App und nutzen
 ihr eigenes Modell. Verbinde sie mit MCP über HTTP des Dienstes:
 Einstellungen → RootMind-Dienst zeigt den **MCP-Endpunkt** und kopiert ihn
-und das Token (**Token kopieren**). Für Claude Desktop gibt es ein Bundle,
+und den MCP-Token (**MCP-Token kopieren**). Für Claude Desktop gibt es ein Bundle,
 das beides nicht braucht (siehe
 [RootMind in Claude Desktop nutzen](#rootmind-in-claude-desktop-nutzen)).
 Claude Code:
@@ -435,16 +435,18 @@ RootMind kann den Tunnel selbst betreiben. Der MCP-Server des RootMind-Dienstes
 ngrok-Programm musst du nicht installieren. Standardmäßig ist er aus.
 
 1. Lege bei [ngrok.com](https://ngrok.com) ein kostenloses Konto an und
-   kopiere deinen Authtoken aus dem Dashboard (**Your Authtoken**). Lege unter
-   **Domains** die kostenlose feste Domain an; ohne sie vergibt ngrok nach
-   jedem Neustart eine neue Adresse. **Kostenlosen ngrok-Authtoken und Domain
-   holen** in der App führt dich durch diese Schritte.
-2. Wähle in Einstellungen → RootMind-Dienst **Remote**, füge den Authtoken
-   und die Domain ein, wähle **Verbinden** und bestätige. Der Authtoken wird
-   nie wieder angezeigt: Das Feld zeigt danach nur **Gespeichert**
-   (**Ersetzen** und **Entfernen** ändern ihn).
+   kopiere den **ngrok Authtoken** aus dem Dashboard (**Getting Started ›
+   Your Authtoken**). Lege unter **Domains** die kostenlose feste Domain an;
+   ohne sie vergibt ngrok nach jedem Neustart eine neue Adresse.
+   **Kostenlosen ngrok Authtoken und Domain holen** in der App führt dich
+   durch diese Schritte.
+2. Setze in Einstellungen → RootMind-Dienst den Haken bei **Remote**, füge
+   den ngrok Authtoken und die Domain ein, wähle **Verbinden** und bestätige.
+   Der ngrok Authtoken wird nie wieder angezeigt: Das Feld zeigt danach nur
+   **Gespeichert** (**Ersetzen** und **Entfernen** ändern ihn). Den MCP-Token
+   lehnt das Feld ab: Er gehört in den Client, nicht hierher.
 3. Der Status wechselt zu **Verbunden** und zeigt den **Öffentlichen
-   MCP-Endpunkt** (`https://<domain>/mcp`) mit **Kopieren** und **Token
+   MCP-Endpunkt** (`https://<domain>/mcp`) mit **Kopieren** und **MCP-Token
    kopieren**. **RootMind in Claude im Web und auf dem Handy nutzen** zeigt
    die Werte für den Konnektor zum Kopieren; siehe
    [Im Assistenten](#im-assistenten).
@@ -452,8 +454,8 @@ ngrok-Programm musst du nicht installieren. Standardmäßig ist er aus.
 Der Fernzugriff braucht **MCP über HTTP anbieten**; schaltest du das aus, ist
 auch der Fernzugriff aus. Änderungen brauchen keine Bestätigung als
 Administrator, wirken nach wenigen Sekunden und überstehen Neustarts und
-Updates: Der Tunnel startet mit dem Dienst. **Ausschalten** (oder die Wahl
-von **Lokal**) schließt die öffentliche Adresse sofort. Bricht die Verbindung zu ngrok ab,
+Updates: Der Tunnel startet mit dem Dienst. Entfernst du den Haken bei
+**Remote**, ist die öffentliche Adresse sofort geschlossen. Bricht die Verbindung zu ngrok ab,
 verbindet sich der Dienst neu; eine abgelehnte Verbindung (ein falscher
 Authtoken, eine Domain, die nicht dir gehört oder schon belegt ist) erscheint
 mit der Meldung von ngrok im Status und wird mit wachsenden Pausen (bis zu
@@ -511,7 +513,7 @@ Füge einen eigenen MCP-Connector hinzu (oder in n8n den MCP Client Tool) mit:
 |---|---|
 | URL | `https://<deine-öffentliche-adresse>/mcp` |
 | Transport | HTTP Streamable |
-| Authentifizierung | Header `Authorization: Bearer <token>` (Einstellungen → RootMind-Dienst → **Token kopieren**) |
+| Authentifizierung | Header `Authorization: Bearer <token>` (Einstellungen → RootMind-Dienst → **MCP-Token kopieren**) |
 
 Clients, die nur eine Anmeldung per OAuth anbieten und kein Bearer-Token
 schicken können, lassen sich so nicht verbinden.
