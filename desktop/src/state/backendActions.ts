@@ -3,10 +3,11 @@
 // dialogs call these; the connectivity check (hooks/useBackend.ts) takes over
 // after each one.
 
-import { commandError } from "../api/backend";
+import { commandError, inTauri, serviceInfo } from "../api/backend";
 import type { ServiceResult } from "../api/backend";
 import { recheck } from "../hooks/useBackend";
 import type { Decision } from "./bootstrap";
+import { isServiceAddress } from "./service";
 import { DEFAULT_BASE_URL, normalizeUrl, useStore } from "./store";
 
 /** Use the RootMind service; the check asks Rust for its URL and token. Persists the choice. */
@@ -18,8 +19,31 @@ export async function connectService(): Promise<boolean> {
   return useStore.getState().conn === "online";
 }
 
-/** Use a backend at `url` with an optional token, and remember it. */
+/**
+ * Whether `url` is this computer's RootMind service. Only release builds ask:
+ * a debug build never connects to the installed service on its own.
+ */
+async function isTheService(url: string): Promise<boolean> {
+  const mode = useStore.getState().appMode;
+  if (!inTauri() || !mode || mode.dev) return false;
+  try {
+    return isServiceAddress(url, await serviceInfo());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Use a backend at `url` with an optional token, and remember it. The
+ * address of this computer's RootMind service is the service, also when it
+ * was typed in (or stored by an earlier version): the app then uses the
+ * service with its own token and offers all of its settings.
+ */
 export async function connectCustom(url: string, token: string | null): Promise<void> {
+  if (await isTheService(normalizeUrl(url) || DEFAULT_BASE_URL)) {
+    await connectService();
+    return;
+  }
   const s = useStore.getState();
   s.setServiceProblem(null);
   s.setBackend({

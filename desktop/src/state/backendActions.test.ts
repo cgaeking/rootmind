@@ -91,6 +91,35 @@ describe("connectCustom", () => {
   });
 });
 
+describe("connectCustom with this computer's service address", () => {
+  const release = { version: "1.3.0", dev: false, platform: "windows" as const };
+
+  it("uses the service in a release build, also for localhost", async () => {
+    useStore.setState({ appMode: release });
+    await actions.connectCustom("http://localhost:8000/", "typed-token");
+    const s = useStore.getState();
+    expect(s.kind).toBe("service");
+    expect(s.token).toBe("v");
+    expect(backend.serviceConnect).toHaveBeenCalled();
+    expect(localStorage.getItem("rlm.backendMode")).toBe("auto");
+    expect(localStorage.getItem("rlm.baseUrl")).toBeNull();
+  });
+
+  it("keeps another port as a backend at another address", async () => {
+    useStore.setState({ appMode: release });
+    await actions.connectCustom("http://127.0.0.1:9000", null);
+    expect(useStore.getState().kind).toBe("custom");
+    expect(backend.serviceConnect).not.toHaveBeenCalled();
+  });
+
+  it("never takes over the service in a debug build", async () => {
+    useStore.setState({ appMode: { ...release, dev: true } });
+    await actions.connectCustom(SERVICE, null);
+    expect(useStore.getState().kind).toBe("custom");
+    expect(backend.serviceInfo).not.toHaveBeenCalled();
+  });
+});
+
 describe("applyDecision", () => {
   it("asks for a URL in a development build without contacting any backend", async () => {
     localStorage.setItem("rlm.baseUrl", "http://127.0.0.1:8000");

@@ -1,5 +1,4 @@
 import { useState } from "react";
-import type { ReactNode } from "react";
 import { labels } from "../i18n/labels";
 import {
   commandError,
@@ -12,60 +11,27 @@ import type { ServiceResult } from "../api/backend";
 import { recheck } from "../hooks/useBackend";
 import { useServiceInfo } from "../hooks/useServiceInfo";
 import { useStore } from "../state/store";
-import { runServiceChange } from "../state/backendActions";
-import {
-  N8N_DOCS_URL,
-  canRepair,
-  changeMessage,
-  isOlderVersion,
-  n8nSnippet,
-  problemFromInfo,
-  repairLabels,
-} from "../state/service";
+import { connectService, runServiceChange } from "../state/backendActions";
+import { canRepair, changeMessage, isOlderVersion, problemFromInfo, repairLabels } from "../state/service";
 import type { ServiceProblem } from "../state/service";
-import { openExternal } from "../utils/openExternal";
-import { Badge, Banner, Button, Row, Section, TextInput } from "../components/ui";
-import { RemoteAccess } from "./RemoteAccess";
+import { Badge, Banner, Button, Row, Section } from "../components/ui";
+import { McpReach } from "./McpReach";
 import styles from "./ServiceSection.module.css";
 
 type Busy = "repair" | "mcp" | "check" | null;
 
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * A label above a row of controls. Unlike ui's Field it is not a <label>
- * element, which would name its first button after the label text.
- */
-function Labeled({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <div className={styles.field}>
-      <span className={styles.label}>{label}</span>
-      {children}
-      {hint && <span className={styles.hint}>{hint}</span>}
-    </div>
-  );
-}
-
-/**
- * Settings › "RootMind service": the service the installer set up, read-only
- * (state, address, version), with Set up when it was never set up, Repair
- * when it does not work, MCP over HTTP (on by default; switching it needs
- * administrator approval) and, below it, remote access through ngrok (through
- * the service's REST API, no approval). On Linux the service is the
- * account's systemd user services; the app sets it up and updates it on its
- * own (state/autoSetup.ts), shown here while it runs and when it failed.
+ * Settings › "RootMind service": the service the installer set up, with its
+ * state, Set up when it was never set up, Repair when it does not work, and
+ * MCP over HTTP (on by default; switching it needs administrator approval)
+ * with who can reach it: Local, or Remote through ngrok (McpReach). On Linux
+ * the service is the account's systemd user services; the app sets it up
+ * and updates it on its own (state/autoSetup.ts), shown here while it runs
+ * and when it failed.
  */
 export function ServiceSection() {
   const kind = useStore((s) => s.kind);
   const conn = useStore((s) => s.conn);
-  const baseUrl = useStore((s) => s.baseUrl);
   const version = useStore((s) => s.version);
   const checkedProblem = useStore((s) => s.serviceProblem);
   const appVersion = useStore((s) => s.appMode?.version ?? null);
@@ -77,7 +43,6 @@ export function ServiceSection() {
   const [details, setDetails] = useState<string | null>(null);
   const [detailsBusy, setDetailsBusy] = useState(false);
   const [tokenError, setTokenError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
 
   // A failed change the app made on its own (Linux) shows like a failed click.
   const message =
@@ -145,13 +110,6 @@ export function ServiceSection() {
     }
   }
 
-  async function copy(what: string, text: string | null) {
-    if (text !== null && (await copyText(text))) {
-      setCopied(what);
-      setTimeout(() => setCopied((c) => (c === what ? null : c)), 1500);
-    }
-  }
-
   const updateOffer =
     connected && version && appVersion && isOlderVersion(version, appVersion) && info?.canElevate
       ? { service: version, app: appVersion }
@@ -166,8 +124,6 @@ export function ServiceSection() {
     <Badge tone="muted">{labels.conn[conn]}</Badge>
   ) : null;
 
-  // Where the service listens: the connected URL, else what service_info reports.
-  const address = connected ? baseUrl : !problem ? (info?.url ?? null) : null;
   // MCP over HTTP, for our service when this account may use it.
   const showMcp = !!info && info.installed && info.ours && info.tokenReadable;
   const mcpUrl = showMcp && info.mcp.installed ? info.mcp.url : null;
@@ -181,24 +137,11 @@ export function ServiceSection() {
   else if (!kind) statusText = labels.service.loading;
 
   return (
-    <Section title={labels.service.title} description={labels.service.desc} actions={badge}>
+    <Section title={labels.service.title} actions={badge}>
       {statusText && (
         <p className="muted" style={{ margin: 0 }}>
           {statusText}
         </p>
-      )}
-
-      {address && !problem && (
-        <dl className={styles.facts}>
-          <dt>{labels.service.addressLabel}</dt>
-          <dd>{address}</dd>
-          {connected && version && (
-            <>
-              <dt>{labels.service.versionLabel}</dt>
-              <dd>{version}</dd>
-            </>
-          )}
-        </dl>
       )}
 
       {problem && (
@@ -262,42 +205,15 @@ export function ServiceSection() {
           </label>
 
           {mcpUrl && (
-            <>
-              <Labeled label={labels.service.mcpUrlLabel}>
-                <Row>
-                  <TextInput value={mcpUrl} readOnly spellCheck={false} />
-                  <Button onClick={() => void copy("url", mcpUrl)}>
-                    {copied === "url" ? labels.common.copied : labels.common.copy}
-                  </Button>
-                  <Button onClick={() => void (async () => copy("token", await readMcpToken()))()}>
-                    {copied === "token" ? labels.common.copied : labels.service.copyToken}
-                  </Button>
-                </Row>
-              </Labeled>
-              {tokenError && <Banner tone="err">{tokenError}</Banner>}
-
-              <Labeled label={labels.service.n8nLabel} hint={labels.service.n8nHint}>
-                <pre className={styles.pre}>{n8nSnippet(mcpUrl, "<token>")}</pre>
-              </Labeled>
-              <Row>
-                <Button
-                  onClick={() =>
-                    void (async () => {
-                      const token = await readMcpToken();
-                      if (token) await copy("n8n", n8nSnippet(mcpUrl, token));
-                    })()
-                  }
-                >
-                  {copied === "n8n" ? labels.common.copied : labels.common.copy}
-                </Button>
-                <button type="button" className={styles.link} onClick={() => void openExternal(N8N_DOCS_URL)}>
-                  {labels.service.mcpDocs}
-                </button>
-              </Row>
-            </>
+            <McpReach
+              endpoint={mcpUrl}
+              readToken={readMcpToken}
+              serviceInUse={connected}
+              onUseService={() => void connectService()}
+              disabled={!!busy || autoRunning}
+            />
           )}
-
-          {connected && <RemoteAccess mcpEnabled={!!mcpUrl} />}
+          {tokenError && <Banner tone="err">{tokenError}</Banner>}
         </div>
       )}
     </Section>
