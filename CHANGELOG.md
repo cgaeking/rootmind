@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.8.2] - 2026-11-07
+
 ### Changed
 
 - Desktop settings, rearranged:
