@@ -6,7 +6,8 @@ export { styles as dialogStyles };
 
 /**
  * A modal card over a dimmed backdrop. With `onClose`, Escape closes it.
- * `wide` makes room for tables and commands (help dialogs).
+ * `wide` makes room for tables and commands (help dialogs). `icon` stands
+ * before the title.
  */
 export function Dialog({
   title,
@@ -14,12 +15,14 @@ export function Dialog({
   actions,
   onClose,
   wide = false,
+  icon,
 }: {
   title: string;
   children?: ReactNode;
   actions?: ReactNode;
   onClose?: () => void;
   wide?: boolean;
+  icon?: ReactNode;
 }) {
   useEffect(() => {
     if (!onClose) return;
@@ -38,7 +41,10 @@ export function Dialog({
         aria-modal="true"
         aria-label={title}
       >
-        <h2 className={styles.title}>{title}</h2>
+        <h2 className={styles.title}>
+          {icon}
+          {title}
+        </h2>
         {children}
         {actions && <div className={styles.actions}>{actions}</div>}
       </div>

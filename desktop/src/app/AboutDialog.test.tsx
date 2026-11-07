@@ -11,6 +11,9 @@ vi.mock("../state/chatStore", async (importOriginal) => {
   return real;
 });
 
+vi.mock("../utils/openExternal", () => ({ openExternal: vi.fn(async () => {}) }));
+
+const { openExternal } = await import("../utils/openExternal");
 const { Sidebar } = await import("./Sidebar");
 
 beforeEach(() => {
@@ -45,6 +48,10 @@ describe("About", () => {
     ]) {
       expect(screen.getByRole("link", { name }).getAttribute("href")).toBe(href);
     }
+
+    expect(dialog.querySelector('img[src="/rootmind.svg"]')).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "⭐ Star us on GitHub" }));
+    expect(openExternal).toHaveBeenCalledWith("https://github.com/cgaeking/rootmind");
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).toBeNull();

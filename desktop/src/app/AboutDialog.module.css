@@ -25,3 +25,8 @@
 .links a {
   color: var(--accent);
 }
+
+/* Bottom left, apart from Close. */
+.star {
+  margin-right: auto;
+}
