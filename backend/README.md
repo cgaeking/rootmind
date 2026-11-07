@@ -65,10 +65,10 @@ The stdio server suits a source checkout or a uv install with its own `config.ya
 not work with the installed app: `rootmind-backend.exe mcp` from the app's folder cannot open
 the service's index in `%ProgramData%\RootMind`. Connect MCP clients to the service's MCP over
 HTTP instead (`RootMind-MCP-HTTP`, see
-[Connect MCP clients](../README.md#connect-mcp-clients)).
+[Connect MCP clients](../README.md#use-rootmind-in-claude-and-other-tools)).
 
 Client configuration examples for a source or uv setup are in the
-[root README](../README.md#3-use-the-tools-from-an-mcp-client).
+[root README](../docs/DEVELOPMENT.md#3-use-the-tools-from-an-mcp-client).
 
 ## Background service (Windows and Linux)
 
