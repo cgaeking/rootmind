@@ -11,7 +11,7 @@ Windows; Settings → RootMind service in the desktop app shows its state and of
 `rootmind-backend.exe service install` from `rootmind-backend-windows-x64.zip`, unzipped into a
 folder that only administrators can change (for example under `%ProgramFiles%`; other folders
 are refused with exit code 10), in an elevated prompt (see the
-[README](../../../README.md#install-for-developers-and-servers)). The service runs from
+[README](../../../docs/DEVELOPMENT.md#install-for-developers-and-servers)). The service runs from
 `%ProgramFiles%\RootMind Service\`, keeps its data in `%ProgramData%\RootMind`, requires a
 token on its REST API and reads only what the installing account can read. See
 [SECURITY.md](../../../SECURITY.md#background-service).

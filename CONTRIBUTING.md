@@ -97,7 +97,7 @@ browser behaves the same way.
 
 The connection to the service, **Repair** and the MCP over HTTP switch only
 work in a release build installed by the installer (see
-[Build the installer yourself](README.md#build-the-installer-yourself)). Try
+[Build the installer yourself](docs/DEVELOPMENT.md#build-the-installer-yourself)). Try
 them in a virtual machine or Windows Sandbox, not on a machine where you use
 RootMind. On Linux the same goes for the release packages: a release build
 sets up the systemd user services of the account that starts it, so try it
@@ -298,7 +298,7 @@ the official MCP Registry (see **MCP Registry** below).
    lockfiles follow. For a prerelease, write `1.2.0rc1` in `pyproject.toml`
    and `1.2.0-rc.1` in the other three files; the tag is then `v1.2.0-rc.1`,
    spelled exactly like that, and the release is marked as a prerelease.
-   Update the tag in the README's `uv tool install` line as well.
+   Update the tag in the `uv tool install` line of docs/DEVELOPMENT.md and docs/DEVELOPMENT.de.md as well.
 2. **Changelog.** Turn `## [Unreleased]` into `## [X.Y.Z] - YYYY-MM-DD` and
    start a new, empty `## [Unreleased]` above it. For a prerelease, use the
    prerelease version in the heading, for example `## [1.2.0-rc.1] - YYYY-MM-DD`.

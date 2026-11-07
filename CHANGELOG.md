@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Changed
+
+- The README is shorter and aimed at users: a quickstart at the top (local: the Claude Desktop extension; remote: the ngrok connector for Claude on the web and on the phone), install, use with Claude and other tools. The details moved to `docs/INSTALL.md`, `docs/MCP.md` and `docs/DEVELOPMENT.md` (each also in German).
+
 ## [2.8.2] - 2026-11-07
 
 ### Changed

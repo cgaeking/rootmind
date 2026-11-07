@@ -96,7 +96,7 @@ Without the overlay, `pnpm tauri build` produces an app without a backend, which
 
 **Linux packages.** On Linux the same command builds a .deb, an .rpm and an AppImage: `src-tauri/tauri.linux.conf.json` is merged automatically and selects them, and the `linux` section of `tauri.conf.json` adds `Recommends: systemd`; Tauri adds WebKitGTK and GTK as dependencies, the desktop entry and the icons. The backend lands in `/usr/lib/RootMind/backend/`. The packages set up no service: the app does that for each account on its first start. `scripts/prepare_backend.py` recognizes the Linux build (`rootmind-backend` without `.exe`).
 
-The full build order is in the [README](../README.md#build-the-installer-yourself). Releases are built by `.github/workflows/release.yml`, which also runs the installer smoke test `desktop/scripts/installer-smoke.ps1` on the elevated runner. Installers are not code-signed, so Windows SmartScreen shows a warning.
+The full build order is in the [README](../docs/DEVELOPMENT.md#build-the-installer-yourself). Releases are built by `.github/workflows/release.yml`, which also runs the installer smoke test `desktop/scripts/installer-smoke.ps1` on the elevated runner. Installers are not code-signed, so Windows SmartScreen shows a warning.
 
 ## Security notes
 

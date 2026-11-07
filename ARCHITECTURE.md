@@ -841,7 +841,7 @@ that winget matches. The winget manifest declares a machine-scope installer
 that elevates itself (`Scope: machine`, `ElevationRequirement: elevatesSelf`,
 install location `%ProgramFiles%\RootMind`). The release workflow measures the
 installer and states its size in the release notes. Build commands are in the
-README ([Build the installer yourself](README.md#build-the-installer-yourself)).
+README ([Build the installer yourself](docs/DEVELOPMENT.md#build-the-installer-yourself)).
 
 **Linux packages.** `release.yml` builds the Linux backend on Ubuntu 22.04
 (glibc 2.35), where `backend-exe.yml` also smoke-tests it and runs the user
