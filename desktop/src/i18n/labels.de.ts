@@ -375,6 +375,13 @@ export const labels = {
       "Findet auch Text in gescannten PDFs und Bildern. Läuft im Hintergrund und dauert bei vielen Dateien eine Weile.",
   },
   chat: {
+    locations: {
+      page: (n: string) => `Seite ${n}`,
+      pages: (ns: string) => `Seiten ${ns}`,
+      slide: (n: string) => `Folie ${n}`,
+      slides: (ns: string) => `Folien ${ns}`,
+      sheet: (name: string) => `Blatt: ${name}`,
+    },
     emptyPrompt: "Frag mich etwas zu deinen indizierten Dokumenten.",
     hintNoFolders: "Ordner zum Durchsuchen hinzufügen",
     hintNoKey:

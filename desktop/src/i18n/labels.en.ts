@@ -371,6 +371,13 @@ export const labels = {
     ocrHint: "Also finds text in scanned PDFs and images. Runs in the background and takes time for many files.",
   },
   chat: {
+    locations: {
+      page: (n: string) => `Page ${n}`,
+      pages: (ns: string) => `Pages ${ns}`,
+      slide: (n: string) => `Slide ${n}`,
+      slides: (ns: string) => `Slides ${ns}`,
+      sheet: (name: string) => `Sheet: ${name}`,
+    },
     emptyPrompt: "Ask me something about your indexed documents.",
     hintNoFolders: "Add a folder to search",
     hintNoKey: "Search works without a key; add one in Settings to ask questions.",
