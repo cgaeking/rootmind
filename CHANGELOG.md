@@ -6,6 +6,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ### Changed
 
+- Desktop settings, rearranged:
+  - **MCP** holds MCP over HTTP with **Local** and **Remote / Public access with ngrok**. The domain field shows an example (`sample.ngrok-free.app`) instead of a paragraph; the notes under Remote and Connect are gone.
+  - **RootMind Service** shows the service's state and chooses the server the app uses: **Local** (the service, with its address) or **Remote** (server address, optional token, **Apply**, **Check**). It replaces **Advanced**.
+  - **About** moved from the settings to the menu, below Settings, and opens as a dialog.
 - Desktop: **Local** always shows the endpoint with Copy and **Copy MCP token**, also while Remote is on. **Remote** is a checkbox; unticking it closes the public address ([#90](https://github.com/cgaeking/rootmind/issues/90)).
 - The two secrets have clear names: **ngrok Authtoken** (as on ngrok's dashboard, in both languages) and **MCP token (for Claude Desktop, n8n, etc.)** ([#90](https://github.com/cgaeking/rootmind/issues/90)). The help dialog names the dashboard's pages in English, as ngrok shows them.
 - ngrok errors read as one line with their code. The usual ones are one sentence in the app, for example "Another tunnel is already using this domain. (ERR_NGROK_334)".

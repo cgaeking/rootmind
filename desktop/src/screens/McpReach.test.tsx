@@ -131,7 +131,7 @@ describe("McpReach", () => {
     const field = screen.getByLabelText("ngrok Authtoken") as HTMLInputElement;
     expect(field.type).toBe("password");
     fireEvent.change(field, { target: { value: `  ${AUTHTOKEN} ` } });
-    fireEvent.change(screen.getByLabelText("Domain (recommended)"), {
+    fireEvent.change(screen.getByLabelText("Domain"), {
       target: { value: "rootmind-test.ngrok-free.app" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));

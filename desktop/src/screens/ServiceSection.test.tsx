@@ -30,6 +30,8 @@ vi.mock("../api/rlm", async (importOriginal) => ({
 
 // The change itself is tested in backendActions.test.ts; here only the outcome matters.
 vi.mock("../state/backendActions", () => ({
+  connectCustom: vi.fn(async () => {}),
+  connectService: vi.fn(async () => true),
   runServiceChange: vi.fn(async (op: () => Promise<ServiceResult>) => ({
     kind: "result",
     result: await op(),
@@ -38,6 +40,7 @@ vi.mock("../state/backendActions", () => ({
 
 const backend = await import("../api/backend");
 const rlm = await import("../api/rlm");
+const actions = await import("../state/backendActions");
 const { ServiceSection } = await import("./ServiceSection");
 
 const SERVICE = "http://127.0.0.1:8000";
@@ -146,11 +149,10 @@ describe("ServiceSection", () => {
       conn: "online",
     });
     render(<ServiceSection />);
-    await screen.findByText(/uses a RootMind backend at another address/);
     fireEvent.click(await screen.findByRole("checkbox", { name: /^Remote/ }));
     expect(
       await screen.findByText(
-        /Remote runs in this computer's RootMind service/,
+        /Public access runs in this computer's RootMind service/,
       ),
     ).toBeTruthy();
     expect(
@@ -315,11 +317,54 @@ describe("ServiceSection", () => {
     });
     render(<ServiceSection />);
     expect(
-      await screen.findByText(/uses a RootMind backend at another address/),
-    ).toBeTruthy();
-    expect(
       await screen.findByText(/The RootMind service is not running/),
     ).toBeTruthy();
+  });
+
+  it("shows the server in use: Local with the service's address", async () => {
+    render(<ServiceSection />);
+    const local = (await screen.findByRole("radio", {
+      name: `Local (${SERVICE})`,
+    })) as HTMLInputElement;
+    expect(local.checked).toBe(true);
+    expect(screen.queryByLabelText("Server address")).toBeNull();
+    // Already in use: choosing it again connects nothing.
+    fireEvent.click(local);
+    expect(actions.connectService).not.toHaveBeenCalled();
+  });
+
+  it("connects to a remote server on Apply and back to the service with Local", async () => {
+    render(<ServiceSection />);
+    fireEvent.click(await screen.findByRole("radio", { name: "Remote" }));
+    const apply = screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Server address"), {
+      target: { value: "http://nas.local:8000" },
+    });
+    fireEvent.change(screen.getByLabelText("Token (optional)"), {
+      target: { value: "secret" }, // pragma: allowlist secret (test value)
+    });
+    fireEvent.click(apply);
+    expect(actions.connectCustom).toHaveBeenCalledWith("http://nas.local:8000", "secret");
+    expect(actions.connectService).not.toHaveBeenCalled();
+
+    useStore.setState({ kind: "custom", baseUrl: "http://nas.local:8000", token: "secret" });
+    fireEvent.click(await screen.findByRole("radio", { name: `Local (${SERVICE})` }));
+    expect(actions.connectService).toHaveBeenCalled();
+  });
+
+  it("shows Remote with the address while a server elsewhere is in use", async () => {
+    useStore.setState({
+      kind: "custom",
+      baseUrl: "http://example.test:9000",
+      token: null,
+      conn: "online",
+    });
+    render(<ServiceSection />);
+    expect(
+      ((await screen.findByRole("radio", { name: "Remote" })) as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(screen.getByDisplayValue("http://example.test:9000")).toBeTruthy();
   });
 
   it("offers an update when the service is older than the app", async () => {

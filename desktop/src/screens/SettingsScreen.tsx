@@ -1,19 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { labels, useLanguage, useLanguageStore } from "../i18n/labels";
 import type { LanguagePref } from "../i18n/labels";
-import { DEFAULT_BASE_URL, useStore } from "../state/store";
+import { useStore } from "../state/store";
 import { useBackend } from "../hooks/useBackend";
 import { isCurrentBackend, useLiveBackend } from "../hooks/useLiveBackend";
-import { connectCustom, connectService } from "../state/backendActions";
 import { getConfig, listLlmModels, saveConfig } from "../api/rlm";
-import { inTauri } from "../api/backend";
 import { ApiError } from "../api/client";
 import type { ThemePref } from "../state/store";
 import type { AppConfigDto, LlmProvider } from "../types/config";
 import { Banner, Button, Field, Row, Section, Select, TextInput } from "../components/ui";
 import { ConnBanner } from "../components/ConnBanner";
 import { ServiceSection } from "./ServiceSection";
-import { AboutSection } from "./AboutSection";
 import { PROVIDERS, PROVIDER_NAMES, detectProvider, maskKey } from "../state/llmKey";
 
 function errMsg(e: unknown): string {
@@ -35,84 +32,6 @@ function pickDefaultModel(models: string[]): string {
     models.find((m) => /gpt-4/i.test(m)) ??
     models.find((m) => /^grok-4(?!-fast)/i.test(m)) ??
     models[0]
-  );
-}
-
-/**
- * Settings → Advanced (collapsed): the backend address, normally this
- * computer's RootMind service (its address is filled in). Another address
- * connects to a RootMind backend elsewhere, with an optional token; the
- * address of the service stays the service (state/backendActions.ts). Open
- * while a backend at another address is in use.
- */
-function AdvancedSection() {
-  const { kind, baseUrl, version, recheck } = useBackend();
-  const token = useStore((s) => s.token);
-  const custom = kind === "custom";
-  const shownUrl = baseUrl || DEFAULT_BASE_URL;
-  const customToken = custom ? (token ?? "") : "";
-
-  const [open, setOpen] = useState(custom);
-  useEffect(() => {
-    if (custom) setOpen(true);
-  }, [custom]);
-
-  // The fields follow the store: the backend dialog can change the URL too.
-  const [urlDraft, setUrlDraft] = useState(shownUrl);
-  const [tokenDraft, setTokenDraft] = useState(customToken);
-  useEffect(() => setUrlDraft(shownUrl), [shownUrl]);
-  useEffect(() => setTokenDraft(customToken), [customToken]);
-
-  return (
-    <Section
-      title={labels.settings.advancedTitle}
-      actions={
-        <Button onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-          {open ? labels.settings.advancedHide : labels.settings.advancedShow}
-        </Button>
-      }
-    >
-      {open && (
-        <>
-          {custom && baseUrl && (
-            <span className="muted">
-              {labels.settings.inUse.custom(baseUrl)}
-              {version && <> · {labels.settings.versionLabel(version)}</>}
-            </span>
-          )}
-          <Field label={labels.settings.urlLabel} hint={labels.settings.urlHint}>
-            <TextInput
-              value={urlDraft}
-              onChange={(e) => setUrlDraft(e.currentTarget.value)}
-              placeholder={DEFAULT_BASE_URL}
-              spellCheck={false}
-            />
-          </Field>
-          {custom && (
-            <Field label={labels.settings.tokenLabel} hint={labels.settings.tokenHint}>
-              <TextInput
-                type="password"
-                value={tokenDraft}
-                onChange={(e) => setTokenDraft(e.currentTarget.value)}
-                spellCheck={false}
-                autoComplete="off"
-              />
-            </Field>
-          )}
-          <Row>
-            <Button onClick={() => void connectCustom(urlDraft || DEFAULT_BASE_URL, tokenDraft)}>
-              {labels.settings.apply}
-            </Button>
-            <Button onClick={() => void recheck()}>{labels.settings.check}</Button>
-            {custom && inTauri() && (
-              <Button onClick={() => void connectService()} title={labels.settings.useDefaultHint}>
-                {labels.settings.useDefault}
-              </Button>
-            )}
-          </Row>
-        </>
-      )}
-    </Section>
   );
 }
 
@@ -623,11 +542,6 @@ export function SettingsScreen() {
       )}
       {saveError && <Banner tone="err">{saveError}</Banner>}
 
-      <div style={{ marginTop: 18 }}>
-        <AdvancedSection />
-      </div>
-
-      <AboutSection />
     </div>
   );
 }

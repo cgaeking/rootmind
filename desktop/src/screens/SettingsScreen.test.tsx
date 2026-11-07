@@ -147,7 +147,7 @@ describe("SettingsScreen", () => {
     expect(savedConfigs().every((c) => c.indexer.include[0] === "*.b")).toBe(true);
   });
 
-  it("shows the Advanced URL of the custom backend in use", async () => {
+  it("shows the address of the server in use under RootMind Service › Remote", async () => {
     serveConfigs();
     render(<SettingsScreen />);
     await screen.findByDisplayValue("*.a");
@@ -157,31 +157,6 @@ describe("SettingsScreen", () => {
     // The field follows the store (the backend dialog can change it too).
     expect(await screen.findByDisplayValue(B)).toBeTruthy();
     expect(screen.queryByDisplayValue(A)).toBeNull();
-  });
-});
-
-describe("SettingsScreen Advanced", () => {
-  it("is collapsed while the RootMind service is in use, with the service's address filled in", async () => {
-    useStore.setState({ kind: "service", baseUrl: "http://127.0.0.1:8000", token: "v", conn: "online" });
-    vi.mocked(rlm.getConfig).mockResolvedValue(configFor("a", 11));
-    render(<SettingsScreen />);
-    const toggle = await screen.findByRole("button", { name: "Show" });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByLabelText(/^Backend address/)).toBeNull();
-
-    fireEvent.click(toggle);
-    expect((screen.getByLabelText(/^Backend address/) as HTMLInputElement).value).toBe("http://127.0.0.1:8000");
-    // A token only for a backend at another address.
-    expect(screen.queryByLabelText(/^TokenOnly for/)).toBeNull();
-    expect(screen.queryByText(/In use:/)).toBeNull();
-  });
-
-  it("is open while a backend at another address is in use, and says which", async () => {
-    serveConfigs();
-    render(<SettingsScreen />);
-    expect(await screen.findByRole("button", { name: "Hide" })).toBeTruthy();
-    expect(screen.getByText(`In use: ${A}`)).toBeTruthy();
-    expect(screen.getByLabelText(/^TokenOnly for/)).toBeTruthy();
   });
 });
 
@@ -196,7 +171,7 @@ describe("SettingsScreen language", () => {
 
     expect(await screen.findByRole("heading", { name: "Einstellungen" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Darstellung" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Erweitert" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "RootMind-Dienst" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Speichern" })).toBeTruthy();
     expect(localStorage.getItem("rlm.language")).toBe("de");
     // The loaded settings stay.
@@ -326,31 +301,6 @@ describe("SettingsScreen LLM key", () => {
     ).toBeTruthy();
     expect(rlm.saveConfig).not.toHaveBeenCalled();
     expect((screen.getByLabelText(/^Model/) as HTMLSelectElement).disabled).toBe(true);
-  });
-});
-
-describe("SettingsScreen About", () => {
-  it("shows the app and backend versions as they run", async () => {
-    serveConfigs();
-    useStore.setState({
-      version: "1.1.0",
-      appMode: { version: "1.2.0", dev: false, platform: "windows" },
-    });
-    render(<SettingsScreen />);
-    await screen.findByDisplayValue("*.a");
-
-    expect(screen.getByRole("heading", { name: "About" })).toBeTruthy();
-    expect(screen.getByText("RootMind 1.2.0")).toBeTruthy();
-    expect(screen.getByText("1.1.0")).toBeTruthy();
-    expect(screen.getByText("Christian Gäking")).toBeTruthy();
-    expect(screen.getByText("MIT")).toBeTruthy();
-    for (const [name, href] of [
-      ["Repository", "https://github.com/cgaeking/rootmind"],
-      ["Releases and changelog", "https://github.com/cgaeking/rootmind/releases"],
-      ["Issues", "https://github.com/cgaeking/rootmind/issues"],
-    ]) {
-      expect(screen.getByRole("link", { name }).getAttribute("href")).toBe(href);
-    }
   });
 });
 

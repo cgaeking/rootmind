@@ -13,11 +13,19 @@ const common = {
   "aria-hidden": true,
 };
 
-export type NavIconName = "chat" | "folder" | "chart" | "settings";
+export type NavIconName = "chat" | "folder" | "chart" | "settings" | "info";
 
 export function NavIcon({ name, className, size = 22 }: Props & { name: NavIconName }) {
   const dims = { width: size, height: size };
   switch (name) {
+    case "info":
+      return (
+        <svg {...common} {...dims} className={className}>
+          <path d="M248 64C146.39 64 64 146.39 64 248s82.39 184 184 184 184-82.39 184-184S349.61 64 248 64Z" strokeMiterlimit={10} />
+          <path d="M220 220h32v116M208 340h88" />
+          <path d="M248 130a26 26 0 1 0 26 26 26 26 0 0 0-26-26" fill="currentColor" stroke="none" />
+        </svg>
+      );
     case "chat":
       return (
         <svg {...common} {...dims} className={className} strokeMiterlimit={10}>

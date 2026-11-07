@@ -9,6 +9,7 @@ export const labels = {
     folders: "Ordner",
     status: "Status",
     settings: "Einstellungen",
+    about: "Über RootMind",
   },
   conn: {
     online: "Verbunden",
@@ -60,13 +61,23 @@ export const labels = {
     connect: "Verbinden",
     useService: "RootMind-Dienst nutzen",
   },
+  mcp: {
+    title: "MCP",
+  },
+  server: {
+    local: (url: string) => `Lokal (${url})`,
+    remote: "Remote",
+    urlLabel: "Server-Adresse",
+    urlPlaceholder: "http://192.168.1.10:8000",
+    tokenLabel: "Token (optional)",
+    apply: "Übernehmen",
+    check: "Prüfen",
+  },
   service: {
     title: "RootMind-Dienst",
     loading: "RootMind-Dienst wird geprüft …",
     connecting: "Verbinde mit dem RootMind-Dienst …",
     running: "Läuft",
-    customInUse:
-      "Die App nutzt ein RootMind-Backend unter einer anderen Adresse (Einstellungen › Erweitert). Dieser Abschnitt zeigt den RootMind-Dienst dieses Computers; Remote gibt es nur, solange die App ihn nutzt.",
     problems: {
       unsupported: {
         title: "Der RootMind-Dienst ist nicht verfügbar",
@@ -143,19 +154,16 @@ export const labels = {
   reach: {
     local: "Lokal",
     localHint: "Programme auf diesem Computer: Claude Desktop, Claude Code, ein lokales n8n.",
-    remote: "Remote",
-    remoteHint:
-      "Von überall, über einen ngrok-Tunnel: Claude im Web und auf dem Handy, n8n in der Cloud. Der lokale Endpunkt funktioniert weiter.",
+    remote: "Remote / Öffentlicher Zugang mit ngrok",
     clientsLink: "MCP aus Claude, n8n und anderen Programmen erreichen",
     ngrokLink: "Kostenlosen ngrok Authtoken und Domain holen",
     claudeLink: "RootMind in Claude im Web und auf dem Handy nutzen",
     connect: "Verbinden",
-    connectNote: "Wer das MCP-Token hat, kann dann über die öffentliche Adresse deine indizierten Dokumente lesen.",
     saveRetry: "Speichern und erneut versuchen",
     connectedNote:
       "Dein Computer muss eingeschaltet und wach sein. Schalte Remote aus, wenn du es nicht brauchst; das schließt die öffentliche Adresse sofort.",
     needsService:
-      "Remote läuft im RootMind-Dienst dieses Computers, die App nutzt aber ein Backend unter einer anderen Adresse (Einstellungen › Erweitert).",
+      "Der öffentliche Zugang läuft im RootMind-Dienst dieses Computers, die App ist aber mit einem anderen Server verbunden (RootMind-Dienst › Remote).",
     useService: "RootMind-Dienst verwenden",
     close: "Schließen",
     copyCommand: "Befehl kopieren",
@@ -214,9 +222,8 @@ export const labels = {
     },
     authtokenSaved: "Gespeichert",
     replace: "Ersetzen",
-    domainLabel: "Domain (empfohlen)",
-    domainHint: "Deine kostenlose feste Domain aus dem ngrok-Dashboard, etwa name.ngrok-free.app. Mit ihr bleibt die Adresse nach einem Neustart gleich; ohne sie vergibt ngrok jedes Mal eine neue.",
-    domainPlaceholder: "name.ngrok-free.app",
+    domainLabel: "Domain",
+    domainPlaceholder: "sample.ngrok-free.app",
     states: {
       off: "Aus",
       connecting: "Verbinde …",
@@ -234,7 +241,7 @@ export const labels = {
     loadFailed: (msg: string) => `Die Einstellungen für den Fernzugriff konnten nicht gelesen werden: ${msg}`,
   },
   settings: {
-    subtitle: "Backend-, LLM- und Indizierungs-Einstellungen.",
+    subtitle: "MCP-, Server-, LLM- und Indizierungs-Einstellungen.",
     appearanceTitle: "Darstellung",
     appearanceDesc: "Erscheinungsbild der App.",
     designLabel: "Design",
@@ -247,22 +254,6 @@ export const labels = {
     languageSystem: "System",
     languageEn: "English",
     languageDe: "Deutsch",
-    advancedTitle: "Erweitert",
-    advancedShow: "Anzeigen",
-    advancedHide: "Ausblenden",
-    inUse: {
-      custom: (url: string) => `In Verwendung: ${url}`,
-    },
-    urlLabel: "Backend-Adresse",
-    urlHint:
-      "Der RootMind-Dienst auf diesem Computer. Ändere sie nur, um ein RootMind-Backend unter einer anderen Adresse zu nutzen.",
-    tokenLabel: "Token",
-    tokenHint: "Nur für ein Backend, das eines verlangt (RLM_API_TOKEN oder --require-token).",
-    apply: "Übernehmen",
-    check: "Prüfen",
-    useDefault: "RootMind-Dienst nutzen",
-    useDefaultHint: "Diese Adresse vergessen und mit dem RootMind-Dienst dieses Computers verbinden.",
-    versionLabel: (v: string) => `Backend-Version: ${v}`,
     llmTitle: "LLM",
     llmDesc: "Modellanbieter für den Chat.",
     connectPrompt: "Mit dem Backend verbinden, um die LLM-Einstellungen zu laden.",
@@ -310,7 +301,7 @@ export const labels = {
     aboutTitle: "Über RootMind",
     aboutDesc: "Chat und Suche über deine lokalen Dokumente.",
     aboutAppVersion: "App-Version",
-    aboutBackendVersion: "Backend-Version",
+    aboutBackendVersion: "Server-Version",
     aboutUnknown: "unbekannt",
     aboutAuthor: "Autor",
     aboutLicense: "Lizenz",

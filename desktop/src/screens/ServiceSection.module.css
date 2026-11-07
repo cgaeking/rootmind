@@ -57,12 +57,6 @@
   color: var(--text-muted);
 }
 
-.mcp {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding-left: 24px;
-}
 
 .note {
   margin: 0;
@@ -198,4 +192,18 @@
 .values code {
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 12px;
+}
+
+/* RootMind Service: Local or Remote server. */
+.server {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.serverFields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 24px;
 }

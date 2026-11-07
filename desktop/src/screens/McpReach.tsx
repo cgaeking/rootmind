@@ -41,7 +41,7 @@ function Option({
 }: {
   checked?: boolean;
   label: string;
-  hint: string;
+  hint?: string;
   disabled?: boolean;
   onToggle?: (checked: boolean) => void;
   children?: ReactNode;
@@ -49,7 +49,7 @@ function Option({
   const text = (
     <span className={styles.optionText}>
       <span className={styles.optionLabel}>{label}</span>
-      <span className={styles.hint}>{hint}</span>
+      {hint && <span className={styles.hint}>{hint}</span>}
     </span>
   );
   return (
@@ -112,7 +112,7 @@ function Endpoint({
 }
 
 /**
- * Settings › RootMind service › Serve MCP over HTTP: who can reach the MCP
+ * Settings › MCP: who can reach the MCP
  * endpoint. Local (programs on this computer) is always there, with the
  * endpoint and the MCP token; the Remote checkbox adds a public address
  * through ngrok, which the RootMind service opens (remote access, set
@@ -277,7 +277,6 @@ export function McpReach({
           disabled={off}
           onChange={(e) => setDomain(e.currentTarget.value)}
         />
-        <span className={styles.hint}>{labels.remote.domainHint}</span>
       </div>
       <button
         type="button"
@@ -305,7 +304,6 @@ export function McpReach({
           </Button>
         )}
       </Row>
-      {!enabled && <p className={styles.note}>{labels.reach.connectNote}</p>}
     </>
   );
 
@@ -329,7 +327,6 @@ export function McpReach({
       <Option
         checked={remoteShown}
         label={labels.reach.remote}
-        hint={labels.reach.remoteHint}
         disabled={off}
         onToggle={(on) => void toggleRemote(on)}
       >

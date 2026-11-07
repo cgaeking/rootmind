@@ -9,6 +9,7 @@ export const labels = {
     folders: "Folders",
     status: "Status",
     settings: "Settings",
+    about: "About",
   },
   conn: {
     online: "Connected",
@@ -60,13 +61,23 @@ export const labels = {
     connect: "Connect",
     useService: "Use the RootMind service",
   },
+  mcp: {
+    title: "MCP",
+  },
+  server: {
+    local: (url: string) => `Local (${url})`,
+    remote: "Remote",
+    urlLabel: "Server address",
+    urlPlaceholder: "http://192.168.1.10:8000",
+    tokenLabel: "Token (optional)",
+    apply: "Apply",
+    check: "Check",
+  },
   service: {
-    title: "RootMind service",
+    title: "RootMind Service",
     loading: "Checking the RootMind service …",
     connecting: "Connecting to the RootMind service …",
     running: "Running",
-    customInUse:
-      "The app uses a RootMind backend at another address (Settings › Advanced). This section shows this computer's RootMind service; Remote is available only while the app uses it.",
     problems: {
       unsupported: {
         title: "The RootMind service is not available",
@@ -143,19 +154,16 @@ export const labels = {
   reach: {
     local: "Local",
     localHint: "Programs on this computer: Claude Desktop, Claude Code, a local n8n.",
-    remote: "Remote",
-    remoteHint:
-      "From anywhere, through an ngrok tunnel: Claude on the web and on your phone, n8n in the cloud. The local endpoint keeps working.",
+    remote: "Remote / Public access with ngrok",
     clientsLink: "Reach MCP from Claude, n8n and other clients",
     ngrokLink: "Get your free ngrok Authtoken and domain",
     claudeLink: "Use RootMind in Claude on the web and on your phone",
     connect: "Connect",
-    connectNote: "Anyone with the MCP token can then read your indexed documents through the public address.",
     saveRetry: "Save and try again",
     connectedNote:
       "Your computer must be on and awake. Turn Remote off when you don't need it; that closes the public address at once.",
     needsService:
-      "Remote runs in this computer's RootMind service, but the app uses a backend at another address (Settings › Advanced).",
+      "Public access runs in this computer's RootMind service, but the app is connected to another server (RootMind Service › Remote).",
     useService: "Use the RootMind service",
     close: "Close",
     copyCommand: "Copy command",
@@ -214,9 +222,8 @@ export const labels = {
     },
     authtokenSaved: "Saved",
     replace: "Replace",
-    domainLabel: "Domain (recommended)",
-    domainHint: "Your free static domain from the ngrok dashboard, such as name.ngrok-free.app. It keeps the address the same after a restart; without one, ngrok gives a new address each time.",
-    domainPlaceholder: "name.ngrok-free.app",
+    domainLabel: "Domain",
+    domainPlaceholder: "sample.ngrok-free.app",
     states: {
       off: "Off",
       connecting: "Connecting …",
@@ -234,7 +241,7 @@ export const labels = {
     loadFailed: (msg: string) => `Could not read the remote access settings: ${msg}`,
   },
   settings: {
-    subtitle: "Backend, LLM and indexing settings.",
+    subtitle: "MCP, server, LLM and indexing settings.",
     appearanceTitle: "Appearance",
     appearanceDesc: "Look and feel of the app.",
     designLabel: "Theme",
@@ -247,22 +254,6 @@ export const labels = {
     languageSystem: "System",
     languageEn: "English",
     languageDe: "Deutsch",
-    advancedTitle: "Advanced",
-    advancedShow: "Show",
-    advancedHide: "Hide",
-    inUse: {
-      custom: (url: string) => `In use: ${url}`,
-    },
-    urlLabel: "Backend address",
-    urlHint:
-      "The RootMind service on this computer. Change it only to use a RootMind backend at another address.",
-    tokenLabel: "Token",
-    tokenHint: "Only for a backend that needs one (RLM_API_TOKEN or --require-token).",
-    apply: "Apply",
-    check: "Check",
-    useDefault: "Use the RootMind service",
-    useDefaultHint: "Forget this address and connect to the RootMind service on this computer.",
-    versionLabel: (v: string) => `Backend version: ${v}`,
     llmTitle: "LLM",
     llmDesc: "Model provider for chat.",
     connectPrompt: "Connect to the backend to load LLM settings.",
@@ -309,7 +300,7 @@ export const labels = {
     aboutTitle: "About",
     aboutDesc: "Chat and search over your local documents.",
     aboutAppVersion: "App version",
-    aboutBackendVersion: "Backend version",
+    aboutBackendVersion: "Server version",
     aboutUnknown: "unknown",
     aboutAuthor: "Author",
     aboutLicense: "License",

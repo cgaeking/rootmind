@@ -99,6 +99,12 @@
 
 .link {
   display: flex;
+  width: 100%;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   align-items: center;
   gap: 11px;
   padding: 9px 10px;
