@@ -308,6 +308,7 @@ export const labels = {
     aboutRepository: "Repository",
     aboutReleases: "Releases und Änderungen",
     aboutIssues: "Fehler und Wünsche (Issues)",
+    aboutStar: "⭐ Stern auf GitHub geben",
   },
   status: {
     subtitle: "Index-Status und Statistiken.",

@@ -32,7 +32,8 @@ function ExternalLink({ href, children }: { href: string; children: string }) {
 
 /**
  * Menu › About: the app and server versions as they run (they differ when
- * the RootMind service runs an older build), author, license, links. Shown
+ * the RootMind service runs an older build), author, license, links, and
+ * "Star us on GitHub". Shown
  * over the whole window (a portal: the sidebar is a transformed drawer on
  * phones, which would otherwise confine the overlay).
  */
@@ -45,8 +46,16 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
   return createPortal(
     <Dialog
       title={labels.settings.aboutTitle}
+      icon={<img src="/rootmind.svg" alt="" width={22} height={22} />}
       onClose={onClose}
-      actions={<Button onClick={onClose}>{labels.reach.close}</Button>}
+      actions={
+        <>
+          <Button className={styles.star} onClick={() => void openExternal(REPOSITORY_URL)}>
+            {labels.settings.aboutStar}
+          </Button>
+          <Button onClick={onClose}>{labels.reach.close}</Button>
+        </>
+      }
     >
       <p className={dialogStyles.text}>{labels.settings.aboutDesc}</p>
       <dl className={styles.facts}>

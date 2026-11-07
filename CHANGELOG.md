@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Added
+
+- Desktop: the About dialog shows the RootMind logo before its title and has a **Star us on GitHub** button (German: **Stern auf GitHub geben**) that opens the repository.
+
 ### Changed
 
 - The README is shorter and aimed at users: a quickstart at the top (local: the Claude Desktop extension; remote: the ngrok connector for Claude on the web and on the phone), install, use with Claude and other tools. The details moved to `docs/INSTALL.md`, `docs/MCP.md` and `docs/DEVELOPMENT.md` (each also in German).
