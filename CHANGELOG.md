@@ -12,6 +12,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 - The README is shorter and aimed at users: a quickstart at the top (local: the Claude Desktop extension; remote: the ngrok connector for Claude on the web and on the phone), install, use with Claude and other tools. The details moved to `docs/INSTALL.md`, `docs/MCP.md` and `docs/DEVELOPMENT.md` (each also in German).
 
+### Fixed
+
+- Desktop: the sources under an answer show where the answer was found: "Lease.pdf  Pages 3, 4", "Slide 2", "Sheet: Costs" (in German "Seite", "Folie", "Blatt"). A file cited at several places is listed once with all of them. Until now the list showed only the file names, and a file cited on two pages appeared twice.
+
 ## [2.8.2] - 2026-11-07
 
 ### Changed

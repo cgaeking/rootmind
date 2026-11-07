@@ -23,6 +23,7 @@ import {
   toSources,
   useRuns,
 } from "../state/runs";
+import { formatLocations, groupSources } from "../utils/sourceLocations";
 import styles from "./ChatScreen.module.css";
 
 const SEARCH_MAX = 1000;
@@ -112,7 +113,8 @@ function SourceList({
   title?: string;
   showHeader?: boolean;
 }) {
-  const collapsible = collapse && sources.length > 3;
+  const groups = groupSources(sources);
+  const collapsible = collapse && groups.length > 3;
   const [open, setOpen] = useState(!collapsible);
   const showList = !collapsible || open;
 
@@ -127,13 +129,13 @@ function SourceList({
             aria-expanded={open}
           >
             <span className={`${styles.chevron} ${open ? styles.chevronOpen : ""}`}>›</span>
-            {title} ({sources.length})
+            {title} ({groups.length})
           </button>
         ) : (
           <strong>{title}</strong>
         ))}
       {showList &&
-        sources.map((s, i) => (
+        groups.map(({ source: s, locations }, i) => (
           <div key={i} className={styles.sourceItem}>
             <div className={styles.sourceRow}>
               <button
@@ -157,6 +159,11 @@ function SourceList({
               >
                 📄 {s.file_name}
               </button>
+              {locations.length > 0 && (
+                <span className={styles.sourceLocation}>
+                  {formatLocations(locations, labels.chat.locations)}
+                </span>
+              )}
             </div>
             {s.snippet && <div className={styles.sourceSnippet}>{s.snippet}</div>}
           </div>

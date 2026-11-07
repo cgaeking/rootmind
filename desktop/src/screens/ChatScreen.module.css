@@ -259,3 +259,10 @@
     padding-bottom: calc(10px + env(safe-area-inset-bottom));
   }
 }
+
+/* Where in the file the answer found it: "Page 3", "Pages 3, 4", "Slide 2". */
+.sourceLocation {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
