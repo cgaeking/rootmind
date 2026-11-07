@@ -44,8 +44,6 @@ https://github.com/user-attachments/assets/d3cc0249-a550-4de5-ae6b-55c1291a282f
 
 ## Quickstart
 
-▶ **Video:** *Set up RootMind in four minutes* (coming soon)
-
 1. **Install.** Windows 10 or 11: download and run
    **[RootMind-Setup-x64.exe](https://github.com/cgaeking/rootmind/releases/latest/download/RootMind-Setup-x64.exe)**.
    Linux: the [.deb, .rpm or AppImage](#install-on-linux). If Windows shows
