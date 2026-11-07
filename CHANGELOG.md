@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.8.3] - 2026-11-07
+
 ### Added
 
 - Desktop: the About dialog shows the RootMind logo before its title and has a **Star us on GitHub** button (German: **Stern auf GitHub geben**) that opens the repository.
