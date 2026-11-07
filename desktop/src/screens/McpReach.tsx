@@ -6,7 +6,9 @@ import type { RemoteAccessChange, RemoteAccessInfo } from "../types/api";
 import {
   REMOTE_POLL_MS,
   connectChange,
+  looksLikeAuthtoken,
   publicEndpoint,
+  tunnelError,
 } from "../state/remoteAccess";
 import { Dialog, dialogStyles } from "../components/Dialog";
 import { Badge, Banner, Button, Row, TextInput } from "../components/ui";
@@ -19,48 +21,56 @@ import {
 import type { TokenReader } from "./McpHelpDialogs";
 import styles from "./ServiceSection.module.css";
 
-type Mode = "local" | "remote";
 type HelpDialog = "clients" | "ngrok" | "claude" | null;
 
 function message(e: unknown): string {
   return e instanceof Error && e.message ? e.message : String(e);
 }
 
-/** One of the two options, as a card with a radio button; its body shows while it is chosen. */
+/**
+ * A card with a label and a hint. With `onToggle` it has a checkbox and shows
+ * its body only while checked; without, its body always shows.
+ */
 function Option({
-  checked,
+  checked = true,
   label,
   hint,
-  disabled,
-  onPick,
+  disabled = false,
+  onToggle,
   children,
 }: {
-  checked: boolean;
+  checked?: boolean;
   label: string;
-  hint: string;
-  disabled: boolean;
-  onPick: () => void;
+  hint?: string;
+  disabled?: boolean;
+  onToggle?: (checked: boolean) => void;
   children?: ReactNode;
 }) {
+  const text = (
+    <span className={styles.optionText}>
+      <span className={styles.optionLabel}>{label}</span>
+      {hint && <span className={styles.hint}>{hint}</span>}
+    </span>
+  );
   return (
     <div
       className={
         checked ? `${styles.option} ${styles.optionOn}` : styles.option
       }
     >
-      <label className={styles.optionHead}>
-        <input
-          type="radio"
-          name="mcp-reach"
-          checked={checked}
-          disabled={disabled}
-          onChange={onPick}
-        />
-        <span className={styles.optionText}>
-          <span className={styles.optionLabel}>{label}</span>
-          <span className={styles.hint}>{hint}</span>
-        </span>
-      </label>
+      {onToggle ? (
+        <label className={styles.optionHead}>
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={disabled}
+            onChange={(e) => onToggle(e.currentTarget.checked)}
+          />
+          {text}
+        </label>
+      ) : (
+        <div className={styles.optionHead}>{text}</div>
+      )}
       {checked && children && (
         <div className={styles.optionBody}>{children}</div>
       )}
@@ -92,6 +102,7 @@ function Endpoint({
         {copied === "url" ? labels.common.copied : labels.common.copy}
       </Button>
       <Button
+        title={labels.service.copyTokenTitle}
         onClick={() => void (async () => copy("token", await readToken()))()}
       >
         {copied === "token" ? labels.common.copied : labels.service.copyToken}
@@ -101,12 +112,13 @@ function Endpoint({
 }
 
 /**
- * Settings › RootMind service › Serve MCP over HTTP: who can reach the MCP
- * endpoint. Local (the default) is programs on this computer; Remote adds a
- * public address through ngrok, which the RootMind service opens (remote
- * access, set through the REST API). Remote needs the app to use the
- * service: the settings belong to it. Each option links to a help dialog
- * with the values a client needs.
+ * Settings › MCP: who can reach the MCP
+ * endpoint. Local (programs on this computer) is always there, with the
+ * endpoint and the MCP token; the Remote checkbox adds a public address
+ * through ngrok, which the RootMind service opens (remote access, set
+ * through the REST API). Remote needs the app to use the service: the
+ * settings belong to it. Each part links to a help dialog with the values a
+ * client needs.
  */
 export function McpReach({
   endpoint,
@@ -127,8 +139,8 @@ export function McpReach({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Remote chosen but not turned on yet (the setup shows).
-  const [picked, setPicked] = useState<Mode | null>(null);
+  // Remote ticked but not turned on yet (the setup shows).
+  const [wanted, setWanted] = useState(false);
   // The authtoken lives only in this field until it is saved; it is never read back.
   const [authtoken, setAuthtoken] = useState("");
   const [replacing, setReplacing] = useState(false);
@@ -157,7 +169,7 @@ export function McpReach({
     return () => clearInterval(timer);
   }, [enabled, load]);
 
-  const mode: Mode = enabled ? "remote" : (picked ?? "local");
+  const remoteShown = enabled || wanted;
 
   async function change(c: RemoteAccessChange): Promise<boolean> {
     setBusy(true);
@@ -173,21 +185,40 @@ export function McpReach({
     }
   }
 
+  /**
+   * Why the typed ngrok Authtoken cannot be right, or null: it is the MCP
+   * token (the usual mix-up) or does not have the form of an ngrok Authtoken.
+   */
+  async function authtokenProblem(): Promise<string | null> {
+    const typed = authtoken.trim();
+    if (!typed) return null;
+    if (typed === (await readToken())) return labels.remote.isMcpToken;
+    if (!looksLikeAuthtoken(typed)) return labels.remote.notAuthtoken;
+    return null;
+  }
+
+  /** Check the typed authtoken first; `next` runs only when it can be right. */
+  async function checked(next: () => void) {
+    const problem = await authtokenProblem();
+    setError(problem);
+    if (!problem) next();
+  }
+
   async function connect() {
     if (!info) return;
     if (await change(connectChange(info, authtoken, domain))) {
       setAuthtoken("");
       setReplacing(false);
       setDomain(null);
-      setPicked(null);
+      setWanted(false);
     }
   }
 
-  async function pickLocal() {
-    setPicked("local");
+  async function toggleRemote(on: boolean) {
     setError(null);
-    // Local closes the public address.
-    if (enabled) await change({ enabled: false });
+    setWanted(on);
+    // Unticking closes the public address.
+    if (!on && enabled) await change({ enabled: false });
   }
 
   const off = disabled || busy;
@@ -246,7 +277,6 @@ export function McpReach({
           disabled={off}
           onChange={(e) => setDomain(e.currentTarget.value)}
         />
-        <span className={styles.hint}>{labels.remote.domainHint}</span>
       </div>
       <button
         type="button"
@@ -259,7 +289,7 @@ export function McpReach({
         {enabled ? (
           <Button
             variant="primary"
-            onClick={() => void connect()}
+            onClick={() => void checked(() => void connect())}
             disabled={off}
           >
             {labels.reach.saveRetry}
@@ -267,30 +297,19 @@ export function McpReach({
         ) : (
           <Button
             variant="primary"
-            onClick={() => setConfirming(true)}
+            onClick={() => void checked(() => setConfirming(true))}
             disabled={off || !canConnect}
           >
             {labels.reach.connect}
           </Button>
         )}
       </Row>
-      {!enabled && <p className={styles.note}>{labels.reach.connectNote}</p>}
     </>
   );
 
   return (
-    <div
-      className={styles.reach}
-      role="radiogroup"
-      aria-label={labels.service.mcpUrlLabel}
-    >
-      <Option
-        checked={mode === "local"}
-        label={labels.reach.local}
-        hint={labels.reach.localHint}
-        disabled={off}
-        onPick={() => void pickLocal()}
-      >
+    <div className={styles.reach}>
+      <Option label={labels.reach.local} hint={labels.reach.localHint}>
         <Endpoint
           url={endpoint}
           label={labels.service.mcpUrlLabel}
@@ -306,14 +325,10 @@ export function McpReach({
       </Option>
 
       <Option
-        checked={mode === "remote"}
+        checked={remoteShown}
         label={labels.reach.remote}
-        hint={labels.reach.remoteHint}
         disabled={off}
-        onPick={() => {
-          setError(null);
-          setPicked("remote");
-        }}
+        onToggle={(on) => void toggleRemote(on)}
       >
         {!serviceInUse ? (
           <>
@@ -345,14 +360,12 @@ export function McpReach({
                 {info?.domain && (
                   <span className={styles.saved}>{info.domain}</span>
                 )}
-                <span className={styles.grow} />
-                <Button onClick={() => void pickLocal()} disabled={off}>
-                  {labels.reach.turnOff}
-                </Button>
               </Row>
             )}
             {enabled && status?.state === "error" && status.error && (
-              <Banner tone="err">{status.error}</Banner>
+              <Banner tone="err">
+                {tunnelError(status.error, labels.remote.errors)}
+              </Banner>
             )}
 
             {publicUrl && (

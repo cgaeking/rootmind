@@ -87,30 +87,34 @@ function renderReach(serviceInUse = true) {
   );
 }
 
-const radio = (name: RegExp) =>
-  screen.getByRole("radio", { name }) as HTMLInputElement;
+const remoteBox = () =>
+  screen.getByRole("checkbox", { name: /^Remote/ }) as HTMLInputElement;
 
 describe("McpReach", () => {
-  it("starts in Local with the endpoint; the Remote setup shows only when chosen", async () => {
+  it("always shows Local; the Remote setup shows only while Remote is ticked", async () => {
     vi.mocked(rlm.getRemoteAccess).mockResolvedValue(remoteInfo());
     renderReach();
     await waitFor(() => expect(rlm.getRemoteAccess).toHaveBeenCalled());
-    expect(radio(/^Local/).checked).toBe(true);
+    expect(screen.queryByRole("radio")).toBeNull();
     expect(screen.getByDisplayValue(LOCAL)).toBeTruthy();
-    expect(screen.queryByLabelText("ngrok authtoken")).toBeNull();
+    expect(remoteBox().checked).toBe(false);
+    expect(screen.queryByLabelText("ngrok Authtoken")).toBeNull();
 
-    fireEvent.click(radio(/^Remote/));
-    expect(radio(/^Remote/).checked).toBe(true);
-    expect(screen.getByLabelText("ngrok authtoken")).toBeTruthy();
-    expect(screen.queryByDisplayValue(LOCAL)).toBeNull();
+    fireEvent.click(remoteBox());
+    expect(remoteBox().checked).toBe(true);
+    expect(screen.getByLabelText("ngrok Authtoken")).toBeTruthy();
+    // The local endpoint and its MCP token stay at hand.
+    expect(screen.getByDisplayValue(LOCAL)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy MCP token" })).toBeTruthy();
   });
 
   it("shows Remote when remote access is already on", async () => {
     vi.mocked(rlm.getRemoteAccess).mockResolvedValue(connected());
     renderReach();
     expect(await screen.findByDisplayValue(`${PUBLIC}/mcp`)).toBeTruthy();
-    expect(radio(/^Remote/).checked).toBe(true);
+    expect(remoteBox().checked).toBe(true);
     expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.getByDisplayValue(LOCAL)).toBeTruthy();
   });
 
   it("connects with the typed authtoken and domain after a confirmation", async () => {
@@ -118,21 +122,21 @@ describe("McpReach", () => {
     vi.mocked(rlm.updateRemoteAccess).mockResolvedValue(connected());
     renderReach();
     await waitFor(() => expect(rlm.getRemoteAccess).toHaveBeenCalled());
-    fireEvent.click(radio(/^Remote/));
+    fireEvent.click(remoteBox());
 
     const connect = screen.getByRole("button", {
       name: "Connect",
     }) as HTMLButtonElement;
     expect(connect.disabled).toBe(true); // no authtoken yet
-    const field = screen.getByLabelText("ngrok authtoken") as HTMLInputElement;
+    const field = screen.getByLabelText("ngrok Authtoken") as HTMLInputElement;
     expect(field.type).toBe("password");
     fireEvent.change(field, { target: { value: `  ${AUTHTOKEN} ` } });
-    fireEvent.change(screen.getByLabelText("Domain (recommended)"), {
+    fireEvent.change(screen.getByLabelText("Domain"), {
       target: { value: "rootmind-test.ngrok-free.app" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
 
-    const dialog = screen.getByRole("dialog", {
+    const dialog = await screen.findByRole("dialog", {
       name: "Make RootMind reachable from the internet?",
     });
     expect(rlm.updateRemoteAccess).not.toHaveBeenCalled();
@@ -145,7 +149,7 @@ describe("McpReach", () => {
       }),
     );
     expect(await screen.findByDisplayValue(`${PUBLIC}/mcp`)).toBeTruthy();
-    expect(screen.queryByLabelText("ngrok authtoken")).toBeNull();
+    expect(screen.queryByLabelText("ngrok Authtoken")).toBeNull();
   });
 
   it("connects with a saved authtoken without asking for it again", async () => {
@@ -155,51 +159,45 @@ describe("McpReach", () => {
     vi.mocked(rlm.updateRemoteAccess).mockResolvedValue(connected());
     renderReach();
     await waitFor(() => expect(rlm.getRemoteAccess).toHaveBeenCalled());
-    fireEvent.click(radio(/^Remote/));
+    fireEvent.click(remoteBox());
     expect(screen.getByText("Saved")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
-    fireEvent.click(screen.getByRole("button", { name: "Turn on" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
     await waitFor(() =>
       expect(rlm.updateRemoteAccess).toHaveBeenCalledWith({ enabled: true }),
     );
   });
 
-  it("turns remote access off with Turn off, and back in Local", async () => {
-    vi.mocked(rlm.getRemoteAccess).mockResolvedValue(connected());
-    vi.mocked(rlm.updateRemoteAccess).mockResolvedValue(
-      remoteInfo({ authtoken_saved: true }),
-    );
-    renderReach();
-    fireEvent.click(await screen.findByRole("button", { name: "Turn off" }));
-    await waitFor(() =>
-      expect(rlm.updateRemoteAccess).toHaveBeenCalledWith({ enabled: false }),
-    );
-    expect(await screen.findByDisplayValue(LOCAL)).toBeTruthy();
-    expect(radio(/^Local/).checked).toBe(true);
-  });
-
-  it("choosing Local closes the public address", async () => {
+  it("unticking Remote closes the public address", async () => {
     vi.mocked(rlm.getRemoteAccess).mockResolvedValue(connected());
     vi.mocked(rlm.updateRemoteAccess).mockResolvedValue(
       remoteInfo({ authtoken_saved: true }),
     );
     renderReach();
     await screen.findByDisplayValue(`${PUBLIC}/mcp`);
-    fireEvent.click(radio(/^Local/));
+    fireEvent.click(remoteBox());
     await waitFor(() =>
       expect(rlm.updateRemoteAccess).toHaveBeenCalledWith({ enabled: false }),
     );
+    await waitFor(() => expect(remoteBox().checked).toBe(false));
+    expect(screen.queryByDisplayValue(`${PUBLIC}/mcp`)).toBeNull();
+    expect(screen.getByDisplayValue(LOCAL)).toBeTruthy();
   });
 
   it("copies the public endpoint and the token", async () => {
     vi.mocked(rlm.getRemoteAccess).mockResolvedValue(connected());
     renderReach();
     await screen.findByDisplayValue(`${PUBLIC}/mcp`);
-    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    // Local first, then the public endpoint: each with Copy and Copy MCP token.
+    const copies = screen.getAllByRole("button", { name: "Copy" });
+    expect(copies).toHaveLength(2);
+    fireEvent.click(copies[1]);
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith(`${PUBLIC}/mcp`),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Copy token" }));
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Copy MCP token" })[1],
+    );
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(TOKEN));
   });
 
@@ -218,7 +216,7 @@ describe("McpReach", () => {
     renderReach();
     expect(await screen.findByText("authentication failed")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Replace" }));
-    fireEvent.change(screen.getByLabelText("ngrok authtoken"), {
+    fireEvent.change(screen.getByLabelText("ngrok Authtoken"), {
       target: { value: AUTHTOKEN },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save and try again" }));
@@ -237,18 +235,61 @@ describe("McpReach", () => {
     );
     renderReach();
     await waitFor(() => expect(rlm.getRemoteAccess).toHaveBeenCalled());
-    fireEvent.click(radio(/^Remote/));
-    fireEvent.change(screen.getByLabelText("ngrok authtoken"), {
-      target: { value: "bad" },
+    fireEvent.click(remoteBox());
+    fireEvent.change(screen.getByLabelText("ngrok Authtoken"), {
+      target: { value: "refused_by_the_backend_000000001" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
-    fireEvent.click(screen.getByRole("button", { name: "Turn on" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
     expect(
       await screen.findByText("The change failed: Not a valid ngrok authtoken"),
     ).toBeTruthy();
     expect(
-      (screen.getByLabelText("ngrok authtoken") as HTMLInputElement).value,
-    ).toBe("bad");
+      (screen.getByLabelText("ngrok Authtoken") as HTMLInputElement).value,
+    ).toBe("refused_by_the_backend_000000001");
+  });
+
+  it("refuses the MCP token as the ngrok Authtoken, and anything that is not one", async () => {
+    vi.mocked(rlm.getRemoteAccess).mockResolvedValue(remoteInfo());
+    renderReach();
+    await waitFor(() => expect(rlm.getRemoteAccess).toHaveBeenCalled());
+    fireEvent.click(remoteBox());
+    const field = screen.getByLabelText("ngrok Authtoken");
+
+    fireEvent.change(field, { target: { value: ` ${TOKEN} ` } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(
+      await screen.findByText(
+        "This is the MCP token, not the ngrok Authtoken.",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.change(field, { target: { value: "too short" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(await screen.findByText("Not an ngrok Authtoken.")).toBeTruthy();
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(rlm.updateRemoteAccess).not.toHaveBeenCalled();
+  });
+
+  it("shows a known ngrok error as one sentence with its code", async () => {
+    vi.mocked(rlm.getRemoteAccess).mockResolvedValue(
+      connected({
+        status: {
+          state: "error",
+          url: null,
+          error:
+            "The endpoint 'https://x.ngrok-free.dev' is already online. (ERR_NGROK_334)",
+          updated: null,
+        },
+      }),
+    );
+    renderReach();
+    expect(
+      await screen.findByText(
+        "Another tunnel is already using this domain. (ERR_NGROK_334)",
+      ),
+    ).toBeTruthy();
   });
 
   it("polls the status while remote access is on", async () => {
@@ -273,13 +314,13 @@ describe("McpReach", () => {
     );
     renderReach();
     await waitFor(() => expect(rlm.getRemoteAccess).toHaveBeenCalled());
-    fireEvent.click(radio(/^Remote/));
+    fireEvent.click(remoteBox());
     expect(screen.getByText(/the ngrok SDK is missing/)).toBeTruthy();
   });
 
   it("offers the service instead of Remote while the app uses another backend", async () => {
     renderReach(false);
-    fireEvent.click(radio(/^Remote/));
+    fireEvent.click(remoteBox());
     fireEvent.click(
       screen.getByRole("button", { name: "Use the RootMind service" }),
     );
@@ -343,14 +384,14 @@ describe("McpReach help dialogs", () => {
     vi.mocked(rlm.getRemoteAccess).mockResolvedValue(remoteInfo());
     renderReach();
     await waitFor(() => expect(rlm.getRemoteAccess).toHaveBeenCalled());
-    fireEvent.click(radio(/^Remote/));
+    fireEvent.click(remoteBox());
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Get your free ngrok authtoken and domain",
+        name: "Get your free ngrok Authtoken and domain",
       }),
     );
     const dialog = screen.getByRole("dialog", {
-      name: "Get your ngrok authtoken and domain",
+      name: "Get your ngrok Authtoken and domain",
     });
     expect(within(dialog).getByText(/free static domain/)).toBeTruthy();
     fireEvent.click(

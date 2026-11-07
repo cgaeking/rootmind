@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useStore } from "../state/store";
 import { resetStore, serviceInfoFixture } from "../test/helpers";
@@ -24,6 +30,8 @@ vi.mock("../api/rlm", async (importOriginal) => ({
 
 // The change itself is tested in backendActions.test.ts; here only the outcome matters.
 vi.mock("../state/backendActions", () => ({
+  connectCustom: vi.fn(async () => {}),
+  connectService: vi.fn(async () => true),
   runServiceChange: vi.fn(async (op: () => Promise<ServiceResult>) => ({
     kind: "result",
     result: await op(),
@@ -32,6 +40,7 @@ vi.mock("../state/backendActions", () => ({
 
 const backend = await import("../api/backend");
 const rlm = await import("../api/rlm");
+const actions = await import("../state/backendActions");
 const { ServiceSection } = await import("./ServiceSection");
 
 const SERVICE = "http://127.0.0.1:8000";
@@ -66,7 +75,11 @@ beforeEach(() => {
     appMode: { version: "1.3.0", dev: false, platform: "windows" },
   });
   vi.mocked(backend.serviceInfo).mockResolvedValue(ours);
-  vi.mocked(backend.serviceConnect).mockResolvedValue({ ok: true, url: SERVICE, token: "v" });
+  vi.mocked(backend.serviceConnect).mockResolvedValue({
+    ok: true,
+    url: SERVICE,
+    token: "v",
+  });
   vi.mocked(rlm.getRemoteAccess).mockResolvedValue({
     enabled: false,
     domain: null,
@@ -75,7 +88,10 @@ beforeEach(() => {
     status: { state: "off", url: null, error: null, updated: null },
   });
   writeText.mockClear();
-  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText },
+    configurable: true,
+  });
 });
 
 afterEach(() => {
@@ -92,17 +108,21 @@ describe("ServiceSection", () => {
     expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
   });
 
-  it("starts in Local with the MCP endpoint, and copies the token without displaying it", async () => {
+  it("shows the local MCP endpoint, and copies the MCP token without displaying it", async () => {
     vi.mocked(backend.serviceMcpToken).mockResolvedValue("mcp-secret");
     render(<ServiceSection />);
     expect(await screen.findByDisplayValue(MCP)).toBeTruthy();
-    const toggle = screen.getByRole("checkbox", { name: "Serve MCP over HTTP (for Claude, n8n and other agents)" }) as HTMLInputElement;
+    const toggle = screen.getByRole("checkbox", {
+      name: "Serve MCP over HTTP (for Claude, n8n and other agents)",
+    }) as HTMLInputElement;
     expect(toggle.checked).toBe(true);
-    expect((screen.getByRole("radio", { name: /^Local/ }) as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByRole("radio", { name: /^Remote/ }) as HTMLInputElement).checked).toBe(false);
+    expect(
+      (screen.getByRole("checkbox", { name: /^Remote/ }) as HTMLInputElement)
+        .checked,
+    ).toBe(false);
     expect(backend.serviceMcpToken).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy token" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy MCP token" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("mcp-secret"));
     expect(screen.queryByDisplayValue("mcp-secret")).toBeNull();
     expect(screen.queryByText(/mcp-secret/)).toBeNull();
@@ -114,18 +134,30 @@ describe("ServiceSection", () => {
       mcp: { installed: false, state: null, port: null, url: null },
     });
     render(<ServiceSection />);
-    const toggle = (await screen.findByRole("checkbox", { name: "Serve MCP over HTTP (for Claude, n8n and other agents)" })) as HTMLInputElement;
+    const toggle = (await screen.findByRole("checkbox", {
+      name: "Serve MCP over HTTP (for Claude, n8n and other agents)",
+    })) as HTMLInputElement;
     expect(toggle.checked).toBe(false);
-    expect(screen.queryByRole("radio")).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: /^Remote/ })).toBeNull();
   });
 
   it("explains Remote while the app uses another backend, and switches to the service", async () => {
-    useStore.setState({ kind: "custom", baseUrl: "http://example.test:9000", token: null, conn: "online" });
+    useStore.setState({
+      kind: "custom",
+      baseUrl: "http://example.test:9000",
+      token: null,
+      conn: "online",
+    });
     render(<ServiceSection />);
-    await screen.findByText(/uses a RootMind backend at another address/);
-    fireEvent.click(await screen.findByRole("radio", { name: /^Remote/ }));
-    expect(await screen.findByText(/Remote runs in this computer's RootMind service/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Use the RootMind service" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("checkbox", { name: /^Remote/ }));
+    expect(
+      await screen.findByText(
+        /Public access runs in this computer's RootMind service/,
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Use the RootMind service" }),
+    ).toBeTruthy();
     expect(rlm.getRemoteAccess).not.toHaveBeenCalled();
   });
 
@@ -133,26 +165,48 @@ describe("ServiceSection", () => {
     vi.mocked(backend.serviceSetMcp).mockResolvedValue(failed(1223, true));
     render(<ServiceSection />);
     await screen.findByDisplayValue(MCP);
-    fireEvent.click(screen.getByRole("checkbox", { name: "Serve MCP over HTTP (for Claude, n8n and other agents)" }));
-    await waitFor(() => expect(backend.serviceSetMcp).toHaveBeenCalledWith(false));
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "Serve MCP over HTTP (for Claude, n8n and other agents)",
+      }),
+    );
+    await waitFor(() =>
+      expect(backend.serviceSetMcp).toHaveBeenCalledWith(false),
+    );
     expect(await screen.findByText("Nothing was changed.")).toBeTruthy();
   });
 
   it("explains a stopped service and repairs it; a failure offers the details", async () => {
-    vi.mocked(backend.serviceInfo).mockResolvedValue({ ...ours, state: "stopped" });
+    vi.mocked(backend.serviceInfo).mockResolvedValue({
+      ...ours,
+      state: "stopped",
+    });
     vi.mocked(backend.serviceUpdate).mockResolvedValue(failed(4));
-    vi.mocked(backend.serviceDetails).mockResolvedValue("service status --json (exit code 0):\n{}");
-    useStore.setState({ baseUrl: "", token: null, conn: "offline", serviceProblem: "notRunning" });
+    vi.mocked(backend.serviceDetails).mockResolvedValue(
+      "service status --json (exit code 0):\n{}",
+    );
+    useStore.setState({
+      baseUrl: "",
+      token: null,
+      conn: "offline",
+      serviceProblem: "notRunning",
+    });
     render(<ServiceSection />);
-    expect(await screen.findByText(/The RootMind service is not running/)).toBeTruthy();
+    expect(
+      await screen.findByText(/The RootMind service is not running/),
+    ).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Repair" }));
     await waitFor(() => expect(backend.serviceUpdate).toHaveBeenCalledTimes(1));
     expect(
-      await screen.findByText("The port of the RootMind service is in use by another program."),
+      await screen.findByText(
+        "The port of the RootMind service is in use by another program.",
+      ),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
-    expect(await screen.findByText(/service status --json \(exit code 0\)/)).toBeTruthy();
+    expect(
+      await screen.findByText(/service status --json \(exit code 0\)/),
+    ).toBeTruthy();
   });
 
   it("offers Set up for a service that was never set up", async () => {
@@ -161,9 +215,16 @@ describe("ServiceSection", () => {
       ok: true,
       backend: { url: SERVICE, token: "v" },
     });
-    useStore.setState({ baseUrl: "", token: null, conn: "offline", serviceProblem: "notInstalled" });
+    useStore.setState({
+      baseUrl: "",
+      token: null,
+      conn: "offline",
+      serviceProblem: "notInstalled",
+    });
     render(<ServiceSection />);
-    expect(await screen.findByText(/The RootMind service is not set up yet/)).toBeTruthy();
+    expect(
+      await screen.findByText(/The RootMind service is not set up yet/),
+    ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     // No MCP settings for a service that is not there.
     expect(screen.queryByRole("checkbox")).toBeNull();
@@ -175,17 +236,33 @@ describe("ServiceSection", () => {
   });
 
   it("tells an account without administrator rights that setting the service up needs one", async () => {
-    vi.mocked(backend.serviceInfo).mockResolvedValue(serviceInfoFixture({ canElevate: false }));
-    useStore.setState({ baseUrl: "", token: null, conn: "offline", serviceProblem: "notInstalled" });
+    vi.mocked(backend.serviceInfo).mockResolvedValue(
+      serviceInfoFixture({ canElevate: false }),
+    );
+    useStore.setState({
+      baseUrl: "",
+      token: null,
+      conn: "offline",
+      serviceProblem: "notInstalled",
+    });
     render(<ServiceSection />);
-    expect(await screen.findByText(/Repairing needs an administrator account/)).toBeTruthy();
+    expect(
+      await screen.findByText(/Repairing needs an administrator account/),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Set up" })).toBeNull();
   });
 
   it("asks to close the program on the service's port instead of offering Repair", async () => {
-    useStore.setState({ baseUrl: "", token: null, conn: "offline", serviceProblem: "portBusy" });
+    useStore.setState({
+      baseUrl: "",
+      token: null,
+      conn: "offline",
+      serviceProblem: "portBusy",
+    });
     render(<ServiceSection />);
-    expect(await screen.findByText(/Close that program, then choose Check again/)).toBeTruthy();
+    expect(
+      await screen.findByText(/Close that program, then choose Check again/),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
   });
 
@@ -195,26 +272,99 @@ describe("ServiceSection", () => {
       tokenReadable: false,
       blockedReason: "other_account",
     });
-    useStore.setState({ baseUrl: "", token: null, conn: "offline", serviceProblem: "otherAccount" });
+    useStore.setState({
+      baseUrl: "",
+      token: null,
+      conn: "offline",
+      serviceProblem: "otherAccount",
+    });
     render(<ServiceSection />);
-    expect(await screen.findByText(/uninstall RootMind \(Settings › Apps\)/)).toBeTruthy();
+    expect(
+      await screen.findByText(/uninstall RootMind \(Settings › Apps\)/),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
   });
 
   it("tells an account without administrator rights whom to ask", async () => {
-    vi.mocked(backend.serviceInfo).mockResolvedValue({ ...ours, state: "stopped", canElevate: false });
-    useStore.setState({ baseUrl: "", token: null, conn: "offline", serviceProblem: "notRunning" });
+    vi.mocked(backend.serviceInfo).mockResolvedValue({
+      ...ours,
+      state: "stopped",
+      canElevate: false,
+    });
+    useStore.setState({
+      baseUrl: "",
+      token: null,
+      conn: "offline",
+      serviceProblem: "notRunning",
+    });
     render(<ServiceSection />);
-    expect(await screen.findByText(/Repairing needs an administrator account/)).toBeTruthy();
+    expect(
+      await screen.findByText(/Repairing needs an administrator account/),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
   });
 
   it("shows the service's state from service_info while a custom backend is in use", async () => {
-    vi.mocked(backend.serviceInfo).mockResolvedValue({ ...ours, state: "stopped" });
-    useStore.setState({ kind: "custom", baseUrl: "http://example.test:9000", token: null, conn: "online" });
+    vi.mocked(backend.serviceInfo).mockResolvedValue({
+      ...ours,
+      state: "stopped",
+    });
+    useStore.setState({
+      kind: "custom",
+      baseUrl: "http://example.test:9000",
+      token: null,
+      conn: "online",
+    });
     render(<ServiceSection />);
-    expect(await screen.findByText(/uses a RootMind backend at another address/)).toBeTruthy();
-    expect(await screen.findByText(/The RootMind service is not running/)).toBeTruthy();
+    expect(
+      await screen.findByText(/The RootMind service is not running/),
+    ).toBeTruthy();
+  });
+
+  it("shows the server in use: Local with the service's address", async () => {
+    render(<ServiceSection />);
+    const local = (await screen.findByRole("radio", {
+      name: `Local (${SERVICE})`,
+    })) as HTMLInputElement;
+    expect(local.checked).toBe(true);
+    expect(screen.queryByLabelText("Server address")).toBeNull();
+    // Already in use: choosing it again connects nothing.
+    fireEvent.click(local);
+    expect(actions.connectService).not.toHaveBeenCalled();
+  });
+
+  it("connects to a remote server on Apply and back to the service with Local", async () => {
+    render(<ServiceSection />);
+    fireEvent.click(await screen.findByRole("radio", { name: "Remote" }));
+    const apply = screen.getByRole("button", { name: "Apply" }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Server address"), {
+      target: { value: "http://nas.local:8000" },
+    });
+    fireEvent.change(screen.getByLabelText("Token (optional)"), {
+      target: { value: "secret" }, // pragma: allowlist secret (test value)
+    });
+    fireEvent.click(apply);
+    expect(actions.connectCustom).toHaveBeenCalledWith("http://nas.local:8000", "secret");
+    expect(actions.connectService).not.toHaveBeenCalled();
+
+    useStore.setState({ kind: "custom", baseUrl: "http://nas.local:8000", token: "secret" });
+    fireEvent.click(await screen.findByRole("radio", { name: `Local (${SERVICE})` }));
+    expect(actions.connectService).toHaveBeenCalled();
+  });
+
+  it("shows Remote with the address while a server elsewhere is in use", async () => {
+    useStore.setState({
+      kind: "custom",
+      baseUrl: "http://example.test:9000",
+      token: null,
+      conn: "online",
+    });
+    render(<ServiceSection />);
+    expect(
+      ((await screen.findByRole("radio", { name: "Remote" })) as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(screen.getByDisplayValue("http://example.test:9000")).toBeTruthy();
   });
 
   it("offers an update when the service is older than the app", async () => {
@@ -225,7 +375,9 @@ describe("ServiceSection", () => {
     useStore.setState({ version: "1.2.0" });
     render(<ServiceSection />);
     expect(
-      await screen.findByText("The RootMind service runs version 1.2.0; this app is version 1.3.0."),
+      await screen.findByText(
+        "The RootMind service runs version 1.2.0; this app is version 1.3.0.",
+      ),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Update service" }));
     await waitFor(() => expect(backend.serviceUpdate).toHaveBeenCalledTimes(1));

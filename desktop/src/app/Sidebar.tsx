@@ -1,8 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { labels } from "../i18n/labels";
 import { useChatStore } from "../state/chatStore";
 import { cancelRun, useRuns } from "../state/runs";
+import { AboutDialog } from "./AboutDialog";
 import { NavIcon } from "./navIcons";
 import type { NavIconName } from "./navIcons";
 import styles from "./Sidebar.module.css";
@@ -33,6 +34,7 @@ export function Sidebar({
   const runs = useRuns((s) => s.runs);
   const unread = useRuns((s) => s.unread);
   const markRead = useRuns((s) => s.markRead);
+  const [about, setAbout] = useState(false);
 
   useEffect(() => {
     void refresh();
@@ -115,7 +117,19 @@ export function Sidebar({
             <span>{labels.nav[it.label]}</span>
           </NavLink>
         ))}
+        <button
+          type="button"
+          className={styles.link}
+          onClick={() => {
+            setAbout(true);
+            onNavigate?.();
+          }}
+        >
+          <NavIcon name="info" size={20} className={styles.linkIcon} />
+          <span>{labels.nav.about}</span>
+        </button>
       </nav>
+      {about && <AboutDialog onClose={() => setAbout(false)} />}
     </aside>
   );
 }

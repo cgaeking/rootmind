@@ -242,3 +242,22 @@ def test_a_failed_save_reports_no_secret(rlm_home, caplog):
     assert FAKE_AUTHTOKEN not in caplog.text
     assert "cannot write [authtoken]" in caplog.text
     assert "remote_access" not in saved_config(rlm_home)
+
+
+def test_the_mcp_token_is_refused_as_the_ngrok_authtoken(api, rlm_home, caplog):
+    """The MCP token pasted into the ngrok Authtoken field is refused, and nothing changes."""
+    from rootmind import mcp_http
+
+    caplog.set_level(logging.DEBUG)
+    mcp_token = "mcp-token-for-claude-0000000000000000001"  # pragma: allowlist secret
+    path = mcp_http.token_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(mcp_token, encoding="utf-8")
+    api.post("/remote-access", json={"enabled": True, "authtoken": FAKE_AUTHTOKEN})
+
+    response = api.post("/remote-access", json={"authtoken": f" {mcp_token} "})
+    assert response.status_code == 400
+    assert response.json()["detail"] == ra.MCP_TOKEN_REFUSED
+    assert mcp_token not in response.text and mcp_token not in caplog.text
+    assert ra.authtoken_path(rlm_home).read_text(encoding="utf-8").strip() == FAKE_AUTHTOKEN
+    assert api.get("/remote-access").json()["enabled"] is True

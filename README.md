@@ -124,8 +124,8 @@ indexed. To ask questions, add an API key for Anthropic, OpenAI or xAI under
 app is closed.
 
 The app follows the Windows display language (English or German); Settings →
-**Appearance** → **Language** changes it. Settings → **About** shows the app
-and backend versions and links to releases and issues.
+**Appearance** → **Language** changes it. **About** in the menu shows the app
+and server versions and links to releases and issues.
 
 ### Install on Linux
 
@@ -249,8 +249,7 @@ the data later, remove `%ProgramData%\RootMind` from an elevated prompt.
 
 RootMind's backend runs as the Windows service `RootMind-Backend`. It keeps
 the index up to date while the app is closed and starts with Windows; the app
-is a client of it. Settings → **RootMind service** shows its state, address
-and version, offers **Set up** when the service is not set up yet (after a
+is a client of it. Settings → **RootMind Service** shows its state, offers **Set up** when the service is not set up yet (after a
 silent or managed install) and **Repair** when it is stopped or does not
 answer (one administrator approval each). When the service runs an older version than
 the app, **Update service** brings it to the app's version. Both run the
@@ -271,10 +270,12 @@ only administrators can change.
 - A second service, `RootMind-MCP-HTTP`, serves MCP over HTTP on 127.0.0.1
   with its own bearer token (see [Connect MCP clients](#connect-mcp-clients)).
   It is on by default; the checkbox **Serve MCP over HTTP** turns it off and
-  on again (one administrator approval). Below it you choose who reaches it:
-  **Local** (programs on this computer, the default) or **Remote**, which
-  adds a public HTTPS address through ngrok for Claude on the web and on your
-  phone and other cloud assistants (see [Remote access](#remote-access)).
+  on again (one administrator approval). It is in Settings → **MCP**, with
+  **Local**, the endpoint for programs on this computer with the MCP token,
+  and the **Remote / Public access with ngrok** checkbox, which adds a public
+  HTTPS address for Claude on the web and on your phone and other cloud
+  assistants (see
+  [Remote access](#remote-access)).
 - The services run from their own copy of the program under
   `%ProgramFiles%\RootMind Service\`, which only administrators can change,
   and keep their data in `%ProgramData%\RootMind`.
@@ -295,15 +296,17 @@ needs root or an approval:
   `journalctl --user -u rootmind-backend` show the unit and its systemd log;
   RootMind's own logs are in `~/.local/share/rootmind/logs`.
 
-Settings → **Advanced** (collapsed) connects the app to a RootMind backend at
-another address instead; the service's own address there stays the service. [SECURITY.md](SECURITY.md#background-service) describes the
+Settings → **RootMind Service** chooses the server the app uses: **Local**
+(this service, with its address) or **Remote**, a RootMind server at another
+address with an optional token (**Apply**, **Check**); the service's own
+address typed there stays the service. [SECURITY.md](SECURITY.md#background-service) describes the
 security model.
 
 ## Connect MCP clients
 
 MCP clients get the same read-only tools as the app's agent and use their own
-model. Connect them to the service's MCP over HTTP: Settings → RootMind
-service shows the **MCP endpoint** and copies it and the token (**Copy
+model. Connect them to the service's MCP over HTTP: Settings → **MCP**
+shows the **MCP endpoint** and copies it and the MCP token (**Copy MCP
 token**). For Claude Desktop there is a bundle that needs neither (see
 [Use RootMind in Claude Desktop](#use-rootmind-in-claude-desktop)). Claude
 Code:
@@ -328,7 +331,7 @@ restart.
 There is nothing to configure. The extension finds the RootMind service on
 this computer, reads the MCP port and token from it and connects to MCP over
 HTTP on 127.0.0.1. It needs RootMind installed with **Serve MCP over HTTP**
-on (the default; Settings → RootMind service), and Claude Desktop must run
+on (the default; Settings → MCP), and Claude Desktop must run
 under the account that uses RootMind, since only that account can read the
 token. On Linux it finds the service through
 `~/.local/share/rootmind/service.json`, which names the program copy the
@@ -396,24 +399,24 @@ RootMind can run the tunnel itself. The RootMind service's MCP server
 program needs to be installed. It is off by default.
 
 1. Create a free account at [ngrok.com](https://ngrok.com) and copy your
-   authtoken from the dashboard (**Your Authtoken**). Under **Domains**,
-   create the free static domain; without one, ngrok assigns an address that
-   changes after every restart. **Get your free ngrok authtoken and domain**
-   in the app walks you through this.
-2. In Settings → RootMind service, choose **Remote**, paste the authtoken and
-   the domain, choose **Connect** and confirm. The authtoken is never shown
-   again: the field then only says **Saved** (**Replace** and **Remove**
-   change it).
+   **ngrok Authtoken** from the dashboard (**Getting Started › Your
+   Authtoken**). Under **Domains**, create the free static domain; without
+   one, ngrok assigns an address that changes after every restart. **Get your
+   free ngrok Authtoken and domain** in the app walks you through this.
+2. In Settings → MCP, tick **Remote / Public access with ngrok**, paste the ngrok Authtoken
+   and the domain, choose **Connect** and confirm. The ngrok Authtoken is
+   never shown again: the field then only says **Saved** (**Replace** and
+   **Remove** change it). The MCP token is refused there: it belongs in the
+   client, not in this field.
 3. The status changes to **Connected** and shows the **Public MCP endpoint**
-   (`https://<domain>/mcp`) with **Copy** and **Copy token**. **Use RootMind
+   (`https://<domain>/mcp`) with **Copy** and **Copy MCP token**. **Use RootMind
    in Claude on the web and on your phone** shows the connector values ready
    to copy; see [In the assistant](#in-the-assistant).
 
 Remote access needs **Serve MCP over HTTP**; turning that off turns remote
 access off too. Changes need no administrator approval, take effect within a
 few seconds and survive restarts and updates: the tunnel starts with the
-service. **Turn off** (or choosing **Local**) closes the public address at
-once. When the
+service. Unticking **Remote** closes the public address at once. When the
 connection to ngrok drops, the service reconnects; a refused connection (a
 wrong authtoken, a domain that is not yours or already in use) appears as the
 status with ngrok's message and is retried with growing pauses (up to five
@@ -468,7 +471,7 @@ Add a custom MCP connector (or n8n's MCP Client Tool) with:
 |---|---|
 | URL | `https://<your-public-address>/mcp` |
 | Transport | HTTP Streamable |
-| Authentication | header `Authorization: Bearer <token>` (Settings → RootMind service → **Copy token**) |
+| Authentication | header `Authorization: Bearer <token>` (Settings → MCP → **Copy MCP token**) |
 
 Clients that only offer an OAuth sign-in and cannot send a bearer token cannot
 connect this way.
@@ -564,7 +567,8 @@ flowchart LR
    and the model list in the settings call the provider.
 
 The desktop app talks to the **RootMind service** on the same computer, or to
-a **custom** backend at an address you enter under Settings → Advanced.
+a **custom** backend at an address you enter under Settings → RootMind
+Service → Remote.
 Development builds do not use the service and ask for a backend address.
 [ARCHITECTURE.md](ARCHITECTURE.md#deployment-modes) has the details.
 

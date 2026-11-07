@@ -1,8 +1,10 @@
+import { createPortal } from "react-dom";
 import { labels } from "../i18n/labels";
 import { useStore } from "../state/store";
 import { openExternal } from "../utils/openExternal";
-import { Section } from "../components/ui";
-import styles from "./AboutSection.module.css";
+import { Dialog, dialogStyles } from "../components/Dialog";
+import { Button } from "../components/ui";
+import styles from "./AboutDialog.module.css";
 
 export const REPOSITORY_URL = "https://github.com/cgaeking/rootmind";
 export const RELEASES_URL = `${REPOSITORY_URL}/releases`;
@@ -29,17 +31,24 @@ function ExternalLink({ href, children }: { href: string; children: string }) {
 }
 
 /**
- * Settings → About: the app and backend versions as they run (they differ
- * when the RootMind service runs an older build), author, license, links.
+ * Menu › About: the app and server versions as they run (they differ when
+ * the RootMind service runs an older build), author, license, links. Shown
+ * over the whole window (a portal: the sidebar is a transformed drawer on
+ * phones, which would otherwise confine the overlay).
  */
-export function AboutSection() {
+export function AboutDialog({ onClose }: { onClose: () => void }) {
   // The app reports its version via app_mode (null in the browser preview);
-  // the backend's comes from its GET / (null while not connected).
+  // the server's comes from its GET / (null while not connected).
   const appVersion = useStore((s) => s.appMode?.version ?? null);
   const backendVersion = useStore((s) => s.version);
 
-  return (
-    <Section title={labels.settings.aboutTitle} description={labels.settings.aboutDesc}>
+  return createPortal(
+    <Dialog
+      title={labels.settings.aboutTitle}
+      onClose={onClose}
+      actions={<Button onClick={onClose}>{labels.reach.close}</Button>}
+    >
+      <p className={dialogStyles.text}>{labels.settings.aboutDesc}</p>
       <dl className={styles.facts}>
         <dt>{labels.settings.aboutAppVersion}</dt>
         <dd>
@@ -57,6 +66,7 @@ export function AboutSection() {
         <ExternalLink href={RELEASES_URL}>{labels.settings.aboutReleases}</ExternalLink>
         <ExternalLink href={ISSUES_URL}>{labels.settings.aboutIssues}</ExternalLink>
       </div>
-    </Section>
+    </Dialog>,
+    document.body,
   );
 }
