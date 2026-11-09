@@ -93,7 +93,7 @@ Development builds do not use the service and ask for a backend address.
 **With uv** (any OS with Python 3.12 or newer; uv installs it if needed):
 
 ```bash
-uv tool install "git+https://github.com/cgaeking/rootmind@v2.8.3#subdirectory=backend"
+uv tool install "git+https://github.com/cgaeking/rootmind@v2.8.4#subdirectory=backend"
 rootmind --help        # api, index, mcp, mcp-http, service, status, folders, search, ask, ...
 ```
 

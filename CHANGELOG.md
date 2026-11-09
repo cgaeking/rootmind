@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.8.4] - 2026-11-09
+
 ### Fixed
 
 - Questions failed with "HTTP 400" on newer models, before any search:
