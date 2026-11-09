@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-09
+
 ### Added
 
 - RootMind checks a model when you choose it, so a model that cannot work shows up in Settings and not on the first question. Models RootMind already knows (the current Claude models) are not checked; for any other model a short test question runs once (in Settings, on choosing it, after saving a key, and when the app starts). Settings shows "Checking model…", "Model checked ✓" or why the model was refused.
