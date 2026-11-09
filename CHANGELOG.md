@@ -4,7 +4,7 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
-## [2.8.4] - 2026-11-09
+## [2.9.0] - 2026-11-09
 
 ### Fixed
 
