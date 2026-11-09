@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-11-09
+
 ### Fixed
 
 - OpenAI models that take the search tools only without reasoning (for example gpt-6.1-sol: "Function tools with reasoning_effort are not supported … set reasoning_effort to 'none'") get `none`, also when another level was learned before. Settings shows **Reasoning effort: Off** as the only level, fixed.
