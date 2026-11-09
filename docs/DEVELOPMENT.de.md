@@ -100,7 +100,7 @@ Details.
 es bei Bedarf):
 
 ```bash
-uv tool install "git+https://github.com/cgaeking/rootmind@v2.9.0#subdirectory=backend"
+uv tool install "git+https://github.com/cgaeking/rootmind@v2.9.1#subdirectory=backend"
 rootmind --help        # api, index, mcp, mcp-http, service, status, folders, search, ask, ...
 ```
 
