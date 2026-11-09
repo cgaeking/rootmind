@@ -448,7 +448,7 @@ describe("SettingsScreen model check", () => {
     expect(await screen.findByText("Model checked ✓")).toBeTruthy();
   });
 
-  it("shows the provider's reason for a model that cannot be used", async () => {
+  it("drops a model that cannot be used and goes back to the previous one", async () => {
     serveKeyedConfig();
     vi.mocked(rlm.checkLlmModel).mockImplementation(async ({ provider, model }) =>
       model === "claude-b"
@@ -461,14 +461,33 @@ describe("SettingsScreen model check", () => {
         : { provider, model, ok: true, reason: null },
     );
     render(<SettingsScreen />);
+    const select = await modelSelect();
 
-    fireEvent.change(await modelSelect(), { target: { value: "claude-b" } });
+    fireEvent.change(select, { target: { value: "claude-b" } });
 
     expect(
-      await screen.findByText(
-        "This model cannot be used: The LLM provider (anthropic) returned HTTP 404; check the model name",
-      ),
+      await screen.findByText('"claude-b" does not work with RootMind – "claude-a" chosen.'),
     ).toBeTruthy();
+    expect(select.value).toBe("claude-a");
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(["claude-a"]);
+    expect(screen.queryByText(/HTTP 404/)).toBeNull(); // no error
+  });
+
+  it("shows a single reasoning effort level as fixed", async () => {
+    serveKeyedConfig();
+    vi.mocked(rlm.checkLlmModel).mockImplementation(async ({ provider, model }) => ({
+      provider,
+      model,
+      ok: true,
+      reason: null,
+      efforts: ["none"],
+    }));
+    render(<SettingsScreen />);
+
+    const effort = (await screen.findByLabelText(/^Reasoning effort/)) as HTMLSelectElement;
+    expect(Array.from(effort.options).map((o) => o.value)).toEqual(["none"]);
+    expect(effort.value).toBe("none");
+    expect(effort.disabled).toBe(true);
   });
 
   it("says when the check could not run", async () => {

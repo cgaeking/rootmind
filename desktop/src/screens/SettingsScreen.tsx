@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { labels, useLanguage, useLanguageStore } from "../i18n/labels";
 import type { LanguagePref } from "../i18n/labels";
 import { useStore } from "../state/store";
@@ -66,6 +66,10 @@ export function SettingsScreen() {
     /** The check made a request (a new model), rather than knowing the model. */
     checkedNow?: boolean;
   } | null>(null);
+  // A chosen model that cannot be used, and the one chosen instead.
+  const [dropped, setDropped] = useState<{ from: string; to: string } | null>(null);
+  // The model selected before the current one (to go back to if it cannot be used).
+  const previousModel = useRef<string | null>(null);
 
   // The API key field: null shows the saved (masked) key of the provider,
   // a string is a key typed but not saved yet. `config.llm.api_keys` holds
@@ -150,6 +154,8 @@ export function SettingsScreen() {
     setLoadingModels(false);
     setReplacedFrom(null);
     setModelCheck(null);
+    setDropped(null);
+    previousModel.current = null;
     setKeyDraft(null);
     setDetected(null);
     setSavingKey(false);
@@ -191,6 +197,25 @@ export function SettingsScreen() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [models]);
+
+  // A model the check refused leaves the list; the previous model (or a
+  // default) takes its place. Updating the model before the list keeps the
+  // effect above from replacing it again.
+  useEffect(() => {
+    if (!config || modelCheck?.status !== "refused") return;
+    const refused = modelCheck.model;
+    if (refused !== config.llm.model) return;
+    const remaining = (models ?? []).filter((m) => m !== refused);
+    if (remaining.length === 0) return;
+    const prev = previousModel.current;
+    const next = prev && prev !== refused && remaining.includes(prev) ? prev : pickDefaultModel(remaining);
+    previousModel.current = null;
+    setDropped({ from: refused, to: next });
+    updateLlm({ model: next });
+    setModels(remaining);
+    void checkModel(config.llm.provider, next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelCheck]);
 
   function updateLlm(patch: Partial<AppConfigDto["llm"]>) {
     setConfig((c) => (c ? { ...c, llm: { ...c.llm, ...patch } } : c));
@@ -374,6 +399,11 @@ export function SettingsScreen() {
   const serverChanged = urlDraft !== null && urlDraft.trim() !== (config?.llm.base_url ?? "");
   // Whether the models can be listed: a saved key, or no key at all for Ollama.
   const canListModels = isOllama || !!savedKey;
+  // A model with one reasoning effort level has nothing to choose.
+  const fixedEffort =
+    modelCheck?.model === config?.llm.model && modelCheck?.efforts?.length === 1
+      ? modelCheck.efforts[0]
+      : null;
   const modelOptions = models ?? (config?.llm.model ? [config.llm.model] : []);
 
   return (
@@ -521,6 +551,8 @@ export function SettingsScreen() {
                 value={config.llm.model}
                 onChange={(e) => {
                   const model = e.currentTarget.value;
+                  previousModel.current = config.llm.model;
+                  setDropped(null);
                   updateLlm({ model });
                   void checkModel(config.llm.provider, model);
                 }}
@@ -544,8 +576,8 @@ export function SettingsScreen() {
                   {labels.settings.modelUnchecked(modelCheck.reason ?? "")}
                 </span>
               ) : null)}
-            {modelCheck?.model === config.llm.model && modelCheck.status === "refused" && (
-              <Banner tone="err">{labels.settings.modelRefused(modelCheck.reason ?? "")}</Banner>
+            {dropped && dropped.to === config.llm.model && (
+              <span className="muted">{labels.settings.modelDropped(dropped.from, dropped.to)}</span>
             )}
 
             {modelCheck?.model === config.llm.model &&
@@ -554,14 +586,15 @@ export function SettingsScreen() {
                 <Field label={labels.settings.effortLabel}>
                   <Select
                     value={
-                      modelCheck.efforts.includes(config.llm.reasoning_effort ?? "auto")
+                      fixedEffort ??
+                      (modelCheck.efforts.includes(config.llm.reasoning_effort ?? "auto")
                         ? (config.llm.reasoning_effort ?? "auto")
-                        : "auto"
+                        : "auto")
                     }
                     onChange={(e) => updateLlm({ reasoning_effort: e.currentTarget.value })}
-                    disabled={savingKey}
+                    disabled={savingKey || !!fixedEffort}
                   >
-                    <option value="auto">{labels.settings.effortAuto}</option>
+                    {!fixedEffort && <option value="auto">{labels.settings.effortAuto}</option>}
                     {modelCheck.efforts.map((effort) => (
                       <option key={effort} value={effort}>
                         {labels.settings.effortLevels[
