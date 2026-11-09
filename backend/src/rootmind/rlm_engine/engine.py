@@ -222,16 +222,99 @@ def provider_error(
         hint = "; check the model name"
     elif status == 429:
         hint = "; the provider is rate limiting requests, try again later"
+    elif status in (400, 422):
+        # A request the model does not accept (an unsupported parameter, a
+        # context that is too long): the provider says why.
+        detail = _provider_detail(exc)
+        hint = f": {detail}" if detail else ""
     else:
         hint = ""
     return LLMProviderError(f"The LLM provider ({provider}) returned HTTP {status}{hint}")
+
+
+# The provider's reason in a user-facing error is cut to this length.
+MAX_PROVIDER_DETAIL_CHARS = 300
+
+
+def _provider_detail(exc: Exception) -> str:
+    """The provider's own error message, on one line and cut short, or ""."""
+    body = getattr(exc, "body", None)
+    message: Any = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+        message = message or body.get("message")
+    if not message:
+        message = getattr(exc, "message", None) or str(exc)
+        message = re.sub(r"^Error code: \d+ - ", "", str(message))
+    text = " ".join(str(message).split())
+    if len(text) > MAX_PROVIDER_DETAIL_CHARS:
+        text = text[: MAX_PROVIDER_DETAIL_CHARS - 1].rstrip() + "…"
+    return text
 
 
 # OpenAI's error when the token cap is above the model's output limit.
 _OUTPUT_LIMIT_RE = re.compile(r"supports at most (\d+) completion tokens")
 
 
-def _openai_chat_create(client, **kwargs):
+# What a model turned out to reject, by (provider, model), learned from its
+# errors in this process: later calls start with the adjusted parameters
+# instead of failing first again. Keys: "no_forced_tool" (the model refuses a
+# forced tool call), "max_completion_tokens" (it wants that name instead of
+# max_tokens), "reasoning_effort" (the value it accepts), "max_cap" (its
+# output token limit).
+_MODEL_QUIRKS: dict[tuple[str, str], dict[str, Any]] = {}
+
+# "tool_choice: type "tool" and "any" are not supported for this model" (Anthropic),
+# and the like from OpenAI-compatible providers.
+_FORCED_TOOL_REFUSED_RE = re.compile(r"tool_choice.*(not supported|unsupported)", re.I | re.S)
+# "... Supported values are: 'low', 'medium', 'high', and 'xhigh'."
+_SUPPORTED_VALUES_RE = re.compile(r"Supported values are:(.*)", re.I | re.S)
+
+
+def model_quirks(provider: str, model: str) -> dict[str, Any]:
+    """The learned quirks of one model (a live dict, see :data:`_MODEL_QUIRKS`)."""
+    return _MODEL_QUIRKS.setdefault((provider, model), {})
+
+
+def _forces_tool(tool_choice: Any) -> bool:
+    """Whether a tool_choice value forces a tool call (Anthropic or OpenAI form)."""
+    if isinstance(tool_choice, dict):
+        return tool_choice.get("type") in ("any", "tool", "function")
+    return tool_choice == "required"
+
+
+def _supported_values(message: str) -> list[str]:
+    """The values a provider lists after "Supported values are:", in order."""
+    m = _SUPPORTED_VALUES_RE.search(message)
+    return re.findall(r"'([^']+)'", m.group(1)) if m else []
+
+
+def _anthropic_create(client, _quirks: dict[str, Any] | None = None, **kwargs):
+    """Call messages.create; a model that refuses a forced tool call gets none.
+
+    Some models (seen with Claude Opus 5.5) reject ``tool_choice`` ``any`` or
+    ``tool`` with a 400. The call is then made again without it, and the model
+    is remembered in ``_quirks`` so later calls leave it out from the start.
+    """
+    quirks = _quirks if _quirks is not None else {}
+    attempt = dict(kwargs)
+    if quirks.get("no_forced_tool") and _forces_tool(attempt.get("tool_choice")):
+        attempt.pop("tool_choice")
+    while True:
+        try:
+            return client.messages.create(**attempt)
+        except Exception as e:
+            if _forces_tool(attempt.get("tool_choice")) and _FORCED_TOOL_REFUSED_RE.search(str(e)):
+                logger.info("The model refuses a forced tool call; calling it without one")
+                quirks["no_forced_tool"] = True
+                attempt.pop("tool_choice")
+                continue
+            raise
+
+
+def _openai_chat_create(client, _quirks: dict[str, Any] | None = None, **kwargs):
     """Call chat.completions.create, adapting to newer-model parameter quirks.
 
     OpenAI keeps introducing Chat Completions incompatibilities on newer models,
@@ -243,13 +326,29 @@ def _openai_chat_create(client, **kwargs):
     - ``max_tokens`` rejected -> use ``max_completion_tokens`` instead
     - function tools + default reasoning_effort rejected on /chat/completions
       -> explicitly set ``reasoning_effort="none"``
+    - ``reasoning_effort="none"`` rejected ("Supported values are: 'low', ...")
+      -> the first value listed, the cheapest
     - the token cap is above the model's output limit ("supports at most N
       completion tokens") -> use N
+    - a forced tool call (``tool_choice="required"``) rejected -> no tool_choice
 
-    An unrecognized error (or one already retried) is re-raised as-is.
+    What was adjusted is remembered in ``_quirks`` (see :data:`_MODEL_QUIRKS`),
+    so later calls to the same model start with it. An unrecognized error (or
+    one already retried) is re-raised as-is.
     """
+    quirks = _quirks if _quirks is not None else {}
     attempt = dict(kwargs)
+    if quirks.get("max_completion_tokens") and "max_tokens" in attempt:
+        attempt["max_completion_tokens"] = attempt.pop("max_tokens")
+    if "reasoning_effort" in quirks and "reasoning_effort" not in attempt:
+        attempt["reasoning_effort"] = quirks["reasoning_effort"]
+    cap_key = "max_tokens" if "max_tokens" in attempt else "max_completion_tokens"
+    if "max_cap" in quirks and cap_key in attempt:
+        attempt[cap_key] = min(attempt[cap_key], quirks["max_cap"])
+    if quirks.get("no_forced_tool") and _forces_tool(attempt.get("tool_choice")):
+        attempt.pop("tool_choice")
     lowered_cap = False
+    efforts_tried: set[str] = set()
     while True:
         try:
             return client.chat.completions.create(**attempt)
@@ -257,14 +356,29 @@ def _openai_chat_create(client, **kwargs):
             msg = str(e)
             if "max_tokens" in attempt and "max_completion_tokens" in msg:
                 attempt["max_completion_tokens"] = attempt.pop("max_tokens")
+                quirks["max_completion_tokens"] = True
                 continue
-            if "reasoning_effort" in msg and "reasoning_effort" not in attempt:
-                attempt["reasoning_effort"] = "none"
+            if "reasoning_effort" in msg:
+                if "reasoning_effort" not in attempt:
+                    attempt["reasoning_effort"] = "none"
+                    quirks["reasoning_effort"] = "none"
+                    continue
+                efforts_tried.add(attempt["reasoning_effort"])
+                untried = [v for v in _supported_values(msg) if v not in efforts_tried]
+                if untried:
+                    attempt["reasoning_effort"] = untried[0]
+                    quirks["reasoning_effort"] = untried[0]
+                    continue
+            if _forces_tool(attempt.get("tool_choice")) and _FORCED_TOOL_REFUSED_RE.search(msg):
+                logger.info("The model refuses a forced tool call; calling it without one")
+                attempt.pop("tool_choice")
+                quirks["no_forced_tool"] = True
                 continue
             limit = _OUTPUT_LIMIT_RE.search(msg)
             cap_key = "max_tokens" if "max_tokens" in attempt else "max_completion_tokens"
             if limit and not lowered_cap and cap_key in attempt:
                 attempt[cap_key] = min(attempt[cap_key], int(limit.group(1)))
+                quirks["max_cap"] = attempt[cap_key]
                 lowered_cap = True
                 continue
             raise
@@ -681,6 +795,7 @@ class KnowledgeBaseEngine:
                     None,
                     _openai_chat_create,
                     client,
+                    _quirks=model_quirks(provider, model),
                     model=model,
                     max_tokens=CONDENSE_MAX_TOKENS,
                     messages=[{"role": "user", "content": prompt}],
@@ -819,7 +934,9 @@ class KnowledgeBaseEngine:
         self, client, question: str, ctx: ToolContext, max_iterations: int, usage: _Usage
     ) -> str:
         model = self.config.llm.model
+        quirks = model_quirks("anthropic", model)
         messages: list[dict[str, Any]] = [{"role": "user", "content": question}]
+        nudged = False
         empty_retried = False
         ended_empty = False
 
@@ -843,11 +960,22 @@ class KnowledgeBaseEngine:
                 # every model. Forcing it structurally here removes the whole
                 # failure mode, for every provider, instead of depending on
                 # how tool-use-compliant a given model happens to be.
+                #
+                # A model that refuses a forced tool call (Claude Opus 5.5)
+                # is called without one (_anthropic_create); the search-first
+                # rule is then enforced by the retry below.
                 call_kwargs["tool_choice"] = {"type": "any"}
             response = await self._call_model(
-                usage, "loop", iteration + 1, client.messages.create, **call_kwargs
+                usage,
+                "loop",
+                iteration + 1,
+                _anthropic_create,
+                client,
+                _quirks=quirks,
+                **call_kwargs,
             )
             usage.record(_anthropic_tokens(response), response.stop_reason)
+            forced = iteration == 0 and not quirks.get("no_forced_tool")
 
             tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
             # Anything other than a tool request is final: end_turn, but also
@@ -855,6 +983,24 @@ class KnowledgeBaseEngine:
             # send an empty user turn, which the API rejects.
             if response.stop_reason != "tool_use" or not tool_uses:
                 answer_text = _anthropic_text(response)
+                if (
+                    iteration == 0
+                    and not forced
+                    and not nudged
+                    and response.stop_reason == "end_turn"
+                ):
+                    # No forced tool call (see above): ask once more, with an
+                    # explicit instruction, before accepting an answer that
+                    # never looked at the documents.
+                    nudged = True
+                    if usage.trace is not None:
+                        usage.trace.event("search_nudge")
+                    if answer_text.strip():
+                        messages.append({"role": "assistant", "content": answer_text})
+                        messages.append({"role": "user", "content": SEARCH_FIRST_PROMPT})
+                    else:
+                        _append_user_text(messages, SEARCH_FIRST_PROMPT)
+                    continue
                 if _is_empty_reply(answer_text, response.stop_reason):
                     if empty_retried:
                         logger.warning("The model returned an empty answer again; giving up")
@@ -934,6 +1080,7 @@ class KnowledgeBaseEngine:
     ) -> str:
         model = self.config.llm.model
         provider = self.config.llm.provider
+        quirks = model_quirks(provider, model)
         nudged = False
         empty_retried = False
         ended_empty = False
@@ -965,17 +1112,26 @@ class KnowledgeBaseEngine:
                 if provider != "ollama":
                     call_kwargs["tool_choice"] = "required"
             response = await self._call_model(
-                usage, "loop", iteration + 1, _openai_chat_create, client, **call_kwargs
+                usage,
+                "loop",
+                iteration + 1,
+                _openai_chat_create,
+                client,
+                _quirks=quirks,
+                **call_kwargs,
             )
             choice = response.choices[0]
             finish_reason = getattr(choice, "finish_reason", None)
             usage.record(_openai_tokens(response), finish_reason)
             msg = choice.message
+            # Whether the first call really forced a tool call: not for Ollama,
+            # and not for a model that refused it (_openai_chat_create).
+            forced = provider != "ollama" and not quirks.get("no_forced_tool")
 
             # No tool calls -> final answer. "length" means the output token
             # limit cut it off; "content_filter" usually leaves no text.
             if not msg.tool_calls:
-                if provider == "ollama" and iteration == 0 and not nudged:
+                if iteration == 0 and not forced and not nudged:
                     # No forced tool call here (see above): ask once more, with
                     # an explicit instruction, before accepting an answer that
                     # never looked at the documents.
@@ -1048,6 +1204,7 @@ class KnowledgeBaseEngine:
                 None,
                 _openai_chat_create,
                 client,
+                _quirks=model_quirks(provider, model),
                 model=model,
                 max_tokens=FALLBACK_MAX_TOKENS,
                 tools=openai_tools,
@@ -1103,6 +1260,7 @@ class KnowledgeBaseEngine:
         elif provider in OPENAI_COMPATIBLE:
             resp = _openai_chat_create(
                 client,
+                _quirks=model_quirks(provider, model),
                 model=model,
                 max_tokens=TITLE_MAX_TOKENS,
                 messages=[{"role": "user", "content": prompt}],

@@ -18,6 +18,7 @@ from rootmind.rlm_engine.engine import (
     GENERIC_FAILURE_ANSWER,
     ITERATION_LIMIT_PROMPT,
     MAX_TOOL_CALLS_PER_TURN,
+    SEARCH_FIRST_PROMPT,
     SYSTEM_PROMPT,
     TRUNCATED_NOTE,
     LLMConfigError,
@@ -681,3 +682,84 @@ def test_generate_title(app_config, indexed_repo):
     prompt = fake.calls[0]["messages"][0]["content"]
     assert "Question: What is the total?" in prompt
     assert "Answer: 42" in prompt
+
+
+# --- models that refuse a forced tool call (seen with Claude Opus 5.5) -------------
+
+FORCED_TOOL_REFUSED = ValueError(
+    "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+    "'message': 'tool_choice: type \"tool\" and \"any\" are not supported for this model.'}}"
+)
+
+
+async def test_refused_forced_tool_call_is_retried_without_it(app_config, indexed_repo):
+    fake = FakeAnthropic(
+        [
+            FORCED_TOOL_REFUSED,
+            anthropic_response(tool_use("t1", "search_documents", {"query": "pto"})),
+            anthropic_response(text("21 days.")),
+        ]
+    )
+    engine = make_engine(app_config, indexed_repo, fake)
+
+    result = await engine.query("How much PTO?")
+
+    assert fake.calls[0]["tool_choice"] == {"type": "any"}
+    assert "tool_choice" not in fake.calls[1]
+    assert result["answer"] == "21 days."
+
+    # The model is remembered: the next question does not try again.
+    fake.script.extend(
+        [
+            anthropic_response(tool_use("t2", "search_documents", {"query": "x"})),
+            anthropic_response(text("ok")),
+        ]
+    )
+    before = len(fake.calls)
+    await engine.query("Next question")
+    assert "tool_choice" not in fake.calls[before]
+
+
+async def test_without_a_forced_tool_call_an_answer_from_memory_is_nudged(app_config, indexed_repo):
+    fake = FakeAnthropic(
+        [
+            FORCED_TOOL_REFUSED,
+            anthropic_response(text("I don't have access to your files.")),
+            anthropic_response(tool_use("t1", "search_documents", {"query": "pto"})),
+            anthropic_response(text("21 days.")),
+        ]
+    )
+
+    result = await make_engine(app_config, indexed_repo, fake).query("How much PTO?")
+
+    nudge = fake.calls[2]["messages"]
+    assert nudge[-2] == {"role": "assistant", "content": "I don't have access to your files."}
+    assert nudge[-1] == {"role": "user", "content": SEARCH_FIRST_PROMPT}
+    assert result["answer"] == "21 days."
+
+
+async def test_other_errors_are_not_mistaken_for_a_refused_tool_call(app_config, indexed_repo):
+    fake = FakeAnthropic([ValueError("prompt is too long")])
+
+    with pytest.raises(ValueError, match="too long"):
+        await make_engine(app_config, indexed_repo, fake).query("q")
+    assert len(fake.calls) == 1
+
+
+async def test_bad_request_shows_the_providers_reason(app_config, indexed_repo):
+    import anthropic
+
+    request = httpx.Request("POST", "http://127.0.0.1:9/v1/messages")
+    body = {"type": "error", "error": {"type": "invalid_request_error", "message": "x" * 400}}
+    bad = anthropic.BadRequestError(
+        "Error code: 400", response=httpx.Response(400, request=request), body=body
+    )
+    fake = FakeAnthropic([bad])
+
+    with pytest.raises(LLMProviderError) as caught:
+        await make_engine(app_config, indexed_repo, fake).query("q")
+
+    message = str(caught.value)
+    assert message.startswith("The LLM provider (anthropic) returned HTTP 400: xxx")
+    assert message.endswith("…")
+    assert len(message) < 400
