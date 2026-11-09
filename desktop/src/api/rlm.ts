@@ -173,6 +173,25 @@ export const refreshIndex = (opts?: {
     body: JSON.stringify(opts ?? {}),
   });
 
+/** POST /llm/check: whether a model works with RootMind's questions (ok null: not checked). */
+export interface ModelCheck {
+  provider: string;
+  model: string;
+  ok: boolean | null;
+  reason: string | null;
+  /** Reasoning effort levels the model supports, cheapest first (empty: none; null: not known). */
+  efforts?: string[] | null;
+  /** A request was made: the model was new (false: RootMind knew it). */
+  checked_now?: boolean;
+}
+
+export const checkLlmModel = (body: { provider: string; model: string }) =>
+  api<ModelCheck>(
+    "/llm/check",
+    { method: "POST", body: JSON.stringify(body) },
+    { timeoutMs: 90_000 },
+  );
+
 export const listLlmModels = (body: {
   provider?: string;
   api_key?: string | null;

@@ -11,6 +11,7 @@ vi.mock("../api/rlm", async (importOriginal) => ({
   getConfig: vi.fn(),
   saveConfig: vi.fn(),
   listLlmModels: vi.fn(),
+  checkLlmModel: vi.fn(),
 }));
 
 const rlm = await import("../api/rlm");
@@ -57,6 +58,13 @@ beforeEach(() => {
   vi.mocked(rlm.getConfig).mockReset();
   vi.mocked(rlm.saveConfig).mockReset();
   vi.mocked(rlm.listLlmModels).mockReset();
+  vi.mocked(rlm.checkLlmModel).mockReset();
+  vi.mocked(rlm.checkLlmModel).mockImplementation(async ({ provider, model }) => ({
+    provider,
+    model,
+    ok: true,
+    reason: null,
+  }));
   vi.mocked(rlm.saveConfig).mockResolvedValue({ ok: true, reloaded: true, restart_required: false });
   useStore.setState({ kind: "custom", baseUrl: A, token: null, conn: "online" });
 });
@@ -391,5 +399,120 @@ describe("SettingsScreen Ollama", () => {
     await waitFor(() => expect(rlm.listLlmModels).toHaveBeenCalled());
     expect(screen.queryByPlaceholderText("sk-…")).toBeNull();
     expect(screen.getByPlaceholderText(URL_FIELD)).toBeTruthy();
+  });
+});
+
+describe("SettingsScreen model check", () => {
+  function serveKeyedConfig(effort?: string) {
+    const config = configFor("a", 11);
+    config.llm = {
+      provider: "anthropic",
+      model: "claude-a",
+      api_keys: { anthropic: "…abcd" },
+      ...(effort ? { reasoning_effort: effort } : {}),
+    };
+    vi.mocked(rlm.getConfig).mockResolvedValue(structuredClone(config));
+    vi.mocked(rlm.listLlmModels).mockResolvedValue({
+      provider: "anthropic",
+      models: ["claude-a", "claude-b"],
+    });
+  }
+
+  async function modelSelect() {
+    const model = (await screen.findByLabelText(/^Model/)) as HTMLSelectElement;
+    await waitFor(() => expect(model.disabled).toBe(false));
+    return model;
+  }
+
+  it("checks the saved model on load and a new one when it is chosen, without a button", async () => {
+    serveKeyedConfig();
+    vi.mocked(rlm.checkLlmModel).mockImplementation(async ({ provider, model }) => ({
+      provider,
+      model,
+      ok: true,
+      reason: null,
+      checked_now: model === "claude-b",
+    }));
+    render(<SettingsScreen />);
+
+    const select = await modelSelect();
+    await waitFor(() =>
+      expect(rlm.checkLlmModel).toHaveBeenCalledWith({ provider: "anthropic", model: "claude-a" }),
+    );
+    expect(screen.queryByText("Model checked ✓")).toBeNull(); // known: nothing to say
+    expect(screen.queryByRole("button", { name: "Check the model" })).toBeNull();
+
+    fireEvent.change(select, { target: { value: "claude-b" } });
+
+    expect(rlm.checkLlmModel).toHaveBeenCalledWith({ provider: "anthropic", model: "claude-b" });
+    expect(await screen.findByText("Model checked ✓")).toBeTruthy();
+  });
+
+  it("shows the provider's reason for a model that cannot be used", async () => {
+    serveKeyedConfig();
+    vi.mocked(rlm.checkLlmModel).mockImplementation(async ({ provider, model }) =>
+      model === "claude-b"
+        ? {
+            provider,
+            model,
+            ok: false,
+            reason: "The LLM provider (anthropic) returned HTTP 404; check the model name",
+          }
+        : { provider, model, ok: true, reason: null },
+    );
+    render(<SettingsScreen />);
+
+    fireEvent.change(await modelSelect(), { target: { value: "claude-b" } });
+
+    expect(
+      await screen.findByText(
+        "This model cannot be used: The LLM provider (anthropic) returned HTTP 404; check the model name",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("says when the check could not run", async () => {
+    serveKeyedConfig();
+    vi.mocked(rlm.checkLlmModel).mockResolvedValue({
+      provider: "anthropic",
+      model: "claude-a",
+      ok: null,
+      reason: "LLM request timed out after 60s",
+    });
+    render(<SettingsScreen />);
+
+    expect(
+      await screen.findByText("Could not check the model: LLM request timed out after 60s"),
+    ).toBeTruthy();
+  });
+
+  it("offers the reasoning effort levels of the model and saves the choice", async () => {
+    serveKeyedConfig("high");
+    vi.mocked(rlm.checkLlmModel).mockImplementation(async ({ provider, model }) => ({
+      provider,
+      model,
+      ok: true,
+      reason: null,
+      efforts: model === "claude-a" ? ["low", "medium", "high"] : [],
+    }));
+    render(<SettingsScreen />);
+
+    const effort = (await screen.findByLabelText(/^Reasoning effort/)) as HTMLSelectElement;
+    expect(Array.from(effort.options).map((o) => o.textContent)).toEqual([
+      "Automatic",
+      "Low",
+      "Medium",
+      "High",
+    ]);
+    expect(effort.value).toBe("high");
+
+    fireEvent.change(effort, { target: { value: "low" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(rlm.saveConfig).toHaveBeenCalled());
+    expect(savedConfigs()[0].llm.reasoning_effort).toBe("low");
+
+    // A model without levels: no setting.
+    fireEvent.change(await modelSelect(), { target: { value: "claude-b" } });
+    await waitFor(() => expect(screen.queryByLabelText(/^Reasoning effort/)).toBeNull());
   });
 });

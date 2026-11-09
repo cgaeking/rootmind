@@ -177,6 +177,9 @@ def app_config(tmp_path, tiny_corpus) -> AppConfig:
     cfg = AppConfig(connectors=[ConnectorConfig(name="docs", type="local", path=str(tiny_corpus))])
     cfg.database.path = str(tmp_path / "db" / "index.db")
     cfg.indexer.include = list(TINY_INCLUDE)
+    # A model RootMind knows nothing about (rlm_engine.known_models), so the
+    # engine tests see the request as it is built, not adapted to a real model.
+    cfg.llm.model = "claude-test"
     return cfg
 
 
@@ -201,7 +204,12 @@ def rlm_home(tiny_corpus) -> Path:
     """``RLM_HOME`` with a config.yaml that indexes the tiny corpus as connector ``docs``."""
     home = config_module.app_home()
     data = {
-        "llm": {"provider": "anthropic", "api_keys": {"anthropic": TEST_API_KEY}},
+        # A model RootMind knows nothing about (see app_config).
+        "llm": {
+            "provider": "anthropic",
+            "model": "claude-test",
+            "api_keys": {"anthropic": TEST_API_KEY},
+        },
         "connectors": [{"name": "docs", "type": "local", "path": str(tiny_corpus)}],
         "indexer": {"include": list(TINY_INCLUDE)},
     }
@@ -226,3 +234,4 @@ def _forget_model_quirks():
     engine._MODEL_QUIRKS.clear()
     yield
     engine._MODEL_QUIRKS.clear()
+    engine._QUIRKS_FILE = None
