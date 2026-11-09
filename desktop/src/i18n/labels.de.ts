@@ -404,7 +404,7 @@ export const labels = {
     stop: "Stopp",
     send: "Senden",
     cancelled: "Abgebrochen.",
-    errorPrefix: (msg: string) => `Fehler: ${msg}\n\nPrüfe ggf. deinen LLM-API-Key in den Einstellungen.`,
+    errorPrefix: (msg: string) => `Fehler: ${msg}\n\nPrüfe ggf. API-Key und Modell in den Einstellungen.`,
     openFileFailed: (msg: string) => `Datei konnte nicht geöffnet werden: ${msg}`,
     openFolderFailed: (msg: string) => `Ordner konnte nicht geöffnet werden: ${msg}`,
     streamEnded: "Die Verbindung endete, bevor die Antwort kam.",

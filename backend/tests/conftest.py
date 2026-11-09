@@ -216,3 +216,13 @@ def api(rlm_home):
 
     with rest_client(create_app()) as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def _forget_model_quirks():
+    """Each test starts without quirks learned from another test's fake model."""
+    from rootmind.rlm_engine import engine
+
+    engine._MODEL_QUIRKS.clear()
+    yield
+    engine._MODEL_QUIRKS.clear()

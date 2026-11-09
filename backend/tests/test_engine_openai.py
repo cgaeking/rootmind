@@ -488,3 +488,47 @@ def test_ollama_failures_are_readable(error, expected):
 
     assert isinstance(mapped, LLMProviderError)
     assert expected in str(mapped)
+
+
+async def test_unsupported_reasoning_effort_takes_the_first_supported_value(
+    openai_config, indexed_repo
+):
+    needs_effort = ProviderError("Function tools with reasoning_effort are not supported")
+    no_none = ProviderError(
+        "Error code: 400 - Unsupported value: 'reasoning_effort' does not support 'none' with "
+        "this model. Supported values are: 'low', 'medium', 'high', and 'xhigh'."
+    )
+    fake = FakeOpenAI([needs_effort, no_none, openai_response(content="ok")])
+    engine = make_engine(openai_config, indexed_repo, fake)
+
+    result = await engine.query("q")
+
+    assert fake.calls[1]["reasoning_effort"] == "none"
+    assert fake.calls[2]["reasoning_effort"] == "low"
+    assert result["answer"] == "ok"
+
+    # Remembered for this model: the next question starts with it.
+    fake.script.append(openai_response(content="again"))
+    await engine.query("q2")
+    assert fake.calls[3]["reasoning_effort"] == "low"
+
+
+async def test_refused_required_tool_call_is_dropped_and_nudged(openai_config, indexed_repo):
+    refused = ProviderError("tool_choice 'required' is not supported for this model")
+    fake = FakeOpenAI(
+        [
+            refused,
+            openai_response(content="I can't see your files."),
+            openai_response(
+                tool_calls=[openai_tool_call("c1", "search_documents", {"query": "pto"})]
+            ),
+            openai_response(content="21 days."),
+        ]
+    )
+
+    result = await make_engine(openai_config, indexed_repo, fake).query("q")
+
+    assert fake.calls[0]["tool_choice"] == "required"
+    assert "tool_choice" not in fake.calls[1]
+    assert fake.calls[2]["messages"][-1] == {"role": "user", "content": SEARCH_FIRST_PROMPT}
+    assert result["answer"] == "21 days."

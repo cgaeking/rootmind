@@ -399,7 +399,7 @@ export const labels = {
     stop: "Stop",
     send: "Send",
     cancelled: "Cancelled.",
-    errorPrefix: (msg: string) => `Error: ${msg}\n\nCheck your LLM API key in Settings if needed.`,
+    errorPrefix: (msg: string) => `Error: ${msg}\n\nCheck the API key and the model in Settings if needed.`,
     openFileFailed: (msg: string) => `Could not open file: ${msg}`,
     openFolderFailed: (msg: string) => `Could not open folder: ${msg}`,
     streamEnded: "The connection ended before the answer arrived.",

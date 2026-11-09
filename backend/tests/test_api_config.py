@@ -380,3 +380,28 @@ def test_a_base_url_that_is_not_http_is_not_saved(api, rlm_home):
 
     assert api.post("/config", json=body).status_code == 400
     assert _saved(rlm_home)["llm"]["provider"] == "anthropic"
+
+
+@pytest.mark.parametrize(
+    ("model_id", "listed"),
+    [
+        ("gpt-4o", True),
+        ("gpt-6.1-sol", True),
+        ("o3", True),
+        ("o3-2025-04-16", True),
+        ("chatgpt-4o-latest", True),
+        ("gpt-image-2", False),
+        ("gpt-image-2.5-flare-2026-09-08", False),
+        ("gpt-live-1", False),
+        ("o3-pro", False),
+        ("o3-pro-2025-06-10", False),
+        ("gpt-4o-realtime-preview", False),
+        ("gpt-4o-mini-tts", False),
+        ("gpt-5-codex", False),
+        ("o4-mini-deep-research", False),
+        ("text-embedding-3-small", False),
+        ("dall-e-3", False),
+    ],
+)
+def test_openai_model_list_keeps_only_usable_chat_models(model_id, listed):
+    assert routes.is_openai_chat_model(model_id) is listed

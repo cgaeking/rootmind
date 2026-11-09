@@ -4,6 +4,15 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Fixed
+
+- Questions failed with "HTTP 400" on newer models, before any search:
+  - Claude Opus 5.5 refuses a forced tool call (`tool_choice: any`), which RootMind sends on the first step so that the model searches before it answers. RootMind now calls such a model without it and asks once more if the first answer did not look at the documents.
+  - OpenAI models that do not accept `reasoning_effort: none` now get the first value the model lists as supported (usually `low`) instead of an error. A model that refuses `tool_choice: required` is handled like Opus.
+  - What a model refused is remembered for that model while the service runs, so later questions do not fail first.
+- An HTTP 400 or 422 from the provider shows the provider's reason, for example "The LLM provider (anthropic) returned HTTP 400: tool_choice: … are not supported for this model." Until now only "HTTP 400" was shown, and the app suggested checking the API key. It now suggests checking the API key and the model.
+- The OpenAI model list leaves out models the question loop cannot use: image, speech and live models, and models that work only on the Responses API (`o3-pro` and other "-pro" models, codex, deep research, computer use).
+
 ## [2.8.3] - 2026-11-07
 
 ### Added

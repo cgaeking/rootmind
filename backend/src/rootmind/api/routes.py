@@ -243,6 +243,34 @@ class LlmModelsRequest(BaseModel):
     base_url: str | None = None
 
 
+# OpenAI models that RootMind's question loop cannot use: not chat models
+# (images, speech, embeddings, search), or only on the Responses API, which the
+# loop does not speak (the "-pro" reasoning models, codex, deep research,
+# computer use).
+_OPENAI_NOT_CHAT = (
+    "instruct",
+    "audio",
+    "realtime",
+    "transcribe",
+    "tts",
+    "search",
+    "embedding",
+    "image",
+    "live",
+    "-pro",
+    "codex",
+    "deep-research",
+    "computer-use",
+)
+
+
+def is_openai_chat_model(model_id: str) -> bool:
+    """Whether an OpenAI model ID is a chat model the question loop can use."""
+    return model_id.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")) and not any(
+        part in model_id for part in _OPENAI_NOT_CHAT
+    )
+
+
 def _list_chat_models(provider: str, api_key: str | None, base_url: str | None = None) -> list[str]:
     """Return available chat model IDs for a provider (best-effort, filtered).
 
@@ -260,14 +288,8 @@ def _list_chat_models(provider: str, api_key: str | None, base_url: str | None =
     if provider == "openai":
         import openai
 
-        skip = ("instruct", "audio", "realtime", "transcribe", "tts", "search", "embedding")
         with openai.OpenAI(**options) as client:
-            models = [
-                m.id
-                for m in client.models.list().data
-                if m.id.startswith(("gpt-", "o1", "o3", "o4", "chatgpt"))
-                and not any(s in m.id for s in skip)
-            ]
+            models = [m.id for m in client.models.list().data if is_openai_chat_model(m.id)]
         return sorted(set(models))
 
     if provider == "xai":
