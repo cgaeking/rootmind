@@ -293,7 +293,8 @@ export const labels = {
     },
     modelChecking: "Checking the model …",
     modelOk: "Model checked ✓",
-    modelRefused: (reason: string) => `This model cannot be used: ${reason}`,
+    modelDropped: (from: string, to: string) =>
+      `"${from}" does not work with RootMind – "${to}" chosen.`,
     modelUnchecked: (reason: string) => `Could not check the model: ${reason}`,
     modelHintLoading: "Loading models …",
     modelsError: (msg: string) => `Could not load models: ${msg}. Check the API key.`,

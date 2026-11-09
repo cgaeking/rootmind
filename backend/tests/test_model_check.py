@@ -125,6 +125,41 @@ async def test_check_of_an_openai_model(app_config, indexed_repo):
     assert result["efforts"] == ["low", "medium", "high"]
 
 
+TOOLS_NEED_NONE = ValueError(
+    "Function tools with reasoning_effort are not supported for gpt-sol in "
+    "/v1/chat/completions. To use function tools, use /v1/responses or set "
+    "reasoning_effort to 'none'."
+)
+
+
+async def test_a_model_that_takes_tools_only_without_reasoning(app_config, indexed_repo):
+    app_config.llm.provider = "openai"
+    app_config.llm.model = "gpt-sol"
+    effort_values = ValueError(
+        "Invalid value: 'rootmind-check'. Supported values are: 'none', 'low' and 'high'."
+    )
+    fake = FakeOpenAI([TOOLS_NEED_NONE, openai_response("ok"), effort_values])
+
+    result = await make_engine(app_config, indexed_repo, fake).check_model()
+
+    assert fake.calls[1]["reasoning_effort"] == "none"
+    assert result["efforts"] == ["none"]  # the only level a question can use
+
+
+async def test_the_suggested_none_is_tried_after_another_level(app_config, indexed_repo):
+    # Learned earlier (e.g. without tools): "low". With tools the model wants "none".
+    app_config.llm.provider = "openai"
+    app_config.llm.model = "gpt-sol"
+    model_quirks("openai", "gpt-sol").update({"reasoning_effort": "low"})
+    fake = FakeOpenAI([TOOLS_NEED_NONE, openai_response(content="ok")])
+
+    await make_engine(app_config, indexed_repo, fake).query("q")
+
+    assert fake.calls[0]["reasoning_effort"] == "low"
+    assert fake.calls[1]["reasoning_effort"] == "none"
+    assert model_quirks("openai", "gpt-sol")["reasoning_effort"] == "none"
+
+
 async def test_an_openai_model_without_reasoning_effort(app_config, indexed_repo):
     app_config.llm.provider = "openai"
     app_config.llm.model = "gpt-plain"

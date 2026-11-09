@@ -400,6 +400,10 @@ def _forces_tool(tool_choice: Any) -> bool:
     return tool_choice == "required"
 
 
+# "... or set reasoning_effort to 'none'": the value the provider suggests.
+_SUGGESTED_EFFORT_RE = re.compile(r"set reasoning_effort to '([^']+)'")
+
+
 def _supported_values(message: str) -> list[str]:
     """The values a provider lists after "Supported values are:", in order."""
     m = _SUPPORTED_VALUES_RE.search(message)
@@ -524,7 +528,8 @@ def _openai_chat_create(client, _quirks: dict[str, Any] | None = None, **kwargs)
                     _learn(quirks, "reasoning_effort", "none")
                     continue
                 efforts_tried.add(attempt["reasoning_effort"])
-                untried = [v for v in _supported_values(msg) if v not in efforts_tried]
+                offered = _supported_values(msg) + _SUGGESTED_EFFORT_RE.findall(msg)
+                untried = [v for v in offered if v not in efforts_tried]
                 if untried:
                     attempt["reasoning_effort"] = untried[0]
                     _learn(quirks, "reasoning_effort", untried[0])
@@ -843,6 +848,10 @@ class KnowledgeBaseEngine:
             )
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
+        if quirks.get("reasoning_effort") == "none":
+            # The model takes the search tools only without reasoning (it said
+            # so above): "none" is the one level a question can use.
+            efforts = ["none"]
         if efforts is not None:
             _learn(quirks, "efforts", sorted(efforts, key=_effort_rank))
         quirks.pop("unusable", None)
