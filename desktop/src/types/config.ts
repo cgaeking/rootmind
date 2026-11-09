@@ -11,6 +11,8 @@ export interface LlmConfigDto {
   api_keys: Record<string, string>;
   /** Ollama only: the server's address. */
   base_url?: string;
+  /** Reasoning effort: "auto" (the cheapest the model supports) or a level. */
+  reasoning_effort?: string;
 }
 
 export interface ConnectorDto {

@@ -53,7 +53,15 @@ from .discovery import (
 from .rest import ASK_TIMEOUT_SECONDS, ClientError, ClientExit, RestClient
 
 # Commands handled here (``index`` and ``mcp tokens`` are dispatched by main.py).
-CLIENT_COMMANDS = ("status", "folders", "search", "ask", "config", "remote-access")
+CLIENT_COMMANDS = (
+    "status",
+    "folders",
+    "search",
+    "ask",
+    "config",
+    "remote-access",
+    "check-models",
+)
 
 LLM_PROVIDERS = ("anthropic", "openai", "xai", "ollama")
 MASK_PREFIX = "…"  # rootmind.config.MASK_PREFIX (not imported: no config side effects)
@@ -170,6 +178,23 @@ def add_parsers(subparsers: Any) -> None:
     key.add_argument(
         "--remove-key", action="store_true", help="Remove the provider's saved API key"
     )
+
+    check = subparsers.add_parser(
+        "check-models",
+        parents=[common],
+        help="Check every chat model the saved API keys can use",
+        description="Check each chat model of the providers with a saved API key, the way "
+        "Settings checks a new model: one small request per model, so it costs a little. "
+        "With --write, write the result as RootMind's list of known models "
+        "(rlm_engine/known_models.py; for maintainers, before a release).",
+    )
+    check.add_argument(
+        "--provider",
+        action="append",
+        choices=[p for p in LLM_PROVIDERS if p != "ollama"],
+        help="Only this provider (repeatable; default: every provider with a saved key)",
+    )
+    check.add_argument("--write", metavar="FILE", help="Write the known models module to FILE")
 
     remote = subparsers.add_parser(
         "remote-access",
@@ -311,6 +336,7 @@ def run(
         "ask": cmd_ask,
         "config": cmd_config_llm,
         "remote-access": cmd_remote_access,
+        "check-models": cmd_check_models,
         "mcp-tokens": cmd_mcp_tokens,
     }
     try:
@@ -819,6 +845,79 @@ def cmd_config_llm(ctx: Context) -> int:
     lines.extend(f"warning: {w}" for w in warnings)
     ctx.emit({**view, "saved": True, "warnings": warnings}, lines)
     return ClientExit.OK
+
+
+# --- check models ------------------------------------------------------------------
+
+# What a known model entry keeps of a check's quirks (see rlm_engine.known_models).
+_KNOWN_KEYS = ("no_forced_tool", "max_completion_tokens", "reasoning_effort", "max_cap")
+
+
+def cmd_check_models(ctx: Context) -> int:
+    from ..rlm_engine.known_models import KNOWN_MODELS
+
+    args = ctx.args
+    client = ctx.connect()
+    keys = _get_config(client)["llm"].get("api_keys") or {}
+    providers = args.provider or [p for p in ("anthropic", "openai", "xai") if keys.get(p)]
+    if not providers:
+        raise ClientError("No API key is saved for any provider", ClientExit.USAGE)
+    known: dict[str, dict[str, dict[str, Any]]] = {
+        p: dict(models) for p, models in KNOWN_MODELS.items()
+    }
+    report: dict[str, Any] = {}
+    lines: list[str] = []
+    for provider in providers:
+        models = client.post("/llm/models", {"provider": provider}).get("models") or []
+        checked: dict[str, dict[str, Any]] = {}
+        skipped: dict[str, str] = {}
+        for model in models:
+            res = client.post(
+                "/llm/check", {"provider": provider, "model": model, "force": True}, timeout=120
+            )
+            if res.get("ok"):
+                quirks = res.get("quirks") or {}
+                entry: dict[str, Any] = {"checked": True}
+                entry.update({k: quirks[k] for k in _KNOWN_KEYS if k in quirks})
+                if res.get("efforts") is not None:
+                    entry["efforts"] = res["efforts"]
+                checked[model] = entry
+                status = "ok"
+            elif res.get("ok") is False and res.get("unusable"):
+                checked[model] = {"unusable": res.get("reason") or "refused"}
+                status = f"unusable: {res.get('reason')}"
+            else:
+                skipped[model] = res.get("reason") or "not checked"
+                status = f"not checked: {res.get('reason')}"
+            if not ctx.json:
+                ctx.err(f"{provider} {model}: {status}")
+        known[provider] = {**known.get(provider, {}), **checked}
+        report[provider] = {"checked": checked, "skipped": skipped}
+        lines.append(f"{provider}: {len(checked)} checked, {len(skipped)} not checked")
+    if args.write:
+        Path(args.write).write_text(_known_models_source(known), encoding="utf-8")
+        lines.append(f"Wrote {args.write}")
+    ctx.emit({"providers": report, "written": args.write}, lines)
+    return ClientExit.OK
+
+
+def _known_models_source(known: dict[str, dict[str, dict[str, Any]]]) -> str:
+    """The source of rlm_engine/known_models.py for ``known`` (keys sorted, no secrets)."""
+    import pprint
+
+    from ..rlm_engine import known_models
+
+    body = pprint.pformat(
+        {p: dict(sorted(models.items())) for p, models in sorted(known.items())},
+        width=100,
+        sort_dicts=True,
+    )
+    return (
+        f'"""{known_models.__doc__}"""\n\n'
+        "from __future__ import annotations\n\n"
+        "from typing import Any\n\n"
+        f"KNOWN_MODELS: dict[str, dict[str, dict[str, Any]]] = {body}\n"
+    )
 
 
 # --- remote access -----------------------------------------------------------------

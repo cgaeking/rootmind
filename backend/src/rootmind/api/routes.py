@@ -19,6 +19,7 @@ from ..config import (
     MCP_TOKEN_NAME,
     OLLAMA_DEFAULT_BASE_URL,
     LlmProvider,
+    ReasoningEffort,
     active_config_path,
     app_home,
     check_api_key,
@@ -177,6 +178,7 @@ class LlmConfigBody(BaseModel):
     api_key: str | None = None
     api_keys: dict[str, str] = Field(default_factory=dict)
     base_url: str = OLLAMA_DEFAULT_BASE_URL
+    reasoning_effort: ReasoningEffort = "auto"
 
 
 class ConnectorBody(BaseModel):
@@ -269,6 +271,15 @@ def is_openai_chat_model(model_id: str) -> bool:
     return model_id.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")) and not any(
         part in model_id for part in _OPENAI_NOT_CHAT
     )
+
+
+class LlmCheckRequest(BaseModel):
+    """The model to check (otherwise the saved provider and model)."""
+
+    provider: LlmProvider | None = None
+    model: str | None = Field(default=None, max_length=200)
+    # Check a model RootMind knows or checked before again (check-models).
+    force: bool = False
 
 
 def _list_chat_models(provider: str, api_key: str | None, base_url: str | None = None) -> list[str]:
@@ -770,6 +781,7 @@ def create_router(app_state: Any) -> APIRouter:
                 api_key=mask_secret(cfg.llm.api_key) or None,
                 api_keys={k: mask_secret(v) for k, v in cfg.llm.api_keys.items() if v},
                 base_url=cfg.llm.base_url,
+                reasoning_effort=cfg.llm.reasoning_effort,
             ),
             connectors=[
                 ConnectorBody(
@@ -860,7 +872,77 @@ def create_router(app_state: Any) -> APIRouter:
             models = _list_chat_models(provider, api_key, base_url)
         except Exception as e:
             raise _llm_http_error(provider_error(e, provider), "Listing models") from e
+        from ..rlm_engine.engine import model_quirks
+
+        # Models the check found unusable (see /llm/check, known_models) are left out.
+        models = [m for m in models if not model_quirks(provider, m).get("unusable")]
         return {"provider": provider, "models": models}
+
+    @router.post("/llm/check", tags=["Config"])
+    async def check_llm_model(body: LlmCheckRequest | None = None):
+        """Check that a model works with RootMind's question loop.
+
+        A model RootMind knows or checked before answers at once, without a
+        request (``checked_now`` false). Otherwise one small request is made
+        with the settings of a question's first step and the saved key of the
+        provider (see ``KnowledgeBaseEngine.check_model``); a setting the model
+        refuses is adjusted and remembered for it.
+
+        ``ok`` is true when the model works, false when the provider refused it
+        (``reason`` says why; a model it rejects is then left out of the model
+        list), and null when the check could not run (no connection, timeout,
+        rate limit, server error). ``efforts`` lists the reasoning effort levels
+        the model supports, cheapest first (empty: none; null: not known).
+        """
+        from ..rlm_engine.engine import KnowledgeBaseEngine, model_quirks
+        from .app import _close_llm_client
+
+        cfg = get_config().model_copy(deep=True)
+        if body and body.provider:
+            cfg.llm.provider = body.provider
+        if body and body.model:
+            cfg.llm.model = body.model
+        cfg.llm.api_key = cfg.llm.api_keys.get(cfg.llm.provider)
+        if cfg.llm.provider != "ollama" and not cfg.llm.api_key:
+            raise HTTPException(
+                status_code=400, detail=f"No API key for provider {cfg.llm.provider}"
+            )
+        engine = KnowledgeBaseEngine(db=app_state.db, config=cfg)
+        result: dict[str, Any] = {"provider": cfg.llm.provider, "model": cfg.llm.model}
+        quirks = model_quirks(cfg.llm.provider, cfg.llm.model)
+        try:
+            checked = await engine.check_model(force=bool(body and body.force))
+        except LLMConfigError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except LLMTimeoutError as e:
+            return {**result, "ok": None, "reason": str(e), "efforts": quirks.get("efforts")}
+        except LLMProviderError as e:
+            status = getattr(e.__cause__, "status_code", None)
+            inconclusive = status is None or status == 429 or status >= 500
+            if status in (400, 404, 422):
+                # The model itself is refused (the key works): not for questions.
+                from ..rlm_engine.engine import _learn
+
+                _learn(quirks, "unusable", str(e))
+            return {
+                **result,
+                "ok": None if inconclusive else False,
+                "unusable": status in (400, 404, 422),
+                "reason": str(e),
+                "efforts": quirks.get("efforts"),
+            }
+        except Exception as e:
+            raise _llm_http_error(e, "Checking the model") from e
+        finally:
+            _close_llm_client(engine)
+        return {
+            **result,
+            "ok": True,
+            "reason": None,
+            "checked_now": checked["checked_now"],
+            "efforts": checked["efforts"],
+            "quirks": checked["quirks"],
+        }
 
     # Named MCP over HTTP tokens (stored as SHA-256 in config.yaml, section mcp_http)
 

@@ -31,14 +31,17 @@ tracing calls at all and imports nothing for it.
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
+import threading
 import unicodedata
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import tools
-from ..config import OLLAMA_DEFAULT_BASE_URL, AppConfig
+from ..config import EFFORT_ORDER, OLLAMA_DEFAULT_BASE_URL, AppConfig
 from ..database.repository import DocumentRepository
 from ..tools import ToolContext
 
@@ -77,6 +80,8 @@ SEARCH_FIRST_PROMPT = (
     "Do not answer from memory. Call the search_documents tool first and answer only "
     "from what the documents say."
 )
+# The question of the model check (KnowledgeBaseEngine.check_model).
+CHECK_QUESTION = "This is a connection check. Search the documents for the word test."
 GENERIC_FAILURE_ANSWER = (
     "The request could not be completed (maximum number of tool iterations reached)."
 )
@@ -274,8 +279,118 @@ _SUPPORTED_VALUES_RE = re.compile(r"Supported values are:(.*)", re.I | re.S)
 
 
 def model_quirks(provider: str, model: str) -> dict[str, Any]:
-    """The learned quirks of one model (a live dict, see :data:`_MODEL_QUIRKS`)."""
-    return _MODEL_QUIRKS.setdefault((provider, model), {})
+    """The quirks of one model (a live dict, see :data:`_MODEL_QUIRKS`).
+
+    A model RootMind ships knowledge of (:mod:`.known_models`) starts with it.
+    """
+    key = (provider, model)
+    if key not in _MODEL_QUIRKS:
+        from .known_models import KNOWN_MODELS
+
+        known = KNOWN_MODELS.get(provider, {}).get(model, {})
+        _MODEL_QUIRKS[key] = {k: list(v) if isinstance(v, list) else v for k, v in known.items()}
+    return _MODEL_QUIRKS[key]
+
+
+def effort_for(quirks: dict[str, Any], setting: str) -> str | None:
+    """The reasoning effort to send to a model, or None to send none.
+
+    None for "auto" (the model's own default, or what a refusal taught, see
+    :func:`_openai_chat_create`) and when the model supports no effort levels
+    or they are unknown. Otherwise ``setting`` when the model supports it,
+    else the highest level it supports below it, else its lowest.
+    """
+    efforts = quirks.get("efforts")
+    if setting == "auto" or not efforts:
+        return None
+    if setting in efforts:
+        return setting
+    ranked = sorted(efforts, key=_effort_rank)
+    below = [e for e in ranked if _effort_rank(e) < _effort_rank(setting)]
+    return below[-1] if below else ranked[0]
+
+
+def _effort_rank(effort: str) -> int:
+    return EFFORT_ORDER.index(effort) if effort in EFFORT_ORDER else len(EFFORT_ORDER)
+
+
+# The quirks file (data/model_quirks.json), set by load_model_quirks. Learned
+# quirks are written there, so they survive a restart of the service.
+_QUIRKS_FILE: Path | None = None
+_QUIRKS_LOCK = threading.Lock()
+_QUIRK_TYPES: dict[str, type | tuple[type, ...]] = {
+    "checked": bool,
+    "unusable": str,
+    "no_forced_tool": bool,
+    "max_completion_tokens": bool,
+    "reasoning_effort": str,
+    "max_cap": int,
+    "efforts": list,
+}
+
+
+def load_model_quirks(path: Path) -> None:
+    """Read the learned quirks from ``path`` and write new ones there from now on.
+
+    A missing or unreadable file starts empty; unknown keys and values of the
+    wrong type are dropped, so a damaged file cannot break a question.
+    """
+    global _QUIRKS_FILE
+    _QUIRKS_FILE = path
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as e:
+        logger.warning("Could not read the model quirks file %s: %s", path, e)
+        return
+    models = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(models, dict):
+        return
+    with _QUIRKS_LOCK:
+        for provider, by_model in models.items():
+            if not isinstance(by_model, dict):
+                continue
+            for model, quirks in by_model.items():
+                if not isinstance(quirks, dict):
+                    continue
+                clean = {
+                    k: v
+                    for k, v in quirks.items()
+                    if k in _QUIRK_TYPES
+                    and isinstance(v, _QUIRK_TYPES[k])
+                    and not (k == "max_cap" and (isinstance(v, bool) or v <= 0))
+                    and not (k == "efforts" and not all(e in EFFORT_ORDER for e in v))
+                }
+                if clean:
+                    model_quirks(str(provider), str(model)).update(clean)
+
+
+def _save_model_quirks() -> None:
+    """Write the learned quirks to the quirks file (atomically), if one is set."""
+    if _QUIRKS_FILE is None:
+        return
+    with _QUIRKS_LOCK:
+        models: dict[str, dict[str, Any]] = {}
+        for (provider, model), quirks in sorted(_MODEL_QUIRKS.items()):
+            if quirks:
+                models.setdefault(provider, {})[model] = dict(sorted(quirks.items()))
+        text = json.dumps({"version": 1, "models": models}, indent=2) + "\n"
+        tmp = _QUIRKS_FILE.with_name(_QUIRKS_FILE.name + ".tmp")
+        try:
+            _QUIRKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, _QUIRKS_FILE)
+        except OSError as e:
+            logger.warning("Could not write the model quirks file %s: %s", _QUIRKS_FILE, e)
+
+
+def _learn(quirks: dict[str, Any], key: str, value: Any) -> None:
+    """Remember one quirk of a model and persist it when it is new."""
+    if quirks.get(key) == value:
+        return
+    quirks[key] = value
+    _save_model_quirks()
 
 
 def _forces_tool(tool_choice: Any) -> bool:
@@ -308,10 +423,55 @@ def _anthropic_create(client, _quirks: dict[str, Any] | None = None, **kwargs):
         except Exception as e:
             if _forces_tool(attempt.get("tool_choice")) and _FORCED_TOOL_REFUSED_RE.search(str(e)):
                 logger.info("The model refuses a forced tool call; calling it without one")
-                quirks["no_forced_tool"] = True
+                _learn(quirks, "no_forced_tool", True)
                 attempt.pop("tool_choice")
                 continue
             raise
+
+
+def _anthropic_efforts(client, model: str) -> list[str] | None:
+    """The effort levels a Claude model supports, from the Models API (None if unknown)."""
+    try:
+        caps = getattr(client.models.retrieve(model), "capabilities", None)
+    except Exception as e:  # an older API or SDK, or no access: not known
+        logger.info("Could not read the capabilities of %s: %s", model, e)
+        return None
+    effort = caps.get("effort") if isinstance(caps, dict) else None
+    if not isinstance(effort, dict):
+        return None
+    if not effort.get("supported"):
+        return []
+    return [
+        level
+        for level in EFFORT_ORDER
+        if isinstance(effort.get(level), dict) and effort[level].get("supported")
+    ]
+
+
+def _openai_efforts(client, model: str) -> list[str] | None:
+    """The reasoning effort values an OpenAI model accepts (None if unknown).
+
+    Asks with a value no model accepts: the provider refuses it before
+    generating anything (so it costs nothing) and lists the supported values,
+    or says the model has no reasoning effort at all.
+    """
+    try:
+        client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "ok"}],
+            reasoning_effort="rootmind-check",
+        )
+    except Exception as e:
+        message = str(e)
+        values = [v for v in _supported_values(message) if v in EFFORT_ORDER]
+        if values:
+            return values
+        if "reasoning_effort" in message and re.search(
+            r"not supported|unsupported|unrecognized", message, re.I
+        ):
+            return []
+        return None
+    return None
 
 
 def _openai_chat_create(client, _quirks: dict[str, Any] | None = None, **kwargs):
@@ -356,29 +516,29 @@ def _openai_chat_create(client, _quirks: dict[str, Any] | None = None, **kwargs)
             msg = str(e)
             if "max_tokens" in attempt and "max_completion_tokens" in msg:
                 attempt["max_completion_tokens"] = attempt.pop("max_tokens")
-                quirks["max_completion_tokens"] = True
+                _learn(quirks, "max_completion_tokens", True)
                 continue
             if "reasoning_effort" in msg:
                 if "reasoning_effort" not in attempt:
                     attempt["reasoning_effort"] = "none"
-                    quirks["reasoning_effort"] = "none"
+                    _learn(quirks, "reasoning_effort", "none")
                     continue
                 efforts_tried.add(attempt["reasoning_effort"])
                 untried = [v for v in _supported_values(msg) if v not in efforts_tried]
                 if untried:
                     attempt["reasoning_effort"] = untried[0]
-                    quirks["reasoning_effort"] = untried[0]
+                    _learn(quirks, "reasoning_effort", untried[0])
                     continue
             if _forces_tool(attempt.get("tool_choice")) and _FORCED_TOOL_REFUSED_RE.search(msg):
                 logger.info("The model refuses a forced tool call; calling it without one")
                 attempt.pop("tool_choice")
-                quirks["no_forced_tool"] = True
+                _learn(quirks, "no_forced_tool", True)
                 continue
             limit = _OUTPUT_LIMIT_RE.search(msg)
             cap_key = "max_tokens" if "max_tokens" in attempt else "max_completion_tokens"
             if limit and not lowered_cap and cap_key in attempt:
                 attempt[cap_key] = min(attempt[cap_key], int(limit.group(1)))
-                quirks["max_cap"] = attempt[cap_key]
+                _learn(quirks, "max_cap", attempt[cap_key])
                 lowered_cap = True
                 continue
             raise
@@ -607,6 +767,87 @@ class KnowledgeBaseEngine:
             raise ValueError(f"Unsupported LLM provider: {provider}")
 
         return self._client
+
+    def _effort_kwargs(self, provider: str, quirks: dict[str, Any]) -> dict[str, Any]:
+        """The reasoning effort parameter for a call, or nothing (see :func:`effort_for`)."""
+        effort = effort_for(quirks, self.config.llm.reasoning_effort)
+        if effort is None or provider == "ollama":
+            return {}
+        if provider == "anthropic":
+            return {"output_config": {"effort": effort}}
+        return {"reasoning_effort": effort}
+
+    async def check_model(self, force: bool = False) -> dict[str, Any]:
+        """Check that the configured model works with the question loop.
+
+        A model RootMind knows (:mod:`.known_models`) or checked before is not
+        checked again unless ``force``. Otherwise one request is made with the
+        settings of a question's first step: the system prompt, the tools, the
+        forced first tool call (not for Ollama) and the output cap. A setting
+        the model refuses is adapted to, as at its first question, and
+        remembered. Nothing is searched and the reply is not used. Then the
+        reasoning effort levels the model supports are looked up.
+
+        Returns the provider, the model, whether a request was made
+        (``checked_now``), the effort levels (``efforts``: a list, empty for
+        none, None when unknown) and the model's quirks. Raises
+        :class:`LLMConfigError`, :class:`LLMTimeoutError` or
+        :class:`LLMProviderError` like a question.
+        """
+        provider = self.config.llm.provider
+        model = self.config.llm.model
+        quirks = model_quirks(provider, model)
+
+        def result(checked_now: bool) -> dict[str, Any]:
+            return {
+                "provider": provider,
+                "model": model,
+                "checked_now": checked_now,
+                "efforts": quirks.get("efforts"),
+                "quirks": dict(quirks),
+            }
+
+        if quirks.get("checked") and not force:
+            return result(False)
+        client = self._get_client()
+        if provider == "anthropic":
+            await self._llm_call(
+                _anthropic_create,
+                client,
+                _quirks=quirks,
+                model=model,
+                max_tokens=MAX_OUTPUT_TOKENS,
+                system=SYSTEM_PROMPT,
+                tools=tools.TOOLS,
+                tool_choice={"type": "any"},
+                messages=[{"role": "user", "content": CHECK_QUESTION}],
+            )
+            efforts = await asyncio.to_thread(_anthropic_efforts, client, model)
+        elif provider in OPENAI_COMPATIBLE:
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "max_tokens": MAX_OUTPUT_TOKENS,
+                "tools": tools.openai_tools(),
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": CHECK_QUESTION},
+                ],
+            }
+            if provider != "ollama":
+                kwargs["tool_choice"] = "required"
+            await self._llm_call(_openai_chat_create, client, _quirks=quirks, **kwargs)
+            efforts = (
+                None
+                if provider == "ollama"
+                else await asyncio.to_thread(_openai_efforts, client, model)
+            )
+        else:
+            raise ValueError(f"Unsupported LLM provider: {provider}")
+        if efforts is not None:
+            _learn(quirks, "efforts", sorted(efforts, key=_effort_rank))
+        quirks.pop("unusable", None)
+        _learn(quirks, "checked", True)
+        return result(True)
 
     def _map_error(self, exc: Exception) -> Exception:
         return provider_error(exc, self.config.llm.provider, self.config.llm.timeout_seconds)
@@ -948,6 +1189,7 @@ class KnowledgeBaseEngine:
                 "system": SYSTEM_PROMPT,
                 "tools": tools.TOOLS,
                 "messages": messages,
+                **self._effort_kwargs("anthropic", quirks),
             }
             if iteration == 0:
                 # Force a real search before any text answer on the first call
@@ -1066,6 +1308,7 @@ class KnowledgeBaseEngine:
                 tools=tools.TOOLS,
                 tool_choice={"type": "none"},
                 messages=messages,
+                **self._effort_kwargs("anthropic", quirks),
             )
             usage.record(_anthropic_tokens(final), final.stop_reason)
             text = _anthropic_text(final)
@@ -1099,6 +1342,7 @@ class KnowledgeBaseEngine:
                 "max_tokens": MAX_OUTPUT_TOKENS,
                 "tools": openai_tools,
                 "messages": messages,
+                **self._effort_kwargs(provider, quirks),
             }
             if iteration == 0:
                 # See the matching comment in _loop_anthropic: force a real
@@ -1210,6 +1454,7 @@ class KnowledgeBaseEngine:
                 tools=openai_tools,
                 tool_choice="none",
                 messages=messages,
+                **self._effort_kwargs(provider, quirks),
             )
             finish_reason = getattr(final.choices[0], "finish_reason", None)
             usage.record(_openai_tokens(final), finish_reason)

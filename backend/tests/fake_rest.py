@@ -57,6 +57,9 @@ class FakeState:
     mcp_tokens: list[dict[str, Any]] = field(default_factory=list)
     mcp_tokens_route: bool = True  # False: a service older than named tokens (404)
     created_token: str = "fake-created-mcp-token-0001"  # pragma: allowlist secret
+    # /llm/models per provider, and /llm/check answers per model (default: works).
+    llm_models: dict[str, list[str]] = field(default_factory=dict)
+    llm_checks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -179,6 +182,15 @@ class _Handler(BaseHTTPRequestHandler):
             "connectors": [dict(c, include=None, exclude=None) for c in state.connectors],
             "indexer": {"sync_schedule": None, "sync_interval_hours": 24},
         }
+
+    def _post_llm_models(self, state, body, query):
+        provider = (body or {}).get("provider") or state.llm["provider"]
+        return 200, {"provider": provider, "models": state.llm_models.get(provider, [])}
+
+    def _post_llm_check(self, state, body, query):
+        model = body["model"]
+        answer = state.llm_checks.get(model, {"ok": True, "reason": None, "quirks": {}})
+        return 200, {"provider": body["provider"], "model": model, **answer}
 
     def _post_config(self, state, body, query):
         if not isinstance(body, dict) or not isinstance(body.get("llm"), dict):

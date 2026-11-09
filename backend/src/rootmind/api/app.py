@@ -258,10 +258,18 @@ def _index_settings_changed(old: AppConfig, new: AppConfig) -> bool:
     )
 
 
+# Learned model quirks, in the data folder next to the tokens.
+MODEL_QUIRKS_FILE_NAME = "model_quirks.json"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     app_state.loop = asyncio.get_running_loop()
+    from ..rlm_engine.engine import load_model_quirks
+
+    # What models refused before (see rlm_engine.engine._MODEL_QUIRKS).
+    load_model_quirks(app_home() / "data" / MODEL_QUIRKS_FILE_NAME)
     _publish(_new_state(get_config()))
     _start_scheduler(app_state.sync_manager)
     logger.info(f"RootMind API started with {len(app_state.connectors)} connector(s)")

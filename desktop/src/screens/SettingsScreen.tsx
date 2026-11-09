@@ -4,7 +4,7 @@ import type { LanguagePref } from "../i18n/labels";
 import { useStore } from "../state/store";
 import { useBackend } from "../hooks/useBackend";
 import { isCurrentBackend, useLiveBackend } from "../hooks/useLiveBackend";
-import { getConfig, listLlmModels, saveConfig } from "../api/rlm";
+import { checkLlmModel, getConfig, listLlmModels, saveConfig } from "../api/rlm";
 import { ApiError } from "../api/client";
 import type { ThemePref } from "../state/store";
 import type { AppConfigDto, LlmProvider } from "../types/config";
@@ -56,6 +56,16 @@ export function SettingsScreen() {
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [replacedFrom, setReplacedFrom] = useState<string | null>(null);
+  // The result of checking a model (POST /llm/check), for the model it was run on.
+  const [modelCheck, setModelCheck] = useState<{
+    model: string;
+    status: "checking" | "ok" | "refused" | "unchecked";
+    reason?: string;
+    /** Reasoning effort levels the model supports, cheapest first (null: not known). */
+    efforts?: string[] | null;
+    /** The check made a request (a new model), rather than knowing the model. */
+    checkedNow?: boolean;
+  } | null>(null);
 
   // The API key field: null shows the saved (masked) key of the provider,
   // a string is a key typed but not saved yet. `config.llm.api_keys` holds
@@ -94,6 +104,38 @@ export function SettingsScreen() {
     }
   }, []);
 
+  /**
+   * Check a model with the provider's saved key when it is chosen. The
+   * backend knows most models already and answers at once; a new one gets
+   * one small request. The result also says which reasoning effort levels
+   * the model supports. Results for another backend are dropped.
+   */
+  const checkModel = useCallback(async (provider: string, model: string) => {
+    if (!model) return;
+    const from = useStore.getState().baseUrl;
+    setModelCheck({ model, status: "checking" });
+    try {
+      const res = await checkLlmModel({ provider, model });
+      if (useStore.getState().baseUrl !== from) return;
+      setModelCheck((c) =>
+        c?.model !== model
+          ? c
+          : {
+              model,
+              status: res.ok ? "ok" : res.ok === false ? "refused" : "unchecked",
+              reason: res.reason ?? undefined,
+              efforts: res.efforts ?? null,
+              checkedNow: res.checked_now ?? false,
+            },
+      );
+    } catch (e) {
+      if (useStore.getState().baseUrl !== from) return;
+      setModelCheck((c) =>
+        c?.model !== model ? c : { model, status: "unchecked", reason: errMsg(e) },
+      );
+    }
+  }, []);
+
   // Load the editable config from the live backend, then fetch models for the
   // active provider if a key is present. Another backend (or a lost
   // connection) first clears everything loaded from the previous one.
@@ -107,6 +149,7 @@ export function SettingsScreen() {
     setModelsError(null);
     setLoadingModels(false);
     setReplacedFrom(null);
+    setModelCheck(null);
     setKeyDraft(null);
     setDetected(null);
     setSavingKey(false);
@@ -126,6 +169,7 @@ export function SettingsScreen() {
         } else if (key) {
           void loadModels(c.llm.provider, key);
         }
+        if (c.llm.provider === "ollama" || key) void checkModel(c.llm.provider, c.llm.model);
       })
       .catch((e) => {
         if (!cancelled) setLoadError(errMsg(e));
@@ -133,7 +177,7 @@ export function SettingsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [live, loadModels]);
+  }, [live, loadModels, checkModel]);
 
   // If the saved model is not among the available ones (e.g. deprecated), switch to a valid one.
   useEffect(() => {
@@ -141,7 +185,9 @@ export function SettingsScreen() {
     if (!models || models.length === 0) return;
     if (!models.includes(config.llm.model)) {
       setReplacedFrom(config.llm.model);
-      updateLlm({ model: pickDefaultModel(models) });
+      const model = pickDefaultModel(models);
+      updateLlm({ model });
+      void checkModel(config.llm.provider, model);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [models]);
@@ -249,6 +295,7 @@ export function SettingsScreen() {
       setModels(listed);
       setModelsError(null);
       setKeyMsg(key ? labels.settings.keySaved : labels.settings.keyRemoved);
+      if (listed) void checkModel(provider, model);
     } catch (e) {
       if (isCurrentBackend(configUrl)) setKeyError(labels.settings.keyRejected(errMsg(e)));
     } finally {
@@ -288,6 +335,7 @@ export function SettingsScreen() {
       setModels(listed);
       setModelsError(null);
       setKeyMsg(labels.settings.ollamaSaved(listed.length));
+      void checkModel("ollama", model);
     } catch (e) {
       if (isCurrentBackend(configUrl)) setKeyError(labels.settings.ollamaRejected(errMsg(e)));
     } finally {
@@ -471,7 +519,11 @@ export function SettingsScreen() {
             >
               <Select
                 value={config.llm.model}
-                onChange={(e) => updateLlm({ model: e.currentTarget.value })}
+                onChange={(e) => {
+                  const model = e.currentTarget.value;
+                  updateLlm({ model });
+                  void checkModel(config.llm.provider, model);
+                }}
                 disabled={!canListModels || !models || loadingModels || savingKey}
               >
                 {modelOptions.map((m) => (
@@ -481,6 +533,45 @@ export function SettingsScreen() {
                 ))}
               </Select>
             </Field>
+
+            {modelCheck?.model === config.llm.model &&
+              (modelCheck.status === "checking" ? (
+                <span className="muted">{labels.settings.modelChecking}</span>
+              ) : modelCheck.status === "ok" && modelCheck.checkedNow ? (
+                <span className="muted">{labels.settings.modelOk}</span>
+              ) : modelCheck.status === "unchecked" ? (
+                <span className="muted">
+                  {labels.settings.modelUnchecked(modelCheck.reason ?? "")}
+                </span>
+              ) : null)}
+            {modelCheck?.model === config.llm.model && modelCheck.status === "refused" && (
+              <Banner tone="err">{labels.settings.modelRefused(modelCheck.reason ?? "")}</Banner>
+            )}
+
+            {modelCheck?.model === config.llm.model &&
+              modelCheck.efforts &&
+              modelCheck.efforts.length > 0 && (
+                <Field label={labels.settings.effortLabel}>
+                  <Select
+                    value={
+                      modelCheck.efforts.includes(config.llm.reasoning_effort ?? "auto")
+                        ? (config.llm.reasoning_effort ?? "auto")
+                        : "auto"
+                    }
+                    onChange={(e) => updateLlm({ reasoning_effort: e.currentTarget.value })}
+                    disabled={savingKey}
+                  >
+                    <option value="auto">{labels.settings.effortAuto}</option>
+                    {modelCheck.efforts.map((effort) => (
+                      <option key={effort} value={effort}>
+                        {labels.settings.effortLevels[
+                          effort as keyof typeof labels.settings.effortLevels
+                        ] ?? effort}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              )}
 
             {modelsError && (
               <Banner tone="err">
