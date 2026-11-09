@@ -97,6 +97,11 @@ def app_home() -> Path:
     return Path.cwd()
 
 
+# Reasoning effort levels, cheapest first (see LLMConfig.reasoning_effort).
+EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+ReasoningEffort = Literal["auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+
 class LLMConfig(BaseModel):
     """LLM provider configuration."""
 
@@ -112,6 +117,10 @@ class LLMConfig(BaseModel):
     # Generous but bounded timeout for outgoing LLM calls, so a stalled
     # provider response can't hang a request forever.
     timeout_seconds: float = 120.0
+    # How much a reasoning model thinks (OpenAI reasoning_effort, Anthropic
+    # output_config.effort). "auto" takes the cheapest value the model supports;
+    # a value the model does not support also falls back to the cheapest one.
+    reasoning_effort: ReasoningEffort = "auto"
 
 
 class DatabaseConfig(BaseModel):

@@ -1149,3 +1149,57 @@ def test_machine_probe_asks_the_service_manager_for_the_pid(linux, pid):
     assert probe.backend_pid() == pid
     assert probe.port_owned_by(18000, pid)
     assert env.owned == [(18000, pid)]
+
+
+# --- check-models ------------------------------------------------------------------
+
+
+def test_check_models_writes_the_known_models_module(capsys, fake, token_file, tmp_path):
+    fake.state.llm["api_keys"] = {"anthropic": STORED_KEY, "openai": STORED_KEY}
+    fake.state.llm_models = {
+        "anthropic": ["claude-new"],
+        "openai": ["gpt-good", "gpt-gone", "gpt-flaky"],
+    }
+    fake.state.llm_checks = {
+        "claude-new": {
+            "ok": True,
+            "reason": None,
+            "efforts": ["low", "high"],
+            "quirks": {"checked": True, "no_forced_tool": True, "efforts": ["low", "high"]},
+        },
+        "gpt-good": {"ok": True, "reason": None, "efforts": [], "quirks": {"max_cap": 4096}},
+        "gpt-gone": {"ok": False, "unusable": True, "reason": "HTTP 404: no such model"},
+        "gpt-flaky": {"ok": None, "reason": "LLM request timed out"},
+    }
+    target = tmp_path / "known_models.py"
+
+    code, out, err = cli(capsys, "check-models", "--write", str(target), *remote(fake, token_file))
+
+    assert code == 0, err
+    assert "anthropic: 1 checked, 0 not checked" in out
+    assert "openai: 2 checked, 1 not checked" in out
+    checks = [r.body for r in fake.state.requests if r.path == "/llm/check"]
+    assert all(c["force"] for c in checks)
+
+    namespace: dict = {}
+    exec(target.read_text(encoding="utf-8"), namespace)  # noqa: S102 - our own output
+    known = namespace["KNOWN_MODELS"]
+    assert known["anthropic"]["claude-new"] == {
+        "checked": True,
+        "no_forced_tool": True,
+        "efforts": ["low", "high"],
+    }
+    assert "claude-opus-5-5" in known["anthropic"]  # the shipped entries stay
+    assert known["openai"]["gpt-good"] == {"checked": True, "max_cap": 4096, "efforts": []}
+    assert known["openai"]["gpt-gone"] == {"unusable": "HTTP 404: no such model"}
+    assert "gpt-flaky" not in known["openai"]
+    no_secret_in(target.read_text(encoding="utf-8") + out + err, STORED_KEY)
+
+
+def test_check_models_needs_a_saved_key(capsys, fake, token_file):
+    fake.state.llm["api_keys"] = {}
+
+    code, _out, err = cli(capsys, "check-models", *remote(fake, token_file))
+
+    assert code == 2
+    assert "No API key" in err

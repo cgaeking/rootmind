@@ -206,6 +206,7 @@ rootmind mcp tokens list                         # names, folders, fingerprints
 rootmind mcp tokens create alice --folders projects --out alice.token
 rootmind mcp tokens revoke alice
 rootmind remote-access on|off|status             # the ngrok tunnel
+rootmind check-models [--provider openai] [--write FILE]  # check every chat model of the saved keys
 ```
 
 `rootmind` is the command of a uv or pip install. With the app or the
