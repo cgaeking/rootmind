@@ -488,7 +488,17 @@ def create_router(app_state: Any) -> APIRouter:
         """Get system status including sync status and document counts."""
         return app_state.sync_manager.get_status()
 
-    # Document endpoints
+    # Document endpoints. They see only the documents of configured folders:
+    # the index of a removed folder is deleted in the background.
+
+    def configured() -> set[str]:
+        return {c.name for c in app_state.config.connectors}
+
+    def configured_meta(doc_id: str) -> dict[str, Any]:
+        meta = app_state.db.get_document_meta(doc_id)
+        if not meta or meta["connector_name"] not in configured():
+            raise HTTPException(status_code=404, detail="Document not found")
+        return meta
 
     @router.get("/documents", tags=["Documents"])
     def list_documents(
@@ -505,6 +515,7 @@ def create_router(app_state: Any) -> APIRouter:
             search_filename=search_filename,
             limit=limit,
             offset=offset,
+            connector_names=configured(),
         )
 
         return {
@@ -517,6 +528,7 @@ def create_router(app_state: Any) -> APIRouter:
     @router.get("/documents/{doc_id}", tags=["Documents"])
     def get_document(doc_id: str):
         """Get document details by ID."""
+        configured_meta(doc_id)
         doc = app_state.db.get_document(doc_id)
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
@@ -529,6 +541,7 @@ def create_router(app_state: Any) -> APIRouter:
         end: int | None = Query(None, ge=0, description="End character position (exclusive)"),
     ):
         """Get text content of a document (optionally a range)."""
+        configured_meta(doc_id)
         result = app_state.db.get_document_content(doc_id, start, end)
         if not result:
             raise HTTPException(status_code=404, detail="Document not found")
@@ -541,9 +554,7 @@ def create_router(app_state: Any) -> APIRouter:
         The path is resolved through the owning connector, which enforces that it
         stays within the connector's configured root directory.
         """
-        doc = app_state.db.get_document_meta(doc_id)
-        if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+        doc = configured_meta(doc_id)
         connector = app_state.connectors.get(doc["connector_name"])
         if connector is None or not hasattr(connector, "resolve_path"):
             raise HTTPException(status_code=400, detail="Connector not available for this document")
@@ -556,7 +567,7 @@ def create_router(app_state: Any) -> APIRouter:
     @router.get("/statistics", tags=["Documents"])
     def get_statistics():
         """Get database statistics."""
-        return app_state.db.get_statistics()
+        return app_state.db.get_statistics(connector_names=configured())
 
     # Search endpoints (FTS5)
 
@@ -568,6 +579,7 @@ def create_router(app_state: Any) -> APIRouter:
             limit=request.limit,
             file_type=request.file_type,
             with_snippets=request.with_snippets,
+            connector_names=configured(),
         )
 
         return {
@@ -591,6 +603,7 @@ def create_router(app_state: Any) -> APIRouter:
             limit=limit,
             file_type=file_type,
             with_snippets=snippets,
+            connector_names=configured(),
         )
 
         return {
@@ -659,7 +672,7 @@ def create_router(app_state: Any) -> APIRouter:
         limit: int = Query(20, ge=1, le=100, description="Max documents to return"),
     ):
         """List the most recently indexed documents (newest first)."""
-        return {"documents": app_state.db.recent_documents(limit)}
+        return {"documents": app_state.db.recent_documents(limit, connector_names=configured())}
 
     # Connector endpoints
 

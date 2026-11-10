@@ -310,6 +310,42 @@ def test_remove_folder_hides_docs(api, rlm_home, tmp_path):
     assert set(app_state.connectors) == {"docs"}
 
 
+def test_removing_a_folder_does_not_wait_for_the_index(api, rlm_home, tmp_path, monkeypatch):
+    import threading
+
+    from rootmind.api import app as app_module
+    from rootmind.database.repository import DocumentRepository
+
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "attic.md").write_text("The silver lantern is in the attic.", encoding="utf-8")
+    body = api.get("/config").json()
+    body["connectors"].append({"name": "other", "type": "local", "path": str(other)})
+    api.post("/config", json=body)
+    sync_app_state()
+    attic_id = api.post("/search", json={"query": "attic"}).json()["results"][0]["doc_id"]
+
+    # Deleting the index is slow (a large folder, a sync writing): it must not hold up the save.
+    release = threading.Event()
+    prune = DocumentRepository.prune_connectors
+    monkeypatch.setattr(
+        DocumentRepository,
+        "prune_connectors",
+        lambda self, keep: release.wait(10) and prune(self, keep),
+    )
+    body["connectors"] = [c for c in body["connectors"] if c["name"] != "other"]
+    assert api.post("/config", json=body).json()["reloaded"] is True
+
+    # Saved and hidden at once, while the index is still being deleted.
+    assert api.get("/statistics").json()["indexed_documents"] == 7
+    assert api.post("/search", json={"query": "attic"}).json()["results"] == []
+    assert api.get(f"/documents/{attic_id}").status_code == 404
+
+    release.set()
+    app_module._prune_thread.join(10)
+    assert app_module.app_state.db.get_document(attic_id) is None
+
+
 def test_failed_reload_keeps_the_previous_state(api, monkeypatch):
     from rootmind.api import app as app_module
 
