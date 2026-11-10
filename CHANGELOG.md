@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Fixed
+
+- Settings › AI model: **Reasoning effort** was missing for Claude models RootMind does not know yet (for example Claude Fable 5.2), although the check passed. The effort levels from the Models API were not read. A model checked before gets its levels looked up the next time it is chosen, without another test question.
+
 ## [2.9.1] - 2026-11-09
 
 ### Fixed

@@ -24,6 +24,7 @@ from rootmind.rlm_engine.engine import (
     KnowledgeBaseEngine,
     LLMProviderError,
     LLMTimeoutError,
+    _anthropic_efforts,
     effort_for,
     load_model_quirks,
     model_quirks,
@@ -70,6 +71,19 @@ async def test_check_makes_one_request_like_a_first_step(app_config, indexed_rep
     assert result["quirks"]["checked"] is True
 
 
+def test_effort_levels_from_the_sdk_capabilities_type():
+    # The SDK returns capabilities as a typed model, not as a dict.
+    from anthropic.types import ModelCapabilities
+    from anthropic.types.effort_capability import EffortCapability
+
+    caps = ModelCapabilities.model_construct(
+        effort=EffortCapability.model_validate(EFFORT_CAPS["effort"])
+    )
+    client = _with_models(SimpleNamespace(), caps)
+
+    assert _anthropic_efforts(client, "claude-new") == ["low", "medium", "high", "max"]
+
+
 async def test_check_learns_what_the_model_refuses(app_config, indexed_repo):
     fake = FakeAnthropic([REFUSED, anthropic_response()])
 
@@ -90,6 +104,17 @@ async def test_a_known_or_checked_model_is_not_checked_again(app_config, indexed
     assert result["checked_now"] is False
     assert result["quirks"]["no_forced_tool"] is True
     assert result["efforts"] == ["low", "medium", "high", "xhigh", "max"]
+
+
+async def test_a_checked_model_without_effort_levels_gets_them_looked_up(app_config, indexed_repo):
+    model_quirks("anthropic", app_config.llm.model).update({"checked": True})
+    fake = _with_models(FakeAnthropic([]), EFFORT_CAPS)
+
+    result = await make_engine(app_config, indexed_repo, fake).check_model()
+
+    assert fake.calls == []  # no model request
+    assert result["checked_now"] is False
+    assert result["efforts"] == ["low", "medium", "high", "max"]
 
 
 async def test_force_checks_a_known_model_again(app_config, indexed_repo):
