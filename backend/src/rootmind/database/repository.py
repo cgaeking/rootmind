@@ -1133,7 +1133,9 @@ class DocumentRepository:
                 for row in rows
             ]
 
-    def recent_documents(self, limit: int = 20) -> list[dict[str, Any]]:
+    def recent_documents(
+        self, limit: int = 20, connector_names: Collection[str] | None = None
+    ) -> list[dict[str, Any]]:
         """List the most recently indexed documents (newest first).
 
         Selects only the small metadata columns; loading the full Document
@@ -1155,6 +1157,8 @@ class DocumentRepository:
                 .order_by(Document.indexed_at.desc(), Document.id)
                 .limit(limit)
             )
+            if connector_names is not None:
+                query = query.where(Document.connector_name.in_(sorted(connector_names)))
             rows = session.execute(query).all()
             return [
                 {

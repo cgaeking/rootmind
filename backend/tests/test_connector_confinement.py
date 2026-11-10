@@ -199,5 +199,6 @@ def test_document_path_endpoint_rejects_escaping_paths(api, tiny_corpus):
     assert escaped.status_code == 400
     assert "outside root" in escaped.json()["detail"]
 
-    assert api.get(f"/documents/{orphan.id}/path").status_code == 400
+    # A folder no longer in the config: its documents are not there any more.
+    assert api.get(f"/documents/{orphan.id}/path").status_code == 404
     assert api.get("/documents/unknown/path").status_code == 404

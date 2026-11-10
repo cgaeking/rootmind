@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Fixed
+
+- Removing a folder took long or failed with "Timed out after 15s", above all for a large folder or while indexing ran: the save deleted the folder's index before it answered. The folder is now removed at once, and its index is deleted in the background. Search, documents and statistics leave the folder out right away.
+
 ## [2.9.2] - 2026-11-10
 
 ### Fixed

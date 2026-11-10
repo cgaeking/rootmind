@@ -327,18 +327,38 @@ def reload_app_state() -> None:
         _publish(new)
         init_config(config)
 
-        # Folders removed from the config must stop being searchable right away,
-        # not only after the next sync.
-        try:
-            new.db.prune_connectors({c.name for c in config.connectors})
-        except Exception as e:
-            logger.error(f"Pruning removed connectors failed: {e}")
+        # The index of removed folders is deleted in the background: on a large
+        # folder that takes long, and the change must not wait for it. Search,
+        # reading and statistics only see configured folders meanwhile.
+        _prune_in_background(new.db, {c.name for c in config.connectors})
 
         _start_scheduler(new.sync_manager)
         if old_db is not None and new.db is not old_db:
             _dispose_db(old_db)
 
     logger.info(f"RootMind config reloaded ({len(app_state.connectors)} connector(s))")
+
+
+# The last background prune (see reload_app_state), for tests to wait on.
+_prune_thread: threading.Thread | None = None
+
+
+def _prune_in_background(db: DocumentRepository, keep: set[str]) -> None:
+    """Delete the index of folders no longer in the config, in a worker thread.
+
+    If it fails (for example while a sync holds the database), the next sync
+    prunes them too.
+    """
+    global _prune_thread
+
+    def run() -> None:
+        try:
+            db.prune_connectors(keep)
+        except Exception as e:
+            logger.error(f"Pruning removed connectors failed: {e}")
+
+    _prune_thread = threading.Thread(target=run, name="prune-connectors", daemon=True)
+    _prune_thread.start()
 
 
 def _dispose_db(db: DocumentRepository | None) -> None:
