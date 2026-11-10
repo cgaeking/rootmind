@@ -437,6 +437,7 @@ export const labels = {
       readDocument: "Reading a document",
       readChars: (start: number, end: number) => `characters ${start.toLocaleString("en")}–${end.toLocaleString("en")}`,
       statistics: "Reading the index statistics",
+      info: "Reading the details of a document",
       tool: (name: string) => `Running ${name}`,
       hits: (n: number) => (n === 1 ? "1 hit" : `${n} hits`),
       running: (time: string) => `running for ${time}`,

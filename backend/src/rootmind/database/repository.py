@@ -205,6 +205,29 @@ def _fts_quote(term: str) -> str:
     return '"' + term.replace('"', '""') + '"'
 
 
+def _sql_time(value: datetime) -> str:
+    """A time as SQLAlchemy stores DateTime in SQLite, for comparisons in raw SQL."""
+    return value.isoformat(sep=" ", timespec="microseconds")
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _modified_within(
+    modified: datetime | None, after: datetime | None, before: datetime | None
+) -> bool:
+    """True when ``modified`` lies in ``[after, before)``; no bound, no check.
+
+    A document without a modification time is left out by any date bound.
+    """
+    if after is None and before is None:
+        return True
+    if modified is None:
+        return False
+    return (after is None or modified >= after) and (before is None or modified < before)
+
+
 class DocumentRepository:
     """Repository for document database operations with FTS5 full-text search."""
 
@@ -559,6 +582,44 @@ class DocumentRepository:
             "page_count": row.page_count,
         }
 
+    def get_document_info(self, doc_id: str) -> dict[str, Any] | None:
+        """All metadata of one document (no content), with its OCR state if it has one."""
+        with self._get_session() as session:
+            row = session.execute(
+                select(
+                    Document.file_name,
+                    Document.file_path,
+                    Document.file_type,
+                    Document.connector_name,
+                    Document.status,
+                    Document.size_bytes,
+                    Document.content_length,
+                    Document.page_count,
+                    Document.created_at,
+                    Document.modified_at,
+                    Document.indexed_at,
+                ).where(Document.id == doc_id)
+            ).first()
+            if not row:
+                return None
+            ocr = session.get(OcrDocument, doc_id)
+            ocr_state = ocr.state if ocr is not None else None
+        return {
+            "doc_id": doc_id,
+            "file_name": row.file_name,
+            "file_path": row.file_path,
+            "file_type": row.file_type,
+            "connector_name": row.connector_name,
+            "status": row.status,
+            "size_bytes": row.size_bytes,
+            "content_length": row.content_length,
+            "page_count": row.page_count,
+            "created_at": _iso(row.created_at),
+            "modified_at": _iso(row.modified_at),
+            "indexed_at": _iso(row.indexed_at),
+            "ocr_state": ocr_state,
+        }
+
     def _metas(self, doc_ids: Collection[str]) -> dict[str, dict[str, Any]]:
         """Lightweight metadata (no content) for many documents, in batched queries."""
         ids = list(dict.fromkeys(doc_ids))
@@ -575,6 +636,7 @@ class DocumentRepository:
                         Document.status,
                         Document.content_length,
                         Document.page_count,
+                        Document.modified_at,
                     ).where(Document.id.in_(ids[i : i + _META_BATCH_SIZE]))
                 ).all()
                 for row in rows:
@@ -586,6 +648,7 @@ class DocumentRepository:
                         "status": row.status,
                         "content_length": row.content_length,
                         "page_count": row.page_count,
+                        "modified_at": row.modified_at,
                     }
         return metas
 
@@ -597,6 +660,8 @@ class DocumentRepository:
         file_type: str | None = None,
         with_snippets: bool = True,
         connector_names: Collection[str] | None = None,
+        modified_after: datetime | None = None,
+        modified_before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Full-text search using FTS5 with a multi-strategy approach.
 
@@ -616,7 +681,9 @@ class DocumentRepository:
         the (often huge) document content and dominates the query time. Use it
         when only the result list is needed.
 
-        ``connector_names`` restricts results to documents of those connectors.
+        ``connector_names`` restricts results to documents of those connectors,
+        ``modified_after`` / ``modified_before`` to documents modified at or
+        after / before those times.
         """
         # Strip FTS5 syntax characters; every remaining term is quoted below,
         # so words like AND/OR/NEAR and hyphenated terms are matched literally.
@@ -703,6 +770,8 @@ class DocumentRepository:
                 continue
             if file_type and meta["file_type"] != file_type:
                 continue
+            if not _modified_within(meta["modified_at"], modified_after, modified_before):
+                continue
             kept.append((doc_id, score, meta))
 
         # Highest score first; the sort is stable, so ties keep discovery order.
@@ -717,6 +786,8 @@ class DocumentRepository:
                 "score": score,
                 "content_length": meta["content_length"],
                 "page_count": meta["page_count"],
+                "connector_name": meta["connector_name"],
+                "modified_at": _iso(meta["modified_at"]),
                 "position": None,
                 "page": None,
             }
@@ -909,6 +980,8 @@ class DocumentRepository:
         file_type: str | None = None,
         min_similarity: float = 0.3,
         connector_names: Collection[str] | None = None,
+        modified_after: datetime | None = None,
+        modified_before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Fuzzy search using trigram matching for typo tolerance.
 
@@ -924,6 +997,8 @@ class DocumentRepository:
             file_type: Optional filter by file type.
             min_similarity: Minimum trigram similarity (0.0-1.0).
             connector_names: Optional set of allowed connectors.
+            modified_after: Optional: only documents modified at or after this time.
+            modified_before: Optional: only documents modified before this time.
 
         Returns:
             List of matching documents with similarity scores.
@@ -955,6 +1030,12 @@ class DocumentRepository:
         if file_type:
             conditions.append("d.file_type = :file_type")
             params["file_type"] = file_type
+        if modified_after is not None:
+            conditions.append("d.modified_at >= :modified_after")
+            params["modified_after"] = _sql_time(modified_after)
+        if modified_before is not None:
+            conditions.append("d.modified_at < :modified_before")
+            params["modified_before"] = _sql_time(modified_before)
         sql = text(
             "SELECT t.doc_id, COUNT(DISTINCT t.trigram) AS matched "  # noqa: S608
             "FROM document_trigrams t JOIN documents d ON d.id = t.doc_id "
@@ -1022,6 +1103,8 @@ class DocumentRepository:
                     "similarity": f"{candidate['similarity'] * 100:.0f}%",
                     "content_length": meta["content_length"],
                     "page_count": meta["page_count"],
+                    "connector_name": meta["connector_name"],
+                    "modified_at": _iso(meta["modified_at"]),
                 }
             )
 
@@ -1090,8 +1173,10 @@ class DocumentRepository:
         limit: int = 100,
         offset: int = 0,
         connector_names: Collection[str] | None = None,
+        modified_after: datetime | None = None,
+        modified_before: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """List documents with metadata (no content)."""
+        """List documents with metadata (no content), most recently modified first."""
         with self._get_session() as session:
             query = select(
                 Document.id,
@@ -1102,6 +1187,7 @@ class DocumentRepository:
                 Document.content_length,
                 Document.page_count,
                 Document.modified_at,
+                Document.connector_name,
             ).where(Document.status == "indexed")
 
             if connector_name:
@@ -1112,6 +1198,10 @@ class DocumentRepository:
                 query = query.where(Document.file_type == file_type)
             if search_filename:
                 query = query.where(Document.file_name.ilike(f"%{search_filename}%"))
+            if modified_after is not None:
+                query = query.where(Document.modified_at >= modified_after)
+            if modified_before is not None:
+                query = query.where(Document.modified_at < modified_before)
 
             # Stable order (id as tiebreak) so limit/offset pages never overlap.
             query = query.order_by(Document.modified_at.desc(), Document.id)
@@ -1129,6 +1219,7 @@ class DocumentRepository:
                     "content_length": row.content_length,
                     "page_count": row.page_count,
                     "modified_at": row.modified_at.isoformat() if row.modified_at else None,
+                    "connector_name": row.connector_name,
                 }
                 for row in rows
             ]
@@ -1241,6 +1332,14 @@ class DocumentRepository:
                 ).group_by(Document.file_type)
             ).all()
 
+            connectors = session.execute(
+                scoped(
+                    select(Document.connector_name, func.count(Document.id)).where(
+                        Document.status == "indexed"
+                    )
+                ).group_by(Document.connector_name)
+            ).all()
+
             return {
                 "total_documents": total,
                 "indexed_documents": indexed,
@@ -1248,6 +1347,7 @@ class DocumentRepository:
                 "total_size_bytes": total_size,
                 "total_content_chars": total_content,
                 "file_types": dict(file_types),
+                "connectors": dict(connectors),
             }
 
     # Sync Status Methods

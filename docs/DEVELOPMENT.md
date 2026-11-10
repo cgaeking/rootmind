@@ -58,8 +58,10 @@ flowchart LR
    the text, so a hit can be cited by location. Unchanged files are skipped by
    content hash.
 2. **The model chooses what to read.** For `POST /query`, the engine offers the
-   model five read-only tools: `search_documents`, `search_fuzzy`,
-   `list_documents`, `read_document` and `get_statistics`. A typical run is:
+   model six read-only tools: `search_documents`, `search_fuzzy`,
+   `list_documents`, `read_document`, `get_document_info` and
+   `get_statistics`. Search and list take optional filters by file type,
+   folder and modification date. A typical run is:
    search, read the window around a hit, perhaps search again with other words,
    then answer.
 3. **The loop is bounded.** The loop makes at most 10 model calls that may

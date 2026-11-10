@@ -60,8 +60,10 @@ flowchart LR
    zitieren lässt. Unveränderte Dateien werden anhand ihres Inhalts-Hashs
    übersprungen.
 2. **Das Modell wählt, was es liest.** Für `POST /query` bietet die Engine dem
-   Modell fünf lesende Tools an: `search_documents`, `search_fuzzy`,
-   `list_documents`, `read_document` und `get_statistics`. Ein typischer
+   Modell sechs lesende Tools an: `search_documents`, `search_fuzzy`,
+   `list_documents`, `read_document`, `get_document_info` und
+   `get_statistics`. Suche und Liste lassen sich nach Dateityp, Ordner und
+   Änderungsdatum filtern. Ein typischer
    Ablauf: suchen, den Bereich um einen Treffer lesen, eventuell mit anderen
    Wörtern erneut suchen, dann antworten.
 3. **Die Schleife ist begrenzt.** Die Schleife macht höchstens 10

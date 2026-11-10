@@ -47,7 +47,8 @@ def list_tools_result() -> types.ListToolsResult:
     """The tool registry as an MCP ``tools/list`` result."""
     return types.ListToolsResult(
         tools=[
-            types.Tool(name=t["name"], description=t["description"], inputSchema=t["inputSchema"])
+            # Name, title, description, schema and the read-only annotations.
+            types.Tool.model_validate(t)
             for t in tools.mcp_tools()
         ]
     )
@@ -58,9 +59,10 @@ async def call_tool_result(
     name: str,
     arguments: dict[str, Any] | None,
     allowed_connectors: frozenset[str] | None,
+    folders: dict[str, str] | None = None,
 ) -> types.CallToolResult:
     """Run one tool call (in a worker thread) and wrap it as an MCP result."""
-    ctx = tools.ToolContext(allowed_connectors=allowed_connectors)
+    ctx = tools.ToolContext(allowed_connectors=allowed_connectors, folders=folders or {})
     result = await asyncio.to_thread(tools.execute, name, arguments or {}, repo, ctx)
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=result.text)],
@@ -71,13 +73,14 @@ async def call_tool_result(
 def create_server(repo: DocumentRepository, config: AppConfig) -> Server:
     """Build the MCP server for ``repo``; tools see only the configured connectors."""
     allowed = frozenset(c.name for c in config.connectors)
+    folders = tools.folder_names(config.connectors)
 
     async def on_list_tools(ctx, params) -> types.ListToolsResult:
         return list_tools_result()
 
     async def on_call_tool(ctx, params: types.CallToolRequestParams) -> types.CallToolResult:
         logger.info("Tool call: %s", params.name)
-        return await call_tool_result(repo, params.name, params.arguments, allowed)
+        return await call_tool_result(repo, params.name, params.arguments, allowed, folders)
 
     return Server(
         SERVER_NAME,

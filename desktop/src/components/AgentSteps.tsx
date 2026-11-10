@@ -46,6 +46,8 @@ export function stepTitle(step: AgentStep, maxIterations: number): string {
       const name = step.reads?.[0]?.file_name;
       return name ? t.read(name) : t.readDocument;
     }
+    case "get_document_info":
+      return t.info;
     case "get_statistics":
       return t.statistics;
     default:

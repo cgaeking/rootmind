@@ -63,7 +63,7 @@ def test_right_token_200(mcp):
     response = mcp.post("/mcp", json=LIST, headers=AUTH)
     assert response.status_code == 200
     names = [t["name"] for t in response.json()["result"]["tools"]]
-    assert len(names) == 5
+    assert len(names) == 6
     assert "read_document" in names
 
 

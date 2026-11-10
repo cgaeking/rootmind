@@ -4,6 +4,17 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Added
+
+- Search and list by folder and date: `search_documents`, `search_fuzzy` and `list_documents` take the optional filters `folder` (the folder name, e.g. "Unterlagen") and `modified_after` / `modified_before` (YYYY-MM-DD, both days included). The model sets them from the question ("the offer in Unterlagen from October"), in the app's chat and over MCP. Results show the folder and the modification date. Nothing changes in the app's windows.
+- New tool `get_document_info`: the details of one document without its text (folder, path, type, size, pages, created, modified and indexed time, OCR state).
+- `get_statistics` lists the documents per folder, with the names the folder filter takes.
+- MCP: every tool has a display title and is marked read-only (`readOnlyHint`, not destructive, idempotent, no outside services). Clients such as Claude can run read-only tools without asking each time.
+
+### Changed
+
+- Clearer tool descriptions: what each tool returns, when to use it and when another one, and what happens with an unknown document.
+
 ## [2.9.3] - 2026-11-10
 
 ### Fixed
