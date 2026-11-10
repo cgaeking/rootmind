@@ -565,7 +565,10 @@ def create_app(
                 logger.info("Tool call: %s (token %s)", name, identity.name)
 
             def run_tool(arguments: dict[str, Any] | str | None) -> tools.ToolResult:
-                ctx = tools.ToolContext(allowed_connectors=scope_for(identity))
+                ctx = tools.ToolContext(
+                    allowed_connectors=scope_for(identity),
+                    folders=tools.folder_names(state.connectors),
+                )
                 return tools.execute(name, arguments, state.repo, ctx)
 
             # Tool execution (and the config check) is blocking I/O; keep it

@@ -446,7 +446,7 @@ def test_mcp_dispatch_keeps_stdout_json_only(child_home):
         assert response(1)["result"]["serverInfo"]["name"] == "rootmind"
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-        assert len(response(2)["result"]["tools"]) == 5
+        assert len(response(2)["result"]["tools"]) == 6
 
         child.process.stdin.close()
         child.process.wait(timeout=30)

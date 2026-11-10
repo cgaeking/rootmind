@@ -34,7 +34,7 @@ const ROOT = path.resolve(BUNDLE, "..", "..");
 const FAKE_STATUS = path.join(HERE, "fixtures", "fake-status.mjs");
 const RUN_BRIDGE = path.join(HERE, "fixtures", "run-bridge.mjs");
 const TOKEN = "test-token-7f3c9a1e5b2d4c6f8a0b"; // pragma: allowlist secret (test value)
-const TOOL_NAMES = ["search_documents", "search_fuzzy", "list_documents", "read_document", "get_statistics"];
+const TOOL_NAMES = ["search_documents", "search_fuzzy", "list_documents", "read_document", "get_document_info", "get_statistics"];
 
 // --- fixtures ------------------------------------------------------------------
 

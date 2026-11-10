@@ -37,15 +37,19 @@
     },
     {
       "name": "list_documents",
-      "description": "List indexed documents with metadata, optionally filtered by file type or name."
+      "description": "List indexed documents with metadata, optionally filtered by file type, name, folder or modification date."
     },
     {
       "name": "read_document",
       "description": "Read the text of a document, or a character window of it."
     },
     {
+      "name": "get_document_info",
+      "description": "Details of one document without its text: folder, type, size, pages, created, modified and indexed time."
+    },
+    {
       "name": "get_statistics",
-      "description": "Statistics about the document collection: number of documents, file types, total size."
+      "description": "Statistics about the document collection: number of documents, file types, folders, total size."
     }
   ],
   "tools_generated": false,

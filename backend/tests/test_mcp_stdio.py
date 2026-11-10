@@ -56,7 +56,7 @@ def test_tool_parity():
     http = {t["name"]: t["inputSchema"] for t in mcp_http.tools.mcp_tools()}
 
     assert anthropic_format == openai_format == stdio == http
-    assert len(stdio) == 5
+    assert len(stdio) == 6
     descriptions = {t.name: t.description for t in mcp_stdio.list_tools_result().tools}
     assert descriptions == {t["name"]: t["description"] for t in tools.TOOLS}
 

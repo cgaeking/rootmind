@@ -431,6 +431,7 @@ def test_registry_shapes():
         "search_fuzzy",
         "list_documents",
         "read_document",
+        "get_document_info",
         "get_statistics",
     )
     for tool in tools.TOOLS:
@@ -447,3 +448,158 @@ def test_openai_and_mcp_formats_are_derived_from_the_registry():
     mcp_schemas = {t["name"]: t["inputSchema"] for t in tools.mcp_tools()}
     anthropic_schemas = {t["name"]: t["input_schema"] for t in tools.TOOLS}
     assert openai_schemas == mcp_schemas == anthropic_schemas
+
+
+def test_mcp_tools_are_marked_read_only_with_a_title():
+    for tool in tools.mcp_tools():
+        assert tool["title"]
+        assert tool["annotations"]["title"] == tool["title"]
+        assert tool["annotations"]["readOnlyHint"] is True
+        assert tool["annotations"]["destructiveHint"] is False
+        assert tool["annotations"]["openWorldHint"] is False
+    # The LLM formats carry no extra keys (the Anthropic API rejects unknown ones).
+    assert all(set(t) == {"name", "description", "input_schema"} for t in tools.TOOLS)
+
+
+# --- folder and date filters, get_document_info ---------------------------------------------
+
+
+@pytest.fixture
+def two_folders(repo):
+    """Two folders with dated documents; the context maps them to their folder names."""
+    from datetime import datetime
+
+    def add(connector, name, text, modified):
+        return repo.upsert_document(
+            connector, name, name, "txt", content_text=text, modified_at=datetime(*modified)
+        ).id
+
+    ids = {
+        "offer_oct": add("docs", "offer_oct.txt", "lantern offer october", (2026, 10, 15, 9)),
+        "offer_sep": add("docs", "offer_sep.txt", "lantern offer september", (2026, 9, 30, 23)),
+        "archive": add("old", "archive.txt", "lantern offer archive", (2025, 1, 2)),
+    }
+    ctx = ToolContext(
+        allowed_connectors=frozenset({"docs", "old"}),
+        folders={"docs": "Unterlagen", "old": "Archiv"},
+    )
+    return ids, ctx
+
+
+@pytest.mark.parametrize("tool", ["search_documents", "search_fuzzy"])
+def test_search_filters_by_folder(repo, two_folders, tool):
+    ids, ctx = two_folders
+
+    result = tools.execute(tool, {"query": "lantern", "folder": "unterlagen"}, repo, ctx)
+
+    assert ids["offer_oct"] in result.text and ids["offer_sep"] in result.text
+    assert ids["archive"] not in result.text
+    assert "Folder: Unterlagen" in result.text
+
+
+@pytest.mark.parametrize("tool", ["search_documents", "search_fuzzy", "list_documents"])
+def test_filters_by_modification_date_including_the_end_day(repo, two_folders, tool):
+    ids, ctx = two_folders
+    args = {"query": "lantern", "modified_after": "2026-09-30", "modified_before": "2026-10-15"}
+
+    result = tools.execute(tool, args, repo, ctx)
+
+    assert ids["offer_oct"] in result.text  # 15 October, 9:00: the end day counts
+    assert ids["offer_sep"] in result.text  # 30 September, 23:00: the start day counts
+    assert ids["archive"] not in result.text
+
+
+def test_list_filters_by_folder_and_shows_folder_and_date(repo, two_folders):
+    ids, ctx = two_folders
+
+    result = tools.execute("list_documents", {"folder": "Archiv"}, repo, ctx)
+
+    assert ids["archive"] in result.text and ids["offer_oct"] not in result.text
+    assert "modified 2025-01-02" in result.text and "folder Archiv" in result.text
+    assert ctx.referenced == [{"doc_id": ids["archive"], "page": None, "position": None}]
+
+
+def test_no_hits_names_the_filters(repo, two_folders):
+    _, ctx = two_folders
+    result = tools.execute(
+        "search_documents", {"query": "lantern", "modified_after": "2027-01-01"}, repo, ctx
+    )
+    assert result.text == "No results for 'lantern' (filters: modified_after=2027-01-01)."
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (
+            {"folder": "Downloads"},
+            "unknown folder 'Downloads'. Indexed folders: Archiv, Unterlagen",
+        ),
+        ({"modified_after": "October"}, "'modified_after' must be a date like 2026-10-31"),
+        (
+            {"modified_after": "2026-10-02", "modified_before": "2026-10-01"},
+            "'modified_before' must be later than 'modified_after'",
+        ),
+    ],
+)
+def test_invalid_filters_become_tool_errors(repo, two_folders, args, message):
+    _, ctx = two_folders
+    result = tools.execute("search_documents", {"query": "lantern", **args}, repo, ctx)
+    assert result.is_error
+    assert message in result.text
+
+
+def test_folder_filter_cannot_reach_a_folder_the_client_may_not_see(repo, two_folders):
+    ids, ctx = two_folders
+    scoped = ToolContext(allowed_connectors=frozenset({"docs"}), folders=ctx.folders)
+
+    result = tools.execute(
+        "search_documents", {"query": "lantern", "folder": "Archiv"}, repo, scoped
+    )
+
+    assert result.is_error
+    assert "Indexed folders: Unterlagen" in result.text
+    assert ids["archive"] not in result.text
+
+
+def test_get_document_info(repo, two_folders):
+    ids, ctx = two_folders
+
+    result = tools.execute("get_document_info", {"doc_id": ids["offer_oct"]}, repo, ctx)
+
+    assert not result.is_error
+    for line in (
+        "Document: offer_oct.txt",
+        "Folder: Unterlagen",
+        "Path in folder: offer_oct.txt",
+        "Type: txt",
+        "Modified: 2026-10-15T09:00:00",
+        "Text length: 21 chars",
+    ):
+        assert line in result.text
+    assert "lantern" not in result.text  # no content
+
+
+def test_get_document_info_of_an_unknown_or_hidden_document(repo, two_folders):
+    ids, ctx = two_folders
+    scoped = ToolContext(allowed_connectors=frozenset({"docs"}), folders=ctx.folders)
+
+    for doc in ("unknown", ids["archive"]):
+        result = tools.execute("get_document_info", {"doc_id": doc}, repo, scoped)
+        assert result.is_error
+        assert result.text == f"Error: document not found: {doc}"
+
+
+def test_get_statistics_lists_the_folders(repo, two_folders):
+    _, ctx = two_folders
+    result = tools.execute("get_statistics", {}, repo, ctx)
+    assert "By folder (names for the folder filter):" in result.text
+    assert "  - Unterlagen: 2" in result.text
+    assert "  - Archiv: 1" in result.text
+
+
+def test_folder_names_use_the_last_path_part():
+    connectors = [
+        ConnectorConfig(name="docs", type="local", path="C:\\Users\\me\\MyFirm\\Unterlagen"),
+        ConnectorConfig(name="dl", type="local", path="/home/me/Downloads/"),
+    ]
+    assert tools.folder_names(connectors) == {"docs": "Unterlagen", "dl": "Downloads"}

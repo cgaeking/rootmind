@@ -111,7 +111,12 @@ Tools:
 2. search_fuzzy - typo-tolerant search (only when search_documents finds nothing)
 3. list_documents - overview of the available documents
 4. read_document - read a document or a character window of it
-5. get_statistics - statistics about the document collection
+5. get_document_info - details of one document (folder, pages, dates), without its text
+6. get_statistics - statistics about the document collection, with the folder names
+
+The search and list tools take optional filters: file_type, folder, and modified_after /
+modified_before (YYYY-MM-DD). Use them when the question names a folder, a file type or a
+period ("the offer from October"), and widen them again if nothing is found.
 
 How to work:
 1. Start with search_documents. It is fast and cheap.
@@ -929,7 +934,11 @@ class KnowledgeBaseEngine:
 
     def _new_context(self) -> ToolContext:
         """Tools only see documents of the connectors in the current config."""
-        return ToolContext(allowed_connectors=frozenset(c.name for c in self.config.connectors))
+        connectors = self.config.connectors
+        return ToolContext(
+            allowed_connectors=frozenset(c.name for c in connectors),
+            folders=tools.folder_names(connectors),
+        )
 
     async def _run_tool(self, name: str, raw_args: Any, ctx: ToolContext) -> tools.ToolResult:
         shown = (
