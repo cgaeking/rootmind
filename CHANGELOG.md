@@ -4,6 +4,8 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-11-10
+
 ### Added
 
 - Search and list by folder and date: `search_documents`, `search_fuzzy` and `list_documents` take the optional filters `folder` (the folder name, e.g. "Unterlagen") and `modified_after` / `modified_before` (YYYY-MM-DD, both days included). The model sets them from the question ("the offer in Unterlagen from October"), in the app's chat and over MCP. Results show the folder and the modification date. Nothing changes in the app's windows.
