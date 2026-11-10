@@ -440,6 +440,8 @@ def _anthropic_efforts(client, model: str) -> list[str] | None:
     except Exception as e:  # an older API or SDK, or no access: not known
         logger.info("Could not read the capabilities of %s: %s", model, e)
         return None
+    if hasattr(caps, "model_dump"):  # the SDK's typed ModelCapabilities
+        caps = caps.model_dump()
     effort = caps.get("effort") if isinstance(caps, dict) else None
     if not isinstance(effort, dict):
         return None
@@ -813,6 +815,16 @@ class KnowledgeBaseEngine:
             }
 
         if quirks.get("checked") and not force:
+            if "efforts" not in quirks and provider != "ollama":
+                # Checked, but the effort levels are not known (yet): look
+                # them up alone, which costs no answer.
+                efforts = await asyncio.to_thread(
+                    _anthropic_efforts if provider == "anthropic" else _openai_efforts,
+                    self._get_client(),
+                    model,
+                )
+                if efforts is not None:
+                    _learn(quirks, "efforts", sorted(efforts, key=_effort_rank))
             return result(False)
         client = self._get_client()
         if provider == "anthropic":
