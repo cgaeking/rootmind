@@ -12,6 +12,12 @@ All notable changes to RootMind are documented in this file. The format is based
 - Desktop › Status: folders are shown by their name ("Documents", "Unterlagen") instead of an internal key such as `c_users_chris_documents`. `GET /status` returns it as `folder_name` per folder.
 - Tool descriptions: each tool now says what it can see (the indexed folders this connection may access, as of the last indexing run), what its parameters do, and what to do when `limit` cuts the results. `get_document_info` names `read_document` for the text. The parameter descriptions are more precise (`doc_id` format, `file_type` as an extension, case-insensitive `folder` and `search_filename`).
 
+### Security
+
+- Pillow 13.0.0 (from 12.3.0), with fixes in TIFF handling, among them a heap buffer overflow. RootMind uses Pillow for text recognition (OCR) of images and scans.
+- certifi 2026.10.18: current root certificates for HTTPS connections (e.g. to the LLM providers).
+- setuptools 84.1.0 (build only).
+
 ## [2.10.0] - 2026-11-10
 
 ### Added
