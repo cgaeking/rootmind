@@ -245,6 +245,14 @@ class SyncManager:
                     "error_message": None,
                 }
 
+        # The folder's name (the last part of its path) for display; the
+        # connector name is an internal key such as "c_users_me_documents".
+        from ..tools import folder_names
+
+        names = folder_names(self.config.connectors)
+        for name, entry in connector_statuses.items():
+            entry["folder_name"] = names.get(name, name)
+
         return {
             "is_running": self.is_running,
             "connectors": connector_statuses,
