@@ -317,7 +317,7 @@ export function StatusScreen() {
             {Object.values(status.connectors).map((c) => (
               <div key={c.connector_name} className="screen-card">
                 <Row>
-                  <strong>{c.connector_name}</strong>
+                  <strong>{c.folder_name ?? c.connector_name}</strong>
                   {/* Files that could not be read (encrypted, damaged, unknown
                       format) are not counted here: the user cannot act on
                       the number. Only a problem with the folder itself shows. */}

@@ -7,6 +7,7 @@ All notable changes to RootMind are documented in this file. The format is based
 ### Changed
 
 - Desktop › Status: no more error counts. A folder showed "304 errors" for the files RootMind cannot read (encrypted or damaged PDFs, unknown formats), and the overview had an "Errors" tile. The number said nothing the user could act on, while the folder itself worked. A folder now shows "ok" or "running"; only a problem with the folder itself (for example, it cannot be reached) shows, with its reason.
+- Desktop › Status: folders are shown by their name ("Documents", "Unterlagen") instead of an internal key such as `c_users_chris_documents`. `GET /status` returns it as `folder_name` per folder.
 
 ## [2.10.0] - 2026-11-10
 

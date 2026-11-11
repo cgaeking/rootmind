@@ -31,6 +31,8 @@ export interface ConnectorsResponse {
 
 export interface ConnectorStatus {
   connector_name: string;
+  /** The folder's name for display (last part of its path); older servers omit it. */
+  folder_name?: string;
   last_sync_at: string | null;
   last_full_sync_at: string | null;
   documents_total: number;
