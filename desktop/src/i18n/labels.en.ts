@@ -334,7 +334,6 @@ export const labels = {
     ready: "Ready",
     statDocuments: "Documents",
     statIndexed: "Indexed",
-    statErrors: "Errors",
     statFileSize: "File size",
     statChars: "Characters (text)",
     statCharsTitle: (n: string) => `${n} characters`,
@@ -351,7 +350,6 @@ export const labels = {
     noFolders: "No folders configured.",
     running: "running",
     ok: "ok",
-    errorsCount: (n: number) => `${n} errors`,
     syncSummary: (indexed: string, total: string, date: string) =>
       `${indexed} / ${total} indexed · last sync: ${date}`,
     fileTypesTitle: "File types",

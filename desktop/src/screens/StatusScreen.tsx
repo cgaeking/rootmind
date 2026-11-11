@@ -210,7 +210,6 @@ export function StatusScreen() {
               <div className="stat-grid">
                 <Stat value={fmtNum(stats.total_documents)} label={labels.status.statDocuments} />
                 <Stat value={fmtNum(stats.indexed_documents)} label={labels.status.statIndexed} />
-                <Stat value={fmtNum(stats.error_documents)} label={labels.status.statErrors} />
                 <Stat value={fmtBytes(stats.total_size_bytes)} label={labels.status.statFileSize} />
                 <Stat
                   value={fmtCompact(stats.total_content_chars)}
@@ -318,12 +317,13 @@ export function StatusScreen() {
             {Object.values(status.connectors).map((c) => (
               <div key={c.connector_name} className="screen-card">
                 <Row>
-                  <strong>{c.connector_name}</strong>
+                  <strong>{c.folder_name ?? c.connector_name}</strong>
+                  {/* Files that could not be read (encrypted, damaged, unknown
+                      format) are not counted here: the user cannot act on
+                      the number. Only a problem with the folder itself shows. */}
                   {c.is_syncing ? (
                     <Badge tone="ok">{labels.status.running}</Badge>
-                  ) : c.documents_error > 0 ? (
-                    <Badge tone="err">{labels.status.errorsCount(c.documents_error)}</Badge>
-                  ) : (
+                  ) : c.error_message ? null : (
                     <Badge tone="muted">{labels.status.ok}</Badge>
                   )}
                 </Row>

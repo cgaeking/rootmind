@@ -51,6 +51,11 @@ def test_indexes_all_formats(app_config):
     status = manager.get_status()
     assert status["indexed_documents"] == 7
     assert status["connectors"]["docs"]["documents_indexed"] == 7
+    # Shown by its folder name, not the internal connector name.
+    assert (
+        status["connectors"]["docs"]["folder_name"]
+        == manager.config.connectors[0].path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    )
     repo.engine.dispose()
 
 

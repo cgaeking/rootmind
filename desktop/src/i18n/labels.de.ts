@@ -335,7 +335,6 @@ export const labels = {
     ready: "Bereit",
     statDocuments: "Dokumente",
     statIndexed: "Indiziert",
-    statErrors: "Fehler",
     statFileSize: "Dateigröße",
     statChars: "Zeichen (Text)",
     statCharsTitle: (n: string) => `${n} Zeichen`,
@@ -352,7 +351,6 @@ export const labels = {
     noFolders: "Keine Verzeichnisse konfiguriert.",
     running: "läuft",
     ok: "ok",
-    errorsCount: (n: number) => `${n} Fehler`,
     syncSummary: (indexed: string, total: string, date: string) =>
       `${indexed} / ${total} indiziert · letzte Synchronisierung: ${date}`,
     fileTypesTitle: "Dateitypen",
