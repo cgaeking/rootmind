@@ -4,6 +4,10 @@ All notable changes to RootMind are documented in this file. The format is based
 
 ## [Unreleased]
 
+### Changed
+
+- Tool descriptions: each tool now says what it can see (the indexed folders this connection may access, as of the last indexing run), what its parameters do, and what to do when `limit` cuts the results. `get_document_info` names `read_document` for the text. The parameter descriptions are more precise (`doc_id` format, `file_type` as an extension, case-insensitive `folder` and `search_filename`).
+
 ## [2.10.0] - 2026-11-10
 
 ### Added
