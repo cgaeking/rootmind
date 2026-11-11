@@ -258,7 +258,7 @@ jobs:
       # The Linux packages recommend the distribution's Tesseract instead of
       # bundling it; the smoke test checks the build with that one.
       - name: Install Tesseract
-        run: sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-deu tesseract-ocr-eng
+        run: bash ${{ github.workspace }}/.github/scripts/apt-install.sh tesseract-ocr tesseract-ocr-deu tesseract-ocr-eng
 
       # The same smoke test as on Windows, with PowerShell 7 (on the runner).
       - name: Smoke test
